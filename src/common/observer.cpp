@@ -15,41 +15,26 @@
 
 namespace dbmw::common {
     namespace {
-        // 观测状态按访问频率拆成两把锁，避免慢路径拖累快路径：
-        //   - g_stateMutex：保护"配置 + 观察者句柄"，只在 configure/setObserver 时写；
-        //   - g_statsMutex：保护慢 SQL 聚合，只在判定为慢 SQL 时写。
-        // 而每条 SQL 都要走的高频读取通过线程本地快照完全绕开这两把锁。
         std::mutex g_stateMutex;
         std::mutex g_statsMutex;
         OperationObserver g_observer;
         config::ObservabilityConfig g_config;
-        // M3 池指标通道：与 SQL 通道共用 g_stateMutex（配置/句柄同时变更极少），
-        // 复用 g_stateVersion 让线程本地快照一致刷新。
         PoolMetricsObserver g_poolObserver;
         PoolMetricsCollector g_poolCollector;
         const void *g_poolCollectorOwner = nullptr;
-        // 配置或观察者每次变更时递增；线程据此判断本地快照是否已过期。
         std::atomic<std::uint64_t> g_stateVersion{1};
         std::unordered_map<std::uint64_t, SlowSqlStats> g_slowStats;
         std::deque<SlowSqlRecord> g_recentSlow;
-        // 慢 SQL 聚合的 LRU 顺序（最近使用的在头部）与定位表，淘汰为 O(1)。
         std::list<std::uint64_t> g_lru;
         std::unordered_map<std::uint64_t, std::list<std::uint64_t>::iterator> g_lruPos;
 
-        // 配置与观察者句柄的只读快照。
         struct Snapshot {
             config::ObservabilityConfig config;
             OperationObserver observer;
-            // M3 池指标通道：与 SQL 通道一并缓存。
             PoolMetricsObserver poolObserver;
             PoolMetricsCollector poolCollector;
         };
 
-        // 每线程缓存一份快照，只在版本号变化时才回退加锁刷新。
-        //
-        // 这是本文件最关键的热路径优化：观测埋点每条 SQL 都会走到，若在这里抢
-        // 一把进程级全局 mutex，多核下所有数据源的每次查询都会互相排队，核数
-        // 越多劣化越严重。稳态下只剩一次原子读比较，无锁、也不产生写共享。
         const Snapshot &currentSnapshot() {
             static thread_local std::uint64_t tlsVersion = 0;
             static thread_local Snapshot tlsSnapshot;
@@ -64,15 +49,12 @@ namespace dbmw::common {
             return tlsSnapshot;
         }
 
-        // 采样序列：原来用全局原子，SQL 日志开启时每条语句递增一次，是多核
-        // 写共享点。改为线程本地并按线程错开起点，既消除争用又保持采样均匀。
         std::uint64_t nextSampleSequence() {
             static thread_local std::uint64_t tlsSequence =
                 std::hash<std::thread::id>{}(std::this_thread::get_id());
             return ++tlsSequence;
         }
 
-        // 把指纹标记为最近使用（移动到 LRU 头部）；O(1)。调用方须持 g_statsMutex。
         void touchLru(std::uint64_t fp) {
             auto it = g_lruPos.find(fp);
             if (it == g_lruPos.end()) {
@@ -83,7 +65,6 @@ namespace dbmw::common {
             }
         }
 
-        // 淘汰最近最少使用的聚合项；O(1)。调用方须持 g_statsMutex。
         void evictLru() {
             if (g_lru.empty()) return;
             const auto fp = g_lru.back();
@@ -95,8 +76,6 @@ namespace dbmw::common {
         std::string truncate(std::string text, const std::size_t limit) {
             if (text.size() <= limit) return text;
             const auto original = text.size();
-            // 若截断点落在单引号字符串字面量内部（如 'hello wo...[truncated]'），
-            // 先补一个右引号再贴标记，避免把诊断标记塞进字符串里造成畸形输出（P2）。
             bool inLiteral = false;
             bool escaped = false;
             for (std::size_t i = 0; i < limit; ++i) {
@@ -104,7 +83,7 @@ namespace dbmw::common {
                 if (escaped) { escaped = false; continue; }
                 if (c == '\\') { escaped = true; continue; }
                 if (c == '\'') {
-                    if (i + 1 < limit && text[i + 1] == '\'') { ++i; continue; } // '' 转义
+                    if (i + 1 < limit && text[i + 1] == '\'') { ++i; continue; }
                     inLiteral = !inLiteral;
                 }
             }
@@ -117,7 +96,6 @@ namespace dbmw::common {
         std::uint64_t fingerprint(const std::string &dataSource,
                                   const OperationType type,
                                   const std::string &sql) {
-            // 稳定的 64 位 FNV-1a；仅用于进程内聚合，不用于安全边界。
             std::uint64_t hash = 1469598103934665603ULL;
             auto add = [&](const unsigned char c) {
                 hash ^= c;
@@ -130,9 +108,6 @@ namespace dbmw::common {
             return hash;
         }
 
-        // 生成慢 SQL 聚合使用的结构模板：折叠字符串/数值字面量、压缩结构空白、
-        // 去掉普通注释，同时保留标识符、优化器 Hint 和 PostgreSQL dollar-quoted
-        // 代码块。此结果同时作为事件、日志和慢 SQL 查询 API 的唯一指纹来源。
         std::string structuralSql(const std::string &sql) {
             std::string out;
             out.reserve(sql.size());
@@ -155,7 +130,6 @@ namespace dbmw::common {
                     continue;
                 }
 
-                // 普通注释不影响 SQL 结构；MySQL 版本注释和优化器 Hint 会影响执行，保留。
                 if (c == '-' && i + 1 < n && sql[i + 1] == '-') {
                     while (i < n && sql[i] != '\n') ++i;
                     pendingSpace = !out.empty();
@@ -176,9 +150,6 @@ namespace dbmw::common {
                     continue;
                 }
 
-                // PostgreSQL $$...$$ / $tag$...$tag$：常用于函数体和 DO 块。
-                // 内容影响语义，不能全部折叠成同一个占位符；但模板也不能保存原文，
-                // 因此用稳定内容哈希区分不同代码块，避免泄漏块内字符串。
                 if (c == '$') {
                     std::size_t tagEnd = i + 1;
                     while (tagEnd < n &&
@@ -206,7 +177,7 @@ namespace dbmw::common {
                     }
                 }
 
-                if (c == '\'') { // 字符串字面量 -> ?
+                if (c == '\'') {
                     flushSpace();
                     out += '?';
                     ++i;
@@ -225,7 +196,6 @@ namespace dbmw::common {
                     continue;
                 }
 
-                // 双引号标识符和 MySQL 反引号标识符原样保留。
                 if (c == '"' || c == '`') {
                     flushSpace();
                     const char quote = static_cast<char>(c);
@@ -325,8 +295,6 @@ namespace dbmw::common {
             std::lock_guard<std::mutex> lock(g_stateMutex);
             g_observer = std::move(observer);
         }
-        // 版本号在锁外递增即可：需要刷新的线程会重新加锁读取，
-        // 这里只需保证"变更后版本号一定比之前大"。
         g_stateVersion.fetch_add(1, std::memory_order_release);
     }
 
@@ -362,20 +330,16 @@ namespace dbmw::common {
     }
 
     PoolMetricsEvent Observability::samplePoolMetrics() noexcept {
-        // 采+分发不在每条 SQL 的热路径上（采集器周期性调），但仍要 noexcept：
-        // 任何抛出的异常都吞掉，不影响调用方。
         PoolMetricsEvent event;
         event.timestamp = std::chrono::system_clock::now();
         try {
             PoolMetricsCollector collector;
             PoolMetricsObserver observer;
             {
-                // 锁内只读两个槽位 + 拷贝 std::function；不持锁调 collector。
                 std::lock_guard<std::mutex> lock(g_stateMutex);
                 collector = g_poolCollector;
                 observer = g_poolObserver;
             }
-            // collector 可能抛（业务侧自己写的 lambda）；任何异常一律吞掉。
             if (collector) {
                 try {
                     event.pools = collector();
@@ -383,29 +347,24 @@ namespace dbmw::common {
                     event.pools.clear();
                 }
             }
-            // 观察者未注册就直接返回：samplePoolMetrics 也可以当"立即采样快照"。
             if (observer) {
                 try {
                     observer(event);
                 } catch (...) {
-                    // 观测系统不得改变业务语义。
                 }
             }
         } catch (...) {
-            // 任何意外（拷贝 observer/collector 抛 bad_function_call 等）也兜住。
         }
         return event;
     }
 
     void Observability::emit(const OperationEvent &event) noexcept {
-        // noexcept 边界：快照里的 std::function 拷贝也可能抛，必须全部兜住。
         try {
             const Snapshot &snapshot = currentSnapshot();
             if (!snapshot.observer) return;
             try {
                 snapshot.observer(event);
             } catch (...) {
-                // 观测系统不得改变数据库操作的返回语义。
             }
         } catch (...) {
         }
@@ -429,12 +388,8 @@ namespace dbmw::common {
         }
         g_stateVersion.fetch_add(1, std::memory_order_release);
 
-        // 统计用的是另一把锁，且两段加锁不嵌套：配置变更不该和埋点路径
-        // 长时间互堵，也不会构成死锁条件。
         std::lock_guard<std::mutex> lock(g_statsMutex);
 
-        // 旧样本无法无损重分桶。分桶变化时必须重置整组累计统计，否则 count、
-        // totalDuration 与 histogram 会分别代表不同时间范围，百分位结果必然失真。
         const bool bucketsChanged = std::any_of(
             g_slowStats.begin(), g_slowStats.end(), [&](const auto &entry) {
                 return entry.second.histogramBucketsMs != buckets;
@@ -445,7 +400,6 @@ namespace dbmw::common {
             g_lruPos.clear();
         }
 
-        // 容量缩小时按 LRU 裁剪；最近明细与聚合统计生命周期彼此独立。
         while (g_slowStats.size() > capacity) evictLru();
         while (g_recentSlow.size() > recentCapacity) g_recentSlow.pop_front();
     }
@@ -454,8 +408,6 @@ void Observability::emitSql(OperationEvent event, const std::string &sql,
                             const SqlRenderer &renderer,
                             const common::ResultSet *result) noexcept {
         try {
-            // 热路径：配置与观察者都取自线程本地快照，完全不碰全局锁。
-            // 每条 SQL 都会经过这里，这是本文件最值得优化的地方。
             const Snapshot &snapshot = currentSnapshot();
             const config::ObservabilityConfig &config = snapshot.config;
             const OperationObserver &observer = snapshot.observer;
@@ -463,45 +415,20 @@ void Observability::emitSql(OperationEvent event, const std::string &sql,
             const bool slowEnabled = config.slow_sql.enabled;
             const bool logEnabled = config.sql_log.enabled;
 
-            // M2 追踪上下文（M1 已通过 ContextScope 把 traceId/spanId 送到中间件
-            // 任意一层）。emitSql 是观测链路上第一条进入的中间件函数（在驱动
-            // 调用前后都会有 sentinel 调用），从这里集中读一次填进 event 与
-            // 之后的 SlowSqlRecord，保证后续所有出口（observer / 日志 / 慢 SQL
-            // 聚合）拿到同一份 trace。
-            //
-            // 设计取舍：traceId 不自动生成——没有调用方上下文时就不挂 traceId
-            // （与 nextSpanId "不发幽灵 span" 同源）；spanId 沿用调用方栈顶的，
-            // 调用方未填则按语句自动生成 16 hex 子跨度，便于在调用方不感知
-            // 追踪的情况下，按"次请求 = 多条 SQL"颗粒度对齐链路。
-            //
-            // M6（shadow）+ M7（transformed）也在这里集中读栈顶 ctx：
-            // - shadow 由 onRoute 写入 routeCtx，runWithInterceptors 已 push 上栈
-            // - transformed 由 SPI 改写 result 后置 true；传入 result 指针就
-            //   能读到（M6/M7 共享 emitSql 入口）。
-            // 同步路径栈顶 = 调用方 + runWithInterceptors inner 帧；异步路径
-            // worker 已装回 entryCtx，所以读栈顶语义在两路径下都成立。
             {
                 const SqlContext &ctx = ContextScope::current();
                 if (!ctx.traceId.empty()) event.traceId = ctx.traceId;
                 if (!ctx.spanId.empty()) {
                     event.spanId = ctx.spanId;
                 } else if (!event.traceId.empty()) {
-                    // 仅在有 trace 时才生成子跨度，避免在没有 trace 的窗口里
-                    // 制造"无主 span"混淆聚合视图。
                     event.spanId = nextSpanId();
                 }
                 if (ctx.shadow) event.shadow = true;
             }
-            // M7：result 由 observeSql 透传；为空时 transformed 保持默认 false。
             if (result && result->transformed) event.transformed = true;
 
-            // P1-1：观测全关（无观察者、慢 SQL 与 SQL 日志都关）时，
-            // 直接返回，省掉结构化扫描和 fingerprint 的 O(n) 开销。
-            // 只要注册了观察者，仍照常回调（不影响数据库语义）。
             if (!observer && !slowEnabled && !logEnabled) return;
 
-            // 事件、日志与慢 SQL API 共用同一结构模板和同一指纹，保证日志中的
-            // fingerprint 可以直接反查 slowSqlStats/recentSlowSql。
             const std::string structure = (slowEnabled || logEnabled) ? structuralSql(sql)
                                                                       : std::string();
             if (slowEnabled || logEnabled)
@@ -516,7 +443,6 @@ void Observability::emitSql(OperationEvent event, const std::string &sql,
                 ((event.status.ok() && config.sql_log.log_success) ||
                  (!event.status.ok() && config.sql_log.log_errors));
             const auto sequence = logEnabled ? nextSampleSequence() : 0;
-            // 采样只在 SQL 日志开启时才有意义；关闭时直接视为全采样。
             const bool sampled = !logEnabled ||
                 config.sql_log.sample_rate >= 1.0 ||
                 (config.sql_log.sample_rate > 0.0 &&
@@ -546,10 +472,7 @@ void Observability::emitSql(OperationEvent event, const std::string &sql,
 
             if (event.slow) {
                 const auto now = std::chrono::system_clock::now();
-                // 字符串拼接型 SQL 也按结构模板聚合；淘汰走 O(1) LRU。
                 const auto aggKey = event.sqlFingerprint;
-                // 只有被判定为慢 SQL 才会走到这里，属低频路径，用统计专用锁，
-                // 不与高频的快照读取相互阻塞。
                 std::lock_guard<std::mutex> lock(g_statsMutex);
                 const bool isNew = g_slowStats.find(aggKey) == g_slowStats.end();
                 if (isNew) {
@@ -599,7 +522,7 @@ void Observability::emitSql(OperationEvent event, const std::string &sql,
                     record.duration = event.duration;
                     record.errorCode = event.status.code;
                     record.sqlState = event.status.sqlState;
-                    record.traceId = event.traceId;   // M2：与 OperationEvent 同源
+                    record.traceId = event.traceId;
                     record.spanId = event.spanId;
                     if (g_recentSlow.size() >= static_cast<std::size_t>(
                             config.slow_sql.recent_capacity))
@@ -619,8 +542,6 @@ void Observability::emitSql(OperationEvent event, const std::string &sql,
                         << " rows=" << event.rowCount
                         << " status=" << errorCodeToString(event.status.code)
                         << " fingerprint=" << event.sqlFingerprint;
-                // M2：把 trace 附在日志行末尾，便于按 trace 拉一段窗口。
-                // 只在有值时输出，避免给无 trace 的传统链路膨胀字数。
                 if (!event.traceId.empty()) message << " trace=" << event.traceId;
                 if (!event.spanId.empty()) message << " span=" << event.spanId;
                 message << " statement=" << displaySql;
@@ -631,7 +552,6 @@ void Observability::emitSql(OperationEvent event, const std::string &sql,
                 try { observer(event); } catch (...) {}
             }
         } catch (...) {
-            // 诊断路径不得改变数据库操作结果。
         }
     }
 
@@ -644,8 +564,6 @@ void Observability::emitSql(OperationEvent event, const std::string &sql,
             if (dataSource.empty() || entry.second.dataSource == dataSource)
                 result.push_back(entry.second);
         }
-        // 按平均耗时（totalDuration / count）降序，更真实地暴露"慢"查询，
-        // 避免被高频但单次并不慢的查询用累计耗时顶到榜首（P2-8）。
         std::sort(result.begin(), result.end(), [](const auto &a, const auto &b) {
             const std::uint64_t ac = a.count == 0 ? 1 : a.count;
             const std::uint64_t bc = b.count == 0 ? 1 : b.count;
@@ -679,4 +597,4 @@ void Observability::emitSql(OperationEvent event, const std::string &sql,
         g_lruPos.clear();
         g_recentSlow.clear();
     }
-} // namespace dbmw::common
+}

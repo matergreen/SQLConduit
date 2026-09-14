@@ -3,7 +3,6 @@
 #include <utility>
 #include <variant>
 
-
 namespace dbmw::core {
     std::mutex QueryCache::mtx_;
     config::QueryCacheConfig QueryCache::cfg_;
@@ -18,9 +17,6 @@ namespace dbmw::core {
     std::atomic<std::uint64_t> QueryCache::invalidations_{0};
 
     namespace {
-        // 组合键：数据源名 + NUL + 查询键，避免不同数据源的同名 key 互相命中。
-        // std::string 可以安全承载嵌入的 NUL，因此 NUL 是最省事的分隔符——
-        // 数据源名里不可能出现它。
         std::string compositeKey(const std::string &dataSource, const std::string &key) {
             std::string ck;
             ck.reserve(dataSource.size() + 1 + key.size());
@@ -47,8 +43,6 @@ namespace dbmw::core {
         for (const auto &f: rs.fields()) bytes += f.size() + sizeof(std::string);
         for (const auto &row: rs.rows()) {
             for (const auto & [col, val]: row.data()) {
-                // 列名在每一行都重复存一份（Row 内部是 map<string, Value>），
-                // 估算时也必须逐行计入，否则宽表的实际占用会被严重低估。
                 bytes += col.size() + sizeof(std::string) + valueBytes(val);
             }
         }
@@ -75,7 +69,6 @@ namespace dbmw::core {
             const std::string old = lru_.back();
             auto oit = store_.find(old);
             if (oit == store_.end()) {
-                // 迭代器与 store_ 不一致（理论上不会发生），清掉尾部继续。
                 lru_.pop_back();
                 continue;
             }
@@ -88,13 +81,10 @@ namespace dbmw::core {
         {
             std::lock_guard<std::mutex> lk(mtx_);
             cfg_ = cfg;
-            // 配置变更时清空旧数据，避免新旧 TTL/上限混用导致行为不一致。
             store_.clear();
             lru_.clear();
             totalBytes_ = 0;
         }
-        // ttl<=0 等于关闭（put 会一律拒收），这里把它直接反映成 enabled=false，
-        // 免得调用方看到 enabled()==true 却发现一条都缓存不进去。
         enabled_.store(cfg.enabled && cfg.ttl_ms > 0, std::memory_order_release);
         replicaOnly_.store(cfg.cache_on_replica_only, std::memory_order_release);
     }
@@ -109,7 +99,6 @@ namespace dbmw::core {
 
     bool QueryCache::get(const std::string &dataSource, const std::string &key,
                          common::ResultSet &out) {
-        // 无锁快速失败：关闭时不进临界区，热路径上一把全局锁都不抢。
         if (!enabled_.load(std::memory_order_acquire)) return false;
         std::lock_guard<std::mutex> lk(mtx_);
         if (!cfg_.enabled) return false;
@@ -124,27 +113,20 @@ namespace dbmw::core {
             misses_.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
-        out = it->second.rs; // ResultSet 为值类型，赋值即深拷贝
-        lru_.splice(lru_.begin(), lru_, it->second.lru); // 移到表头（最近使用）
+        out = it->second.rs;
+        lru_.splice(lru_.begin(), lru_, it->second.lru);
         hits_.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
 
     void QueryCache::put(const std::string &dataSource, const std::string &key,
                          const common::ResultSet &rs) {
-        // 先看开关再算字节：approxBytes 要遍历整个结果集，
-        // 缓存关着的时候连这一趟遍历都不该发生。
         if (!enabled_.load(std::memory_order_acquire)) return;
         const std::size_t bytes = approxBytes(rs);
 
         std::lock_guard<std::mutex> lk(mtx_);
         if (!cfg_.enabled) return;
-        // ttl_ms <= 0 一律不缓存。
-        //
-        // 按字面写进去的话 expire == now，get() 立刻判过期，结果是"每次都占内存
-        // 存一份、每次都读不到"——比关掉缓存还差。宁可在这里直接不收。
         if (cfg_.ttl_ms <= 0) return;
-        // 单个结果集就超过内存上限时直接不缓存，否则会把整个缓存清空只为放它一个。
         if (cfg_.max_memory_bytes > 0 &&
             bytes > static_cast<std::size_t>(cfg_.max_memory_bytes))
             return;
@@ -176,8 +158,6 @@ namespace dbmw::core {
     }
 
     void QueryCache::invalidate(const std::string &dataSource) {
-        // markWrite() 每次写都会调好几次（组名 + 主 + 各副本 + 各候选）。
-        // 缓存关着时直接返回，别让默认关闭的功能在写路径上抢全局锁。
         if (!enabled_.load(std::memory_order_acquire)) return;
         std::uint64_t removed = 0;
         {
@@ -213,4 +193,4 @@ namespace dbmw::core {
         out.invalidations = invalidations_.load(std::memory_order_relaxed);
         return out;
     }
-} // namespace dbmw::core
+}

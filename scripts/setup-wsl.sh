@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# dbmw 在 WSL / Ubuntu 上的一键初始化脚本：安装依赖 + 配置 + 构建。
-# 用法：
-#   ./scripts/setup-wsl.sh                 # 仅核心层
-#   ./scripts/setup-wsl.sh --mysql         # 启用 MySQL 驱动
-#   ./scripts/setup-wsl.sh --mysql --pg --odbc
 set -euo pipefail
 
 ENABLE_MYSQL=OFF

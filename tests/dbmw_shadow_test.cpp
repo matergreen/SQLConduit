@@ -1,19 +1,3 @@
-// dbmw v0.4.0 M6 单测：影子库路由（§8）。
-//
-// 覆盖（docs/roadmap-design-v0.4.0.md §8）：
-//   1. 同步读：onRoute 置 shadow → query 落到影子叶而非主叶。
-//   2. 同步写：onRoute 置 shadow → execute 落到影子叶；不进写缓冲（I12）。
-//   3. 影子读不进查询缓存（避免污染真实租户）。
-//   4. 未触发 shadow → 读走主/副本，写走主（路由无变化）。
-//   5. 校验失败：影子源不存在 → init 返回 ConfigError。
-//   6. 校验失败：影子源是本组主 → 拒绝（自影自己）。
-//   7. 校验失败：影子源是本组副本 → 拒绝。
-//   8. 校验失败：影子源是另一个组名 → 拒绝（组不可直接作影子目标）。
-//   9. 异步路径：onRoute 置 shadow → 异步路由到影子叶；写缓冲不入队。
-//
-// 无真实数据库依赖。两个 mock 驱动（mockp 生产、mocks 影子）分别统计
-// execute/query 计数 + 写缓冲入队计数；通过"影子触发后只有 mocks 的计数
-// 增加"判定路由是否真正生效。
 #include "dbmw/dbmw.h"
 #include "dbmw/async/dbmw_async.h"
 #include "dbmw/common/context.h"
@@ -47,10 +31,6 @@ static void check(bool cond, const std::string &name) {
     else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
 }
 
-// ---------------------------------------------------------------------------
-// Mock 驱动：两套独立类，分别代表"生产叶"与"影子叶"。
-// 各自独立的 execute/query 计数 + 写缓冲入队计数用于判定路由命中。
-// ---------------------------------------------------------------------------
 class MockPrimaryConnection : public core::IDatabaseConnection {
 public:
     static std::atomic<int> execCount;
@@ -146,9 +126,6 @@ static void resetCounters() {
     MockShadowConnection::queryCount = 0;
 }
 
-// ---------------------------------------------------------------------------
-// M6.1 同步读：onRoute 置 shadow → query 落到影子叶。
-// ---------------------------------------------------------------------------
 static void test_sync_shadow_read() {
     std::cout << "== M6.1 同步读：onRoute 置 shadow → query 落到影子叶 ==\n";
     core::DatabaseManager mgr;
@@ -167,13 +144,11 @@ static void test_sync_shadow_read() {
     auto g = mgr.getDataSource("grp");
     resetCounters();
 
-    // 不推 shadow → 走默认主路径。
     common::ResultSet rs;
     check(g->query("SELECT 1", rs).ok(), "无 shadow：query 成功");
     check(MockPrimaryConnection::queryCount.load() == 1, "无 shadow：主叶 query 1 次");
     check(MockShadowConnection::queryCount.load() == 0, "无 shadow：影子叶 query 0 次");
 
-    // 推 shadow → 路由到影子叶。
     resetCounters();
     common::ResultSet rs2;
     {
@@ -188,9 +163,6 @@ static void test_sync_shadow_read() {
     mgr.shutdown(std::chrono::milliseconds(0));
 }
 
-// ---------------------------------------------------------------------------
-// M6.2 同步写：onRoute 置 shadow → execute 落到影子叶。
-// ---------------------------------------------------------------------------
 static void test_sync_shadow_write() {
     std::cout << "== M6.2 同步写：onRoute 置 shadow → execute 落到影子叶 ==\n";
     core::DatabaseManager mgr;
@@ -222,9 +194,6 @@ static void test_sync_shadow_write() {
     mgr.shutdown(std::chrono::milliseconds(0));
 }
 
-// ---------------------------------------------------------------------------
-// 失败注入 mock（文件作用域，便于注册驱动；本文件内 helper 通用计数器）。
-// ---------------------------------------------------------------------------
 static std::atomic<int> gShadowFailRemaining{0};
 
 class FailingShadowConnection : public MockShadowConnection {
@@ -259,20 +228,8 @@ class FailingShadowDriver : public driver::IDriver {
         }
 };
 
-// ---------------------------------------------------------------------------
-// M6.3 影子写不进写缓冲（I12）：主与影子都失败时，不应入队到主库的缓冲。
-// 影子故障应让压测停掉，而不是悄悄补发到生产库。
-// 这里我们用一个会失败连接的影子 mock；为简化，只验证影子失败时没有触发
-// 写缓冲入队（生产主路径不会执行）。
-// ---------------------------------------------------------------------------
 static void test_shadow_no_write_buffer() {
     std::cout << "== M6.3 影子写不进写缓冲（I12）：故障应直返，不入队 ==\n";
-    // 影子叶在失败注入下下应直接返回错误，不应把"压测写"补发到生产主。
-    // 由于同步 dispatchWrite 在影子短路里根本不构造 buffered lambda，
-    // 这一用例只能通过"影子失败 → 生产主未收到 execute"间接验证：
-    //   - 注入 FailingShadowConnection 在前 1 次返回可重试连接失败
-    //   - 影子短路直接 attempt 影子，影子失败 → 返回
-    //   - 主叶 MockPrimaryConnection::execCount 应保持 0
     core::DatabaseManager mgr;
     config::DataSourceConfig pp;
     pp.name = "prod"; pp.type = "mockp"; pp.host = "localhost";
@@ -284,7 +241,6 @@ static void test_shadow_no_write_buffer() {
     grp.name = "grp";
     grp.primary = "prod";
     grp.shadow = "shadow_ds";
-    // 启用写缓冲——如果 I12 守卫漏掉，影子失败会触发入队。
     grp.failover.write_buffer.enabled = true;
     grp.failover.write_buffer.acknowledge_data_loss_and_duplicates = true;
     grp.failover.write_buffer.max_queue = 10;
@@ -314,11 +270,6 @@ static void test_shadow_no_write_buffer() {
     mgr.shutdown(std::chrono::milliseconds(0));
 }
 
-// ---------------------------------------------------------------------------
-// M6.4 影子读不进查询缓存。
-// 配 query_cache=true，触发同一查询两次：第一次未走影子（命中缓存），
-// 第二次走影子（cacheLookup 内部短路 → cacheStore 不会写）。
-// ---------------------------------------------------------------------------
 static void test_shadow_no_cache() {
     std::cout << "== M6.4 影子读不进查询缓存 ==\n";
     core::DatabaseManager mgr;
@@ -333,7 +284,6 @@ static void test_shadow_no_cache() {
     grp.primary = "prod";
     grp.shadow = "shadow_ds";
     mgr.addGroup(grp);
-    // 启用查询缓存（仅叶子命中；组不缓存——既有不变量）。
     config::QueryCacheConfig qc_on;
     qc_on.enabled = true;
     core::QueryCache::configure(qc_on);
@@ -342,39 +292,25 @@ static void test_shadow_no_cache() {
     resetCounters();
     common::ResultSet rs1, rs2;
     {
-        // 第一次：影子触发——cacheLookup 内部短路，不应命中任何缓存（短路返回 false）。
-        // 影子叶被实际调用一次。
         common::SqlContext shadowContext;
         shadowContext.shadow = true;
         common::ContextScope scope(shadowContext);
         check(g->query("SELECT 'cached'", rs1).ok(), "首次（影子）：成功");
     }
     {
-        // 第二次：非影子，应该按主叶读——并且不该命中影子刚才的缓存（即 I10）。
-        // 由于 cache 严格按目标名（prod / shadow_ds）分键，影子写进
-        // "shadow_ds:..." 的项不会被主叶（prod）的 lookup 命中——
-        // 所以主叶再次被调用一次。这是预期的隔离行为。
-        common::ContextScope scope({});  // shadow 默认 false
+        common::ContextScope scope({});
         check(g->query("SELECT 'cached'", rs2).ok(), "再次（非影子）：成功");
     }
-    // I10 验证：影子写不进"主叶缓存"。所以两次之后：主叶 1 次、影子叶 1 次。
-    // 若影子直接污染主缓存，主叶第二次就会被 cacheLookup 短路（0 次）。
     check(MockPrimaryConnection::queryCount.load() == 1,
           "I10：主叶 query 1 次（未命中影子写过的缓存）");
     check(MockShadowConnection::queryCount.load() == 1,
           "影子读：影子叶 query 1 次");
 
-    // 查询缓存只有 configure（带 enabled/replica_only/max_entries/ttl/max_key）。
-    // 关闭它以隔离：configure({}) 中 enabled 默认 false。
     config::QueryCacheConfig qc_off{};
     core::QueryCache::configure(qc_off);
     mgr.shutdown(std::chrono::milliseconds(0));
 }
 
-// ---------------------------------------------------------------------------
-// M6.5/6/7/8 校验失败用例——通过 DatabaseManager::addDataSource + addGroup 后
-// 由 resolveShadows 校验；任一不合法返回 ConfigError。
-// ---------------------------------------------------------------------------
 static void test_validation_unknown_shadow() {
     std::cout << "== M6.5 校验：影子源不存在 ==\n";
     core::DatabaseManager mgr;
@@ -384,7 +320,7 @@ static void test_validation_unknown_shadow() {
     config::DataSourceGroupConfig grp;
     grp.name = "grp";
     grp.primary = "prod";
-    grp.shadow = "ghost";  // 不在 datasources 里
+    grp.shadow = "ghost";
     const auto st = mgr.addGroup(grp);
     check(!st.ok(), "addGroup(grp, shadow=ghost) 返回错误");
     check(st.code == ErrorCode::ConfigError, "错误码 = ConfigError");
@@ -401,7 +337,7 @@ static void test_validation_self_primary() {
     config::DataSourceGroupConfig grp;
     grp.name = "grp";
     grp.primary = "prod";
-    grp.shadow = "prod";  // = 主
+    grp.shadow = "prod";
     const auto st = mgr.addGroup(grp);
     check(!st.ok(), "addGroup(grp, shadow=主名) 返回错误");
     check(st.code == ErrorCode::ConfigError, "错误码 = ConfigError");
@@ -425,7 +361,7 @@ static void test_validation_self_replica() {
     config::ReplicaConfig rc;
     rc.name = "r1"; rc.weight = 1;
     grp.replicas.push_back(rc);
-    grp.shadow = "r1";  // = 副本
+    grp.shadow = "r1";
     const auto st = mgr.addGroup(grp);
     check(!st.ok(), "addGroup(grp, shadow=副本) 返回错误");
     check(st.code == ErrorCode::ConfigError, "错误码 = ConfigError");
@@ -446,7 +382,6 @@ static void test_validation_shadow_is_group() {
     config::DataSourceGroupConfig grp_a;
     grp_a.name = "grp"; grp_a.primary = "prod";
     mgr.addGroup(grp_a);
-    // 第二个组把"grp"当作为子——应被拒绝（组不可直接作影子目标）。
     config::DataSourceGroupConfig grp_b;
     grp_b.name = "grp_b"; grp_b.primary = "shadow_ds";
     grp_b.shadow = "grp";
@@ -458,9 +393,6 @@ static void test_validation_shadow_is_group() {
     mgr.shutdown(std::chrono::milliseconds(0));
 }
 
-// ---------------------------------------------------------------------------
-// M6.9 异步路径：onRoute 置 shadow → async::execute 落到影子叶，写缓冲不入队。
-// ---------------------------------------------------------------------------
 static void test_async_shadow_write() {
     std::cout << "== M6.9 异步路径：onRoute 置 shadow → 异步 execute 落到影子叶 ==\n";
     const auto path = (std::filesystem::temp_directory_path() /
@@ -503,9 +435,6 @@ static void test_async_shadow_write() {
     DBMW::shutdown(std::chrono::milliseconds(0));
 }
 
-// ---------------------------------------------------------------------------
-// M6.10 异步读：onRoute 置 shadow → async::query 落到影子叶；不进缓存。
-// ---------------------------------------------------------------------------
 static void test_async_shadow_query() {
     std::cout << "== M6.10 异步路径：onRoute 置 shadow → async::query 落到影子叶 ==\n";
     const auto path = (std::filesystem::temp_directory_path() /

@@ -15,29 +15,8 @@
 #include <utility>
 #include <vector>
 
-// ============================================================================
-// dbmw v0.2.0 异步执行管线。
-//
-// 结构总览：
-//   - 引擎全局状态：执行器 / 完成调度器 / 在途计数（排水用）/ 停机标志。
-//   - detail::OpState：Handle 的实现载体（状态机 + 取消路由 + 完成一次性标记）。
-//   - detail::AsyncEngine：全部静态成员。DataSource 与 Handle 授予 friend，
-//     引擎得以复用同步路径的全部私有原语（闸门/熔断/路由/缓存/写缓冲），
-//     保证两条路径语义同源（设计 R1：异步 vs 同步结果一致性）。
-//
-// 不变量：
-//   I1 完成回调绝不在池锁内、绝不在发起调用的栈上执行（经完成调度器投递）。
-//   I2 结果值语义整体 move（shared_ptr 装箱穿越 std::function 的可拷贝约束）。
-//   I3 治理闸门（审计/限流）只在调用线程执行一次。
-//   I4 同步路径零改动（本文件不触碰同步循环，重试经 postAfter 外置）。
-// ============================================================================
-
 namespace dbmw::async {
     namespace {
-        // ---- 引擎全局状态 ----
-        //
-        // gMtx 保护执行器指针的替换与在途计数；gDrainCv 用于 shutdown 排水
-        // （等待在途操作归零）。短临界区，不与任何用户回调嵌套。
         std::mutex gMtx;
         std::condition_variable gDrainCv;
         std::shared_ptr<IExecutor> gExecutor;
@@ -46,8 +25,6 @@ namespace dbmw::async {
         std::atomic<bool> gStopping{false};
         std::atomic<std::int64_t> gDefaultTimeoutMs{0};
 
-        // 完成队列过载/停止时的保底调度器。用单独线程保证用户回调
-        // 绝不回退到发起调用的栈上执行，同时避免每次过载都新建线程。
         class CompletionFallback final {
         public:
             CompletionFallback() : worker_([this] { run(); }) {}
@@ -115,8 +92,6 @@ namespace dbmw::async {
             return gCompletion;
         }
 
-        // ---- 在途操作注册表（计数 + 排水通知）----
-
         void registryAdd() {
             std::lock_guard<std::mutex> lk(gMtx);
             ++gInFlight;
@@ -128,12 +103,8 @@ namespace dbmw::async {
             gDrainCv.notify_all();
         }
 
-        // ---- 投递辅助 ----
-
-        // 把任务投给执行器；投不出去（停机/队列满）就当场执行。
-        // 丢回调会让 future 永久悬空——宁可退化为内联执行，绝不静默丢弃。
         void postOrRun(const std::shared_ptr<IExecutor> &ex, const std::function<void()> &task) {
-            if (ex && ex->tryPost(task)) return; // 拷贝提交；失败时 task 未被消耗
+            if (ex && ex->tryPost(task)) return;
             task();
         }
 
@@ -143,14 +114,6 @@ namespace dbmw::async {
             completionFallback().post(task);
         }
 
-        // 池的 AsyncIo：post/deliver 都指向 worker 执行器（借出结果回来后
-        // 还要在 worker 上继续跑 step2 的阻塞 IO，不能占用完成调度器）。
-        //
-        // post 用 tryPost + 内联兜底：池内部任务（建连/ping）的完成绝不能被
-        // 静默丢弃——丢回调会让 future 永久悬空。队列满时退化为在当前线程
-        // （发起借出的 worker）上执行，代价由该 worker 承担而非丢失任务。
-        // 注意不能借道 postAfter：到期任务如今在 timer 线程内联执行，
-        // 而建连是阻塞 IO，会卡死所有定时器（超时检查/重试退避）。
         core::AsyncIo makePoolIo(const std::shared_ptr<IExecutor> &ex) {
             core::AsyncIo io;
             io.post = [ex](std::function<void()> task) {
@@ -162,8 +125,6 @@ namespace dbmw::async {
             return io;
         }
 
-        // 引擎步骤的兜底护栏：任何异常只记日志，绝不让它逃逸到
-        // 池的 deliver 内联路径或定时线程（那里没有 runGuarded 保护）。
         template<class F>
         void guarded(F &&f) {
             try {
@@ -176,76 +137,60 @@ namespace dbmw::async {
         }
 
         std::shared_ptr<core::DataSource> resolve(const std::string &name) {
-            return DBMW::dataSource(name); // 空串 = 默认数据源；不存在返回 null
+            return DBMW::dataSource(name);
         }
-    } // namespace
+    }
 
     namespace detail {
-        // Handle 的实现载体（设计 §8.4）。
         struct OpState {
             std::atomic<Handle::State> state{Handle::State::Queued};
             std::atomic<bool> userCancelled{false};
             std::atomic<bool> timedOut{false};
-            // 超时任务的 cancel 是否送达驱动（未送达时结果 message 附提示）。
             std::atomic<bool> cancelDelivered{false};
-            // 完成一次性标记：finish 路径（正常完成 / 超时改写 / Overloaded /
-            // 取消）共用，CAS 保证用户回调恰好投递一次。
             std::atomic<bool> finished{false};
 
-            // 取消路由：worker 借到连接后装载，语句结束/finish 前清空。
-            // mutex 保护指针的装载/读取（cancel 可来自任意线程）。
             std::mutex sessionMtx;
-            core::Session *pinnedSession = nullptr; // 非拥有；Session 生命期在本操作内
+            core::Session *pinnedSession = nullptr;
         };
 
         namespace {
-            // 单语句操作的完整上下文：跨越 step1（借连接）与 step2（执行），
-            // 经 shared_ptr 保持在 postAfter 重试间隔内存活。
             enum class RetryMode {
-                ReadRetries, // query：attempts = max(1, retry.max_attempts)
-                WriteRetries, // execute/生成键：retry.retry_writes ? max : 1
-                Single // queryEach/executeBatch：不重试（副作用/流不可重放）
+                ReadRetries,
+                WriteRetries,
+                Single
             };
 
             struct StatementPolicy {
-                bool isWrite = false; // 成功后在 root 上 markWrite（缓存失效）
+                bool isWrite = false;
                 RetryMode retry = RetryMode::Single;
-                bool cacheable = false; // 仅 query 族（非流式）
-                bool fallbackOnlyIfNoRows = false; // queryEach 的组回退条件
-                bool allowWriteBuffer = false; // execute/executeBatch（组路径）
+                bool cacheable = false;
+                bool fallbackOnlyIfNoRows = false;
+                bool allowWriteBuffer = false;
             };
 
             template<class R>
             struct StatementOp {
                 std::shared_ptr<OpState> op;
-                std::shared_ptr<core::DataSource> root; // 用户面对的数据源（组或叶子）
-                std::vector<std::shared_ptr<core::DataSource> > targets; // 路由候选
+                std::shared_ptr<core::DataSource> root;
+                std::vector<std::shared_ptr<core::DataSource> > targets;
                 std::size_t targetIdx = 0;
-                int attempt = 0; // 当前目标内已开始的尝试数
+                int attempt = 0;
                 std::chrono::milliseconds borrowTimeout{-1};
 
                 std::string sql;
                 common::Params params;
-                std::string cacheKey; // 可缓存读：调用线程算好，成功后复用
+                std::string cacheKey;
 
-                // 在已借到的会话上执行一次（不含借出/治理/重试）。
                 std::function<void(core::Session &, R &)> attemptFn;
-                // 写缓冲补发任务构造器（仅组写路径；补发只打主库，与同步一致）。
                 std::function<std::function<common::Status()>(
                     const std::shared_ptr<core::DataSource> &primary)> bufferedMaker;
                 std::function<void(R &&)> cb;
 
                 StatementPolicy policy;
 
-                // M1 SPI 上下文快照：在 submit 调用线程拍照（caller 栈顶 ctx），
-                // worker 线程在 attemptFn 调用前原样装回——保证同步与异步路径下
-                // SPI 回调看到的"业务上下文"形态完全一致。空 ctx 表示调用方
-                // 没有 ContextScope，与同步路径（该栈层使用 defaultInstance）
-                // 行为等价。
                 common::SqlContext entryCtx;
             };
 
-            // 会话/事务操作上下文（§8.5：整段复用同步实现）。
             struct SessionOp {
                 std::shared_ptr<OpState> op;
                 std::shared_ptr<core::DataSource> root;
@@ -255,26 +200,13 @@ namespace dbmw::async {
                 std::function<void(OpResult &&)> cb;
                 std::chrono::milliseconds borrowTimeout{-1};
 
-                // M1 SPI：同 StatementOp::entryCtx。worker 跑回调前装回，
-                // 回调内的 Session 子语句自动继承（与同步 runGuarded 同源）。
                 common::SqlContext entryCtx;
             };
         }
 
-        // ====================================================================
-        // AsyncEngine：全部静态成员。friend 关系：
-        //   - DataSource → 访问 preGate/beforeAttempt/afterAttempt/retryDelay/
-        //     readTarget/writeTargets/markWrite/writeBuffer_/pool()/makeSession/
-        //     cache 系列等私有原语（与同步路径同源）。
-        //   - Handle → 构造 Handle（私有构造函数）。
-        // ====================================================================
         class AsyncEngine {
         public:
             AsyncEngine() = delete;
-
-            // ---- 结果投递（I1 + I2）----
-            // R 经 shared_ptr 装箱穿越 std::function 的可拷贝约束，
-            // 投递到完成调度器；回调只取一次（move）。
 
             template<class R>
             static void deliverResult(std::function<void(R &&)> cb, R result) {
@@ -285,7 +217,6 @@ namespace dbmw::async {
                 });
             }
 
-            // 已完成（未注册）的哨兵 Handle：错误快速路径的返回值。
             static Handle doneHandle() {
                 auto op = std::make_shared<OpState>();
                 op->state.store(Handle::State::Done);
@@ -301,18 +232,12 @@ namespace dbmw::async {
                 return doneHandle();
             }
 
-            // ---- 完成路径：改写超时/取消、置 Done、注销、投递 ----
-
             template<class R>
             static void finishStatement(const std::shared_ptr<StatementOp<R> > &ctx, R result) {
                 const auto &op = ctx->op;
                 bool expected = false;
-                if (!op->finished.compare_exchange_strong(expected, true)) return; // 已完成
+                if (!op->finished.compare_exchange_strong(expected, true)) return;
 
-                // 状态改写（统一判定，§8.3）：
-                //  - timedOut      → QueryTimeout（retryable），cancel 未送达时附提示；
-                //  - userCancelled → Cancelled（如实反映"用户已放弃"，
-                //                    驱动不支持取消时语句可能已实际跑完）。
                 common::Status &st = result.status;
                 if (op->timedOut.load()) {
                     auto timeout = common::Status::error(
@@ -343,16 +268,12 @@ namespace dbmw::async {
                 deliverResult(std::move(ctx->cb), std::move(result));
             }
 
-            // ---- 语句级超时（§8.3，D7）----
-
             static void armTimeout(const std::shared_ptr<OpState> &op,
                                    const std::chrono::milliseconds timeout) {
-                // 持有 op 强引用：任务未到期即被停机丢弃也只多活一个对象。
                 workerExecutor()->postAfter([op] {
                     guarded([&] {
-                        if (op->finished.load()) return; // 已完成，无事可做（常态）
+                        if (op->finished.load()) return;
                         op->timedOut.store(true);
-                        // best-effort：钉住的会话转发 cancel（Session::cancel 保证不抛）。
                         core::Session *s = nullptr;
                         {
                             std::lock_guard<std::mutex> lk(op->sessionMtx);
@@ -362,8 +283,6 @@ namespace dbmw::async {
                     });
                 }, timeout);
             }
-
-            // ---- 提交入口（调用线程；§8.2 步骤 1–6）----
 
             template<class R>
             static Handle submitStatement(
@@ -399,11 +318,9 @@ namespace dbmw::async {
                                                             "dbmw is shutting down"));
                 }
 
-                // I3：治理闸门（审计+限流）只在调用线程执行一次。
                 if (const auto g = root->preGate(sql, gateType); !g.ok()) {
                     return failNow<R>(std::move(cb), g);
                 }
-                // 熔断快速失败（只读探测，不消耗半开令牌；逐尝试闸门在 worker 上）。
                 if (root->isCircuitOpen()) {
                     return failNow<R>(std::move(cb),
                                       common::Status::error(
@@ -411,27 +328,18 @@ namespace dbmw::async {
                                           "datasource '" + root->name() + "' circuit is open"));
                 }
 
-                // M6（§8.2 + §8.3）：异步路径下路由决策也在调用线程做——
-                // 调用 onRoute 拿到带 shadow 等标记的 routeCtx，
-                // 围绕后续 readTarget/writeTargets 计算压栈，让路由层读到。
-                // routeCtx 同时作为 entryCtx 喂给 worker（attemptFn 内的 Session
-                // 子语句与 I12 写缓冲守卫都靠它识别影子流量）。
                 common::SqlContext routeCtx = common::ContextScope::current();
                 core::detail::runOnRoute(root->name(), sql, gateType, routeCtx);
                 std::vector<std::shared_ptr<core::DataSource> > targets;
                 {
                     const common::ContextScope scope(routeCtx);
                     if (policy.isWrite) {
-                        // 组：shadow 模式下 writeTargets 返回 {shadow_}（§8.3）。
                         targets = root->writeTargets();
                         if (targets.empty() && !root->primary_) targets.push_back(root);
                     } else {
-                        // 组：readTarget 在 shadow 模式下返回 shadow_。
                         auto t = root->readTarget();
                         if (!t) t = root;
                         targets.push_back(t);
-                        // 影子模式下不追加主回退候选——影子不可用就让压测停掉，
-                        // 不让它悄悄降到主库污染生产读路径。
                         if (!routeCtx.shadow && root->primary_ &&
                             root->fallbackToPrimary_ && t != root->primary_)
                             targets.push_back(root->primary_);
@@ -449,14 +357,8 @@ namespace dbmw::async {
                 ctx->bufferedMaker = std::move(bufferedMaker);
                 ctx->cb = std::move(cb);
                 ctx->policy = policy;
-                // M1 SPI：拍照调用线程栈顶 ctx（叠加 onRoute 决策后的 routeCtx），
-                // worker 跑 attemptFn 前装回（见 step2Statement 的
-                // ContextScope scope(ctx->entryCtx)），保证异步与同步路径下
-                // Session 子语句看到的"业务上下文"形态一致；routeCtx.shadow
-                // 也会被 I12 写缓冲守卫读到。
                 ctx->entryCtx = std::move(routeCtx);
 
-                // 结果缓存：只做在叶子目标上，key 带叶子自己的名字（与同步一致）。
                 if (policy.cacheable) {
                     if constexpr (std::is_same_v<R, QueryResult>) {
                         common::ResultSet cached;
@@ -465,26 +367,18 @@ namespace dbmw::async {
                             QueryResult r;
                             r.status = common::Status::OK();
                             r.rows = std::move(cached);
-                            // M7（§9.4 风险行 + I10）：缓存命中**同样要走
-                            // afterExecution**——缓存存的是原始结果，脱敏是
-                            // 角色/租户视图，命中路径漏调会让缓存绕过脱敏。
-                            // 同步路径天然被 runWithInterceptors 包住；异步
-                            // 提交时直接走 deliverResult 是 I9 之外的特例，
-                            // 这里手动构造视图补一次 afterExecution。
-                            // 注：interceptorDepth 在 safeCall 内被计数，
-                            // 不需 RAII guard（仅 afterExecution 不需要 onCompletion）。
                             {
                                 core::ExecutionView view{root->name(), sql,
                                     common::OperationType::Query,
                                     &params, &r.rows, 0,
                                     std::chrono::microseconds{0},
                                     common::Status::OK(),
-                                    /*cached*/ true, /*depth*/ 0,
+                                     true,  0,
                                     ctx->entryCtx};
                                 core::detail::runAfterExecution(view);
                             }
                             deliverResult(std::move(ctx->cb), std::move(r));
-                            return doneHandle(); // 缓存命中：零驱动调用
+                            return doneHandle();
                         }
                         ctx->cacheKey = std::move(key);
                     }
@@ -500,18 +394,15 @@ namespace dbmw::async {
                 if (timeout > std::chrono::milliseconds(0)) armTimeout(ctx->op, timeout);
 
                 if (!ex->tryPost([ctx] { step1Statement(ctx); })) {
-                    // 有界队列满：显式背压（Overloaded，可重试）。
                     R r;
                     r.status = common::Status::error(
                         common::ErrorCode::Overloaded,
                         "async executor queue full (queue_size reached)");
                     r.status.retryable = true;
-                    finishStatement(ctx, std::move(r)); // 含注销与 Done 置位
+                    finishStatement(ctx, std::move(r));
                 }
                 return handle;
             }
-
-            // ---- step1：借连接（worker）----
 
             template<class R>
             static void step1Statement(const std::shared_ptr<StatementOp<R> > &ctx) {
@@ -530,9 +421,6 @@ namespace dbmw::async {
                         return;
                     }
 
-                    // 组的写候选全部耗尽（writeTargets 为空）：
-                    // 与同步 dispatchWrite 的"组不可写"同义，交失败决策
-                    // （可能入写缓冲）。attempt 置最大值跳过目标内重试。
                     if (ctx->targetIdx >= ctx->targets.size()) {
                         R r;
                         r.status = common::Status::error(
@@ -545,12 +433,9 @@ namespace dbmw::async {
                     }
 
                     const auto target = ctx->targets[ctx->targetIdx];
-                    ++ctx->attempt; // 本目标的第 attempt 次尝试开始
+                    ++ctx->attempt;
 
-                    // 熔断闸门（逐尝试，与同步一致；含半开探测令牌）。
                     if (const auto gate = target->beforeAttempt(); !gate.ok()) {
-                        // 同步语义：闸门失败直接返回，不重试——但组层会把它当
-                        // CircuitOpen 转移到下一候选。attempt 置最大值跳过目标内重试。
                         R r;
                         r.status = gate;
                         ctx->attempt = std::numeric_limits<int>::max();
@@ -568,7 +453,6 @@ namespace dbmw::async {
                         return;
                     }
 
-                    // 异步借出：池满时挂等待者队列，本 worker 立即释放（§7.1）。
                     pool->borrowAsync(ctx->borrowTimeout, makePoolIo(workerExecutor()),
                                       [ctx, target](std::unique_ptr<
                                                         core::ConnectionPool::Handle> h,
@@ -579,8 +463,6 @@ namespace dbmw::async {
                 });
             }
 
-            // ---- step2：执行（worker，经池 io.deliver 回来）----
-
             template<class R>
             static void step2Statement(const std::shared_ptr<StatementOp<R> > &ctx,
                                        const std::shared_ptr<core::DataSource> &target,
@@ -588,10 +470,9 @@ namespace dbmw::async {
                                        common::Status borrowStatus) {
                 guarded([&] {
                     const auto &op = ctx->op;
-                    if (op->finished.load()) return; // 超时后池才交付：连接随 h 析构归还
+                    if (op->finished.load()) return;
 
                     if (!h) {
-                        // 借出失败（池关闭/耗尽/建连失败）。同步路径同样计入熔断。
                         target->afterAttempt(borrowStatus);
                         handleAttemptFailure(ctx, [&] {
                             R r;
@@ -602,7 +483,6 @@ namespace dbmw::async {
                     }
 
                     if (op->userCancelled.load()) {
-                        // 借到了但用户已放弃：不执行，直接取消收尾（连接随会话归还）。
                         R r;
                         r.status = common::Status::error(common::ErrorCode::Cancelled,
                                                          "operation cancelled before execution");
@@ -610,18 +490,14 @@ namespace dbmw::async {
                         return;
                     }
 
-                    // 审计已在调用线程过（I3），与同步单语句路径一致传默认上下文。
                     auto session = target->makeSession(std::move(h));
                     {
                         std::lock_guard<std::mutex> lk(op->sessionMtx);
-                        op->pinnedSession = session.get(); // 取消路由
+                        op->pinnedSession = session.get();
                     }
 
                     R r;
                     try {
-                        // 装回 worker 线程栈：attemptFn 内 Session 子语句的
-                        // runOnRoute 看到的是 caller 的 ctx（与同步路径同源）。
-                        // 异常安全靠 RAII：即便 attemptFn 抛，析构依旧还原。
                         common::ContextScope scope(ctx->entryCtx);
                         ctx->attemptFn(*session, r);
                     } catch (const std::exception &e) {
@@ -638,25 +514,13 @@ namespace dbmw::async {
                         std::lock_guard<std::mutex> lk(op->sessionMtx);
                         op->pinnedSession = nullptr;
                     }
-                    target->afterAttempt(r.status); // 熔断计数（与同步同源）
+                    target->afterAttempt(r.status);
 
                     if (r.status.ok()) {
-                        // 成功后动作：组/叶子的 markWrite（缓存失效 + RAW 标记）
-                        // 记在 root 上——同步组路径同样由 dispatchWrite 记在组上。
-                        // M6：影子写不走 markWrite——影子失败不该把生产组拉到
-                        // read-after-write 窗口里，也不该清掉生产的查询缓存。
                         if (ctx->policy.isWrite && !ctx->entryCtx.shadow) {
                             ctx->root->markWrite();
-                            // M8（§10.2）：异步路径同步置位 submit 时冻结的
-                            // entryCtx——worker 跑 attemptFn 内部后续读会
-                            // 透到这一步（跨 attempt 通过 StatementOp
-                            // 共享同一份 entryCtx，不会漏）。调用线程的原
-                            // entryCtx 不被影响，符合"按请求隔离"。
                             ctx->entryCtx.wroteInThisRequest = true;
                         }
-                        // M6：影子失败不计入 root 的熔断计数——影子库的事故不该
-                        // 让生产路径被熔断短路（同步 dispatchWrite 影子短路里也
-                        // 不调 afterAttempt，语义同源）。
                         if (!ctx->entryCtx.shadow) target->afterAttempt(r.status);
                         if (ctx->policy.cacheable && !ctx->entryCtx.shadow) {
                             if constexpr (std::is_same_v<R, QueryResult>) {
@@ -671,8 +535,6 @@ namespace dbmw::async {
                 });
             }
 
-            // ---- 失败决策：目标内重试 / 转移下一候选 / 写缓冲 / 收尾 ----
-
             template<class R>
             static void handleAttemptFailure(const std::shared_ptr<StatementOp<R> > &ctx,
                                              R r) {
@@ -680,7 +542,6 @@ namespace dbmw::async {
                 if (op->finished.load()) return;
                 const auto &st = r.status;
 
-                // 用户已取消：不再重试/转移（避免取消后还放大流量）。
                 if (op->userCancelled.load()) {
                     finishStatement(ctx, std::move(r));
                     return;
@@ -690,7 +551,6 @@ namespace dbmw::async {
                                         ? ctx->targets[ctx->targetIdx]
                                         : nullptr;
 
-                // 1) 目标内重试（同步语义：仅 retryable 才重试）。
                 if (st.retryable && target
                     && ctx->attempt < maxAttempts(ctx->policy, *target,
                                                   ctx->entryCtx.idempotency)) {
@@ -699,15 +559,10 @@ namespace dbmw::async {
                     return;
                 }
 
-                // 2) 转移下一候选（读回退 / 写 failover）。条件与同步一致：
-                //    retryable || connectionBroken || CircuitOpen；
-                //    queryEach 的组回退仅在零行时发生（已交付过行绝不重放）。
                 const bool transferable = ctx->policy.isWrite
                     ? core::DataSource::safeToFailoverWrite(st)
                     : (st.retryable || st.connectionBroken ||
                        st.code == common::ErrorCode::CircuitOpen);
-                // rows 成员只在 EachResult 上（fallbackOnlyIfNoRows 仅 queryEach
-                // 置位），编译期裁剪避免对其他 R 实例化失败。
                 bool rowsOk = true;
                 if (ctx->policy.fallbackOnlyIfNoRows) {
                     if constexpr (std::is_same_v<R, EachResult>) rowsOk = r.rows == 0;
@@ -719,11 +574,6 @@ namespace dbmw::async {
                     return;
                 }
 
-                // 3) 写缓冲（组路径、execute/executeBatch、候选全部耗尽）。
-                //    要求生成键的写不入缓冲：补发时拿不到键（与同步一致，
-                //    该族根本不构造 bufferedMaker）。
-                // M6 I12：shadow 流量**绝不**入写缓冲——缓冲补发会把压测数据写回
-                // 生产库（影子库自己的失败应让压测停掉，而不是悄悄落主库）。
                 if (transferable && ctx->policy.isWrite && ctx->policy.allowWriteBuffer
                     && !ctx->entryCtx.shadow
                     && ctx->root->primary_
@@ -744,7 +594,6 @@ namespace dbmw::async {
                 finishStatement(ctx, std::move(r));
             }
 
-            // 重试/转移经 postAfter 重投递（D6：worker 绝不睡眠等待）。
             template<class R>
             static void scheduleNext(const std::shared_ptr<StatementOp<R> > &ctx,
                                      const std::chrono::milliseconds delay) {
@@ -759,12 +608,6 @@ namespace dbmw::async {
                 ex->postAfter([ctx] { step1Statement(ctx); }, delay);
             }
 
-            // M5：把幂等声明叠加到既有重试决策上（见 docs/roadmap-design-v0.4.0.md §7）。
-            // idem 来自调用线程栈顶 ctx 的快照（StatementOp::entryCtx），语义与
-            // 同步路径 database_manager.cpp 的 resolveWriteAttempts 完全一致：
-            //   NonIdempotent → 写强制 1 次（绝不重试）；
-            //   Idempotent    → 写按 max_attempts 重试（覆盖 retry_writes=false）；
-            //   Unspecified   → 走既有逻辑。
             static int maxAttempts(const StatementPolicy &policy,
                                    const core::DataSource &target,
                                    const common::Idempotency idem) {
@@ -788,8 +631,6 @@ namespace dbmw::async {
                 }
                 return 1;
             }
-
-            // ---- 会话/事务（§8.5：最薄的一层）----
 
             static Handle submitSessionOp(std::shared_ptr<core::DataSource> root,
                                           const bool transactional,
@@ -825,8 +666,6 @@ namespace dbmw::async {
                                                  "dbmw is shutting down"));
                 }
 
-                // I3：会话入口只限流不审计（语句要等回调跑起来才存在，
-                // 审计下沉到 Session 逐条把关——与同步 gateSession 同源）。
                 if (const auto g = root->gateSession(); !g.ok()) {
                     return failNow<OpResult>(std::move(cb), g);
                 }
@@ -839,7 +678,6 @@ namespace dbmw::async {
                 ctx->fn = fn;
                 ctx->cb = std::move(cb);
                 ctx->borrowTimeout = opts.borrowTimeout;
-                // 拍照调用线程栈顶 ctx：worker 跑回调前装回（见 runSessionOp）。
                 ctx->entryCtx = common::ContextScope::current();
 
                 registryAdd();
@@ -876,15 +714,8 @@ namespace dbmw::async {
                         return;
                     }
 
-                    // 整段复用同步实现：闸门、begin、看门狗线程、cancel、回滚、
-                    // commit、markWrite、read-after-write 全部原样（在 worker 上
-                    // 阻塞即职责）。事务句柄的 cancel 只在启动前生效——运行中
-                    // 不改写结果，避免"提交成功却报 Cancelled"诱发重复重放。
                     common::Status st;
                     try {
-                        // 装回 worker 线程栈：回调内 Session 子语句自动继承
-                        // caller 的 ctx（与同步 runGuarded 同源——后者把空 ctx
-                        // 压栈；异步把 caller 拍照的 ctx 压栈，对调用方透明）。
                         common::ContextScope scope(ctx->entryCtx);
                         if (ctx->transactional) {
                             st = ctx->root->transactionInternal(
@@ -914,11 +745,6 @@ namespace dbmw::async {
                 });
             }
 
-            // ---- 写缓冲补发的友元桥 ----
-            //
-            // friend 关系不传播进 lambda 闭包体：bufferedMaker 的 lambda 定义在
-            // 门面自由函数里，直接调 primary->executeUngated(...) 会撞私有访问。
-            // 经引擎静态成员（友元上下文）中转一层。
             static common::Status bufferedReplayExecute(
                 const std::shared_ptr<core::DataSource> &primary,
                 const std::string &sql, const common::Params &params) {
@@ -934,25 +760,21 @@ namespace dbmw::async {
             }
         };
 
-        // ---- 引擎内部接线（dbmw.cpp 调用；声明见 dbmw_async.h）----
-
         void initEngine(const config::AsyncConfig &cfg) {
             std::lock_guard<std::mutex> lk(gMtx);
-            gStopping.store(false); // 支持 init → shutdown → 再 init
+            gStopping.store(false);
             gDefaultTimeoutMs.store(
                 std::max(0, cfg.statement_timeout_ms), std::memory_order_relaxed);
-            if (!cfg.enabled) return; // 未启用且未注入执行器：异步调用返回 ConfigError
-            if (gExecutor) return; // 热加载不重建线程池（在途操作仍持旧执行器）
+            if (!cfg.enabled) return;
+            if (gExecutor) return;
             gExecutor = makeThreadPoolExecutor(cfg.threads,
                                                static_cast<std::size_t>(cfg.queue_size));
-            gCompletion = gExecutor; // 默认复用；setCompletionExecutor 可覆盖
+            gCompletion = gExecutor;
         }
 
         void drainAndStop(const std::chrono::milliseconds grace) {
-            gStopping.store(true); // 1) 新异步操作立即以 PoolClosed 拒绝
+            gStopping.store(true);
 
-            // 2) 等在途操作归零（回调已投递出去，但投递本身还需执行器活着，
-            //    所以先排空再停执行器）。
             {
                 std::unique_lock<std::mutex> lk(gMtx);
                 const auto deadline = std::chrono::steady_clock::now() + grace;
@@ -969,10 +791,7 @@ namespace dbmw::async {
                 gCompletion.reset();
                 gExecutor.reset();
             }
-            // 3) 完成调度器：已投递的回调排空（worker 会先跑完队列再退出）。
             if (completion) completion->shutdown(std::chrono::milliseconds(0));
-            // 4) 主执行器：worker 排空任务（池排在执行器之后——在途操作归还
-            //    连接前，池必须活着；池的关闭仍由 DatabaseManager::shutdown 做）。
             if (main && main != completion) main->shutdown(grace);
         }
 
@@ -980,14 +799,10 @@ namespace dbmw::async {
             std::lock_guard<std::mutex> lk(gMtx);
             return gInFlight;
         }
-    } // namespace detail
-
-    // ========================================================================
-    // Handle 实现
-    // ========================================================================
+    }
 
     Handle::State Handle::state() const {
-        if (!s_) return State::Done; // 无效句柄视作已结束
+        if (!s_) return State::Done;
         return s_->state.load(std::memory_order_acquire);
     }
 
@@ -1008,15 +823,11 @@ namespace dbmw::async {
                 std::lock_guard<std::mutex> lk(s_->sessionMtx);
                 s = s_->pinnedSession;
             }
-            if (s) return s->cancel(); // 尽力转发（不抛；结果如实上报）
-            return common::Status::OK(); // 尚未钉住会话：已标记，启动/执行前生效
+            if (s) return s->cancel();
+            return common::Status::OK();
         }
-        return common::Status::OK(); // Queued：标记取消，启动时直接以 Cancelled 完成
+        return common::Status::OK();
     }
-
-    // ========================================================================
-    // 门面：回调式
-    // ========================================================================
 
     Handle query(const std::string &sql, QueryCallback cb, const Options opts) {
         return query(std::string(), sql, std::move(cb), opts);
@@ -1041,8 +852,6 @@ namespace dbmw::async {
         return detail::AsyncEngine::submitStatement<QueryResult>(
             resolve(dataSource), sql, params, common::OperationType::Query, policy,
             [sql, params](const core::Session &s, QueryResult &r) {
-                // 空参数走无参重载：与同步门面一致，未实现原生绑定的
-                // 驱动（allowsLiteralInterpolation=false）也能执行纯文本 SQL。
                 if (params.empty()) r.status = s.query(sql, r.rows);
                 else r.status = s.query(sql, params, r.rows);
             },
@@ -1076,7 +885,6 @@ namespace dbmw::async {
                 else r.status = s.execute(sql, params, r.affected);
             },
             [sql, params](const std::shared_ptr<core::DataSource> &primary) {
-                // 补发只打主库：写缓冲的语义就是"等主恢复后补上"（与同步一致）。
                 return std::function<common::Status()>(
                     [primary, sql, params] {
                         return detail::AsyncEngine::bufferedReplayExecute(primary, sql, params);
@@ -1095,7 +903,6 @@ namespace dbmw::async {
         detail::StatementPolicy policy;
         policy.isWrite = true;
         policy.retry = detail::RetryMode::WriteRetries;
-        // 不入写缓冲：补发是在后台"事后重放"，那一刻拿不到生成键。
         policy.allowWriteBuffer = false;
         return detail::AsyncEngine::submitStatement<ExecKeysResult>(
             resolve(dataSource), sql, params, common::OperationType::Execute, policy,
@@ -1117,8 +924,8 @@ namespace dbmw::async {
                      EachCallback done, const Options opts) {
         detail::StatementPolicy policy;
         policy.isWrite = false;
-        policy.retry = detail::RetryMode::Single; // 已交付过行绝不自动重放
-        policy.fallbackOnlyIfNoRows = true; // 组回退仅在零行时
+        policy.retry = detail::RetryMode::Single;
+        policy.fallbackOnlyIfNoRows = true;
         return detail::AsyncEngine::submitStatement<EachResult>(
             resolve(dataSource), sql, params, common::OperationType::Stream, policy,
             [sql, params, rowCb](const core::Session &s, EachResult &r) {
@@ -1137,7 +944,7 @@ namespace dbmw::async {
                         const Options opts) {
         detail::StatementPolicy policy;
         policy.isWrite = true;
-        policy.retry = detail::RetryMode::Single; // 批量写默认不重试
+        policy.retry = detail::RetryMode::Single;
         policy.allowWriteBuffer = true;
         return detail::AsyncEngine::submitStatement<BatchResult>(
             resolve(dataSource), sql, {}, common::OperationType::Batch, policy,
@@ -1192,10 +999,6 @@ namespace dbmw::async {
             std::move(cb), opts);
     }
 
-    // ========================================================================
-    // 门面：future 式（便利形态；无 Handle、无取消）
-    // ========================================================================
-
     namespace {
         template<class R>
         std::future<R> makeFuturePair(std::shared_ptr<std::promise<R> > &promiseOut) {
@@ -1204,7 +1007,7 @@ namespace dbmw::async {
             promiseOut = promise;
             return future;
         }
-    } // namespace
+    }
 
     std::future<QueryResult> query(const std::string &sql) {
         std::shared_ptr<std::promise<QueryResult> > p;
@@ -1297,10 +1100,6 @@ namespace dbmw::async {
         return f;
     }
 
-    // ========================================================================
-    // 执行器管理
-    // ========================================================================
-
     void setExecutor(std::shared_ptr<IExecutor> ex) {
         std::lock_guard<std::mutex> lk(gMtx);
         gExecutor = std::move(ex);
@@ -1316,4 +1115,4 @@ namespace dbmw::async {
         const auto ex = workerExecutor();
         return ex ? ex->stats() : ExecutorStats{};
     }
-} // namespace dbmw::async
+}

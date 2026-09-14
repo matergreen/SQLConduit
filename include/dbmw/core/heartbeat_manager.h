@@ -9,14 +9,9 @@
 #include <mutex>
 #include <condition_variable>
 
-
 namespace dbmw::core {
-    class ConnectionPool; // 前向声明
+    class ConnectionPool;
 
-    // 心跳管理器：后台线程按固定间隔对所有连接池做健康检查（healthCheck）。
-    // 失效连接会被丢弃/重建，空闲连接保持存活。
-    //
-    // 持弱引用：池被销毁后心跳线程不会访问悬垂指针，只会自然跳过它。
     class HeartbeatManager {
     public:
         explicit HeartbeatManager(std::chrono::milliseconds interval);
@@ -49,7 +44,6 @@ namespace dbmw::core {
         std::atomic<bool> running_{false};
         std::atomic<bool> stopFlag_{false};
     };
-} // namespace dbmw::core
+}
 
-
-#endif // DBMW_CORE_HEARTBEAT_MANAGER_H
+#endif

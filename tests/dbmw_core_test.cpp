@@ -1,4 +1,3 @@
-// dbmw 核心层行为验证：用 mock 驱动跑真实的连接池/事务/参数插值逻辑。
 #include "dbmw/dbmw.h"
 #include "dbmw/core/connection_pool.h"
 #include "dbmw/core/idatabase_connection.h"
@@ -36,9 +35,6 @@ static void check(bool cond, const std::string &name) {
     else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
 }
 
-// ---------------------------------------------------------------------------
-// Mock 驱动
-// ---------------------------------------------------------------------------
 class MockConnection : public core::IDatabaseConnection {
 public:
     static std::atomic<int> alive;
@@ -49,13 +45,8 @@ public:
     static std::atomic<int> executeFailuresRemaining;
     static std::atomic<int> queryCalls;
     static std::atomic<int> executeCalls;
-    // >= 0 时：先允许这么多次 execute 成功，之后的那一次失败。
-    // 用于验证批量执行的原子性（中途失败要整批回滚）。
     static std::atomic<int> executeOkBeforeFail;
-    // 置 true 时 cancel() 抛异常，用于验证看门狗线程不会因此崩溃进程。
     static std::atomic<bool> cancelThrows;
-    // 默认 true：模拟"驱动未实现取消"（基类行为返回 NotSupported）。
-    // 需要验证真实取消路径时临时置 false。
     static std::atomic<bool> cancelUnsupported;
     static std::vector<std::string> log;
 
@@ -164,8 +155,6 @@ public:
         return Status::OK();
     }
 
-    // 模拟"驱动实现了取消"：内置驱动会在这里发 KILL / cancel_query / SQLCancelHandle。
-    // cancelThrows 用来验证取消实现自身抛异常时，看门狗线程不会把进程带崩。
     common::Status cancel() override {
         if (cancelUnsupported.load()) return IDatabaseConnection::cancel();
         log.push_back("cancel");
@@ -179,7 +168,6 @@ public:
 
     bool isOpen() const override { return open_; }
 
-    // 必须反映真实事务状态：基类 executeBatch 靠它决定要不要自己包事务。
     bool inTransaction() const override { return tx_; }
 
     bool allowsLiteralInterpolation() const override { return true; }
@@ -225,7 +213,6 @@ static std::shared_ptr<core::ConnectionPool> makePool(int min, int max, int time
         std::chrono::milliseconds(timeoutMs));
 }
 
-// ---------------------------------------------------------------------------
 int main() {
     std::cout << "== 1. 借出与归还（连接复用） ==\n";
     {
@@ -287,14 +274,12 @@ int main() {
         MockConnection::alive = 0;
         auto pool = makePool(2, 4);
         check(MockConnection::alive == 2, "预热出 2 条连接");
-        // ping 失败 + 补建也失败：死连接被清除且无法补足
         MockConnection::pingFails = true;
         MockConnection::connectFails = true;
         pool->healthCheck();
         check(pool->totalCount() == 0, "失效连接被清除且未虚占名额");
         check(MockConnection::alive == 0, "所有旧连接都已 close");
 
-        // 故障恢复后，心跳补足回 min
         MockConnection::pingFails = false;
         MockConnection::connectFails = false;
         pool->healthCheck();
@@ -325,9 +310,9 @@ int main() {
             std::string err;
             leaked = pool->borrow(ec, err);
             check(leaked != nullptr, "借出成功");
-        } // 池在此销毁，leaked 仍然持有连接
+        }
         check(MockConnection::alive == 1, "池销毁时借出的连接尚未关闭");
-        leaked.reset(); // 归还：此时 weak_ptr 已失效，应直接 close 而不是访问已释放内存
+        leaked.reset();
         check(MockConnection::alive == 0, "Handle 析构后连接被安全关闭（无 UAF）");
     }
 
@@ -446,7 +431,7 @@ int main() {
         auto h = pool->borrow(ec, err);
         std::thread releaser([&h]() {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            h.reset(); // 在宽限期内归还
+            h.reset();
         });
         pool->shutdown(std::chrono::milliseconds(3000));
         releaser.join();
@@ -807,7 +792,6 @@ int main() {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
             return Status::OK();
         });
-        // 能走到这一行本身就说明进程没被 std::terminate 干掉。
         check(status.code == common::ErrorCode::QueryTimeout,
               "取消实现抛异常时仍返回 QueryTimeout，而不是终止进程");
         check(status.message.find("could not cancel") != std::string::npos,
@@ -836,7 +820,6 @@ int main() {
               "取消成功时错误信息不含 could not cancel");
         check(MockConnection::joined().find("cancel") != std::string::npos,
               "到期确实调用了驱动的取消原语");
-        // 驱动不支持取消时（基类默认 NotSupported）也必须如实说明。
         MockConnection::resetLog();
         MockConnection::cancelUnsupported = true;
         const auto unsupporting = ds.transaction(opt, [](core::Session &) {
@@ -918,7 +901,7 @@ int main() {
             common::Params{std::int64_t(1)},
             common::Params{std::int64_t(2)},
             common::Params{std::int64_t(3)}};
-        MockConnection::executeOkBeforeFail = 2; // 前两组成功，第三组失败
+        MockConnection::executeOkBeforeFail = 2;
         common::BatchResult result;
         const auto failed = ds.executeBatch("UPDATE t SET v=?", batch, result);
         const auto log = MockConnection::joined();
@@ -945,7 +928,7 @@ int main() {
         MockConnection::queryFailuresRemaining = 99;
         config::RetryConfig retry;
         retry.max_attempts = 2;
-        retry.initial_backoff_ms = 120; // 抖动区间约 [0,31)ms
+        retry.initial_backoff_ms = 120;
         retry.max_backoff_ms = 1000;
         auto pool = makePool(0, 1);
         core::DataSource ds(pool, "jitter", retry);
@@ -958,7 +941,6 @@ int main() {
                 std::chrono::steady_clock::now() - t0).count());
         }
         const std::set<long long> distinct(samples.begin(), samples.end());
-        // 6 次采样全部撞到同一抖动值的概率约 1e-6，不会误报。
         check(distinct.size() > 1,
               "多次退避时长互不相同（实测 " + std::to_string(distinct.size())
               + "/6 种；恒定抖动会让并发重试整齐惊群）");
@@ -1012,7 +994,7 @@ int main() {
         Status second;
         const auto outer = ds.withSession([&](core::Session &s) {
             const auto first = s.begin();
-            second = s.begin(); // 事务已开启，必须被拒绝
+            second = s.begin();
             return first;
         });
         check(outer.ok() && second.code == common::ErrorCode::TxError,
@@ -1162,13 +1144,12 @@ int main() {
         std::remove(path.c_str());
     }
 
-    // ---- 统计/可观测性修复回归测试（对应第 5 轮审查结论 P1-1/P1-2/P1-3/P2）----
     std::cout << "== 38. 慢 SQL 聚合：字面量归一化避免指纹爆炸 (P1-2) ==\n";
     {
         common::Observability::clearSlowSqlStats();
         config::ObservabilityConfig obs;
         obs.slow_sql.enabled = true;
-        obs.slow_sql.threshold_ms = 0;       // 全部算慢，便于聚合
+        obs.slow_sql.threshold_ms = 0;
         obs.slow_sql.aggregate_capacity = 100;
         obs.slow_sql.recent_capacity = 100;
         obs.slow_sql.histogram_buckets_ms = {10, 100, 1000};
@@ -1178,7 +1159,6 @@ int main() {
             eventFingerprints.push_back(event.sqlFingerprint);
         });
 
-        // 仅字面量不同的同类查询应聚合为同一条（字符串拼接型 SQL 不再撑爆聚合表）
         const std::vector<std::string> variants = {
             "SELECT * FROM t WHERE id=1",
             "SELECT * FROM t WHERE id=2",
@@ -1203,7 +1183,6 @@ int main() {
         check(agg.front().sqlTemplate == "SELECT * FROM t WHERE id=?",
               "聚合模板保存结构 SQL，不保留第一条查询的真实字面量");
 
-        // 结构不同的查询应保持独立
         common::OperationEvent u;
         u.dataSource = "db";
         u.type = common::OperationType::Query;
@@ -1251,7 +1230,7 @@ int main() {
         obs.sql_log.slow_only = false;
         obs.sql_log.log_success = true;
         obs.sql_log.sample_rate = 1.0;
-        obs.sql_log.max_sql_length = 24; // 短到能截断进字符串字面量内部
+        obs.sql_log.max_sql_length = 24;
         common::Observability::configure(obs);
 
         common::OperationEvent captured;
@@ -1268,7 +1247,6 @@ int main() {
         const std::string sql = "SELECT 'a fairly long string literal that is truncated'";
         common::Observability::emitSql(e, sql);
 
-        // 截断点若落在字符串字面量内部，marker 之前应补一个右引号，使单引号成对。
         auto balancedQuotes = [](const std::string &s) {
             int depth = 0;
             bool esc = false;
@@ -1307,10 +1285,10 @@ int main() {
         slow.dataSource = "db";
         slow.type = common::OperationType::Query;
         slow.status = common::Status::OK();
-        slow.duration = std::chrono::milliseconds(1000); // 单次很慢，只跑一次
+        slow.duration = std::chrono::milliseconds(1000);
         common::Observability::emitSql(slow, "SELECT very_slow_once");
 
-        for (int i = 0; i < 1000; ++i) { // 单次很快但跑很多次，累计耗时大
+        for (int i = 0; i < 1000; ++i) {
             common::OperationEvent fast;
             fast.dataSource = "db";
             fast.type = common::OperationType::Query;
@@ -1332,7 +1310,7 @@ int main() {
     std::cout << "== 41. 连接池指标：借出超时也计入等待耗时 (P1-3) ==\n";
     {
         MockConnection::alive = 0;
-        auto pool = makePool(0, 1, 150); // 最多 1 条，超时 150ms
+        auto pool = makePool(0, 1, 150);
         common::ErrorCode ec;
         std::string err;
         auto h1 = pool->borrow(ec, err);
@@ -1345,7 +1323,6 @@ int main() {
         check(after.borrowRequests == before.borrowRequests + 1, "超时的借出也计入 borrowRequests");
         check(after.borrowSuccesses == before.borrowSuccesses, "超时的借出不计入 borrowSuccesses");
         check(after.borrowTimeouts == before.borrowTimeouts + 1, "记录一次借出超时");
-        // 关键：等待耗时（含失败这次）应覆盖到 ~150ms，而不是只统计成功借用的近 0 等待
         check(after.totalBorrowWait >= std::chrono::milliseconds(140) &&
               after.maxBorrowWait >= std::chrono::milliseconds(140),
               "totalBorrowWait / maxBorrowWait 包含失败借用的等待（实测 max="
@@ -1358,7 +1335,7 @@ int main() {
     std::cout << "== 42. 观测全关：emitSql 零开销短路且不丢观察者回调 (P1-1) ==\n";
     {
         common::Observability::clearSlowSqlStats();
-        config::ObservabilityConfig obs; // 慢 SQL 与 SQL 日志都关，但注册观察者
+        config::ObservabilityConfig obs;
         obs.slow_sql.enabled = false;
         obs.sql_log.enabled = false;
         common::Observability::configure(obs);
@@ -1380,7 +1357,6 @@ int main() {
         check(common::Observability::slowSqlStats(1000).empty(),
               "观测全关时不产生任何慢 SQL 聚合");
 
-        // 彻底关闭（无观察者）：emitSql 应为空操作且不抛异常
         common::Observability::setObserver({});
         common::Observability::configure(config::ObservabilityConfig{});
         bool threw = false;
@@ -1453,7 +1429,7 @@ int main() {
 
         config::SqlAuditConfig audit;
         audit.enabled = true;
-        audit.action = "warn"; // 启发式规则灰度，名单仍是强边界
+        audit.action = "warn";
         audit.log_blocked = false;
         audit.blacklist_fingerprints = {
             common::sql::fingerprintTemplate("SELECT secret FROM users")
@@ -1486,7 +1462,6 @@ int main() {
 
     std::cout << "== 45. 路由安全：跳过熔断副本，不重放结果不确定的写 ==\n";
     {
-        // 先把副本熔断，组查询应直接选主库，不再触碰已知故障节点。
         config::CircuitBreakerConfig breaker;
         breaker.failure_threshold = 1;
         breaker.open_interval_ms = 5000;
@@ -1512,8 +1487,6 @@ int main() {
         check(readStatus.ok() && readTargets == std::vector<std::string>({"safe-primary"}),
               "读路由跳过已熔断副本，全部不可用时直接走主库");
 
-        // 主库在执行阶段断线（SQLSTATE 08）可能已经提交。此时不得
-        // 向候选主重放，否则会双写。
         auto candidatePool = makePool(0, 1);
         auto candidate = std::make_shared<core::DataSource>(candidatePool, "candidate");
         core::DataSource writeGroup("safe-write", primary, {},

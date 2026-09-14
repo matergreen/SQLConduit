@@ -1,14 +1,3 @@
-// dbmw v0.2.0 协程层验证（设计 §14：T15，仅在 DBMW_ENABLE_ASYNC_CORO=ON 时构建）。
-//
-// 复用 dbmw_async_test 的 mock 驱动手法，验证协程层相对回调层的增量语义：
-//   - Task 惰性启动 / 安全放弃（R5）
-//   - run() 受控 fire-and-forget（跑完自毁，不悬垂）
-//   - 协程恢复线程 = 完成调度器线程（I1 的协程版）
-//   - 超时 / 治理 / 事务 / 生命周期与回调形态完全同源（零额外语义）
-//   - 异常沿 continuation 链传播；detached 协程异常 = terminate（文档化，
-//     本测试只验证前半段）
-//
-// 运行顺序有依赖：C6（生命周期）必须最后——它会 shutdown 掉全局引擎。
 #include "dbmw/dbmw.h"
 #include "dbmw/async/task.h"
 #include "dbmw/core/idatabase_connection.h"
@@ -41,9 +30,6 @@ static void check(bool cond, const std::string &name) {
     else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
 }
 
-// ---------------------------------------------------------------------------
-// Mock 驱动（与 dbmw_async_test 的 AsyncMockConnection 同一套路）
-// ---------------------------------------------------------------------------
 class CoroMockConnection : public core::IDatabaseConnection {
 public:
     static std::atomic<int> connectCalls;
@@ -167,9 +153,6 @@ public:
     }
 };
 
-// ---------------------------------------------------------------------------
-// 配置与工具
-// ---------------------------------------------------------------------------
 struct CfgFlags {
     bool auditBlock = false;
 };
@@ -221,15 +204,8 @@ static bool awaitFuture(std::future<R> &f, R &out, int timeoutMs = 5000) {
     return false;
 }
 
-// ---------------------------------------------------------------------------
-// 被测协程（注意：必须是具名函数，不能用带捕获的 lambda——闭包临时对象
-// 在 full-expression 结束即销毁，异步恢复后捕获将悬垂，是经典 UB）
-// ---------------------------------------------------------------------------
-
-// C1/C3：单协程串行多个操作，记录恢复线程与完成顺序。
 static async::Task<void> pipelineBody(std::promise<std::vector<std::string>> pr) {
     std::vector<std::string> trace;
-    // 帧连续性探针：局部变量必须跨 co_await 挂起/恢复完整存活。
     int frameMarker = 42;
 
     auto q = co_await async::queryAsync("SELECT c1");
@@ -253,25 +229,21 @@ static async::Task<void> pipelineBody(std::promise<std::vector<std::string>> pr)
     pr.set_value(std::move(trace));
 }
 
-// C1：恢复线程断言——co_await 之后记录当前线程。
 static async::Task<void> tidBody(std::promise<std::thread::id> pr) {
     co_await async::queryAsync("SELECT tid");
     pr.set_value(std::this_thread::get_id());
 }
 
-// C5：审计拦截路径。
 static async::Task<void> blockedBody(std::promise<async::QueryResult> pr) {
     auto r = co_await async::queryAsync("DELETE FROM t");
     pr.set_value(std::move(r));
 }
 
-// C8：显式数据源重载。
 static async::Task<void> dsBody(std::promise<async::QueryResult> pr) {
     auto r = co_await async::queryAsync("main", "SELECT ds", {});
     pr.set_value(std::move(r));
 }
 
-// C4：语句超时。
 static async::Task<void> timeoutBody(std::promise<async::QueryResult> pr) {
     async::Options opts;
     opts.timeout = std::chrono::milliseconds(80);
@@ -279,7 +251,6 @@ static async::Task<void> timeoutBody(std::promise<async::QueryResult> pr) {
     pr.set_value(std::move(r));
 }
 
-// C6：事务（提交 / 回滚两条路径）。
 static async::Task<void> txBody(common::TransactionOptions txOpts, bool failFn,
                                 std::promise<async::OpResult> pr) {
     auto r = co_await async::transactionAsync(txOpts, [failFn](core::Session &s) -> Status {
@@ -292,7 +263,6 @@ static async::Task<void> txBody(common::TransactionOptions txOpts, bool failFn,
     pr.set_value(std::move(r));
 }
 
-// C7：异常传播——内层抛、外层接。
 static async::Task<void> thrower() {
     auto r = co_await async::queryAsync("SELECT before-throw");
     if (!r.status.ok()) throw std::runtime_error("op failed");
@@ -308,19 +278,16 @@ static async::Task<void> catcher(std::promise<std::string> pr) {
     }
 }
 
-// C6 生命周期：在途慢语句 + shutdown 排水。
 static async::Task<void> drainBody(std::promise<async::QueryResult> pr) {
     auto r = co_await async::queryAsync("SELECT drain");
     pr.set_value(std::move(r));
 }
 
-// C6 生命周期：shutdown 之后的新协程任务。
 static async::Task<void> afterShutdownBody(std::promise<async::QueryResult> pr) {
     auto r = co_await async::queryAsync("SELECT after");
     pr.set_value(std::move(r));
 }
 
-// ---------------------------------------------------------------------------
 int main() {
     g_configPath = (std::filesystem::temp_directory_path() /
                     "dbmw_coro_test.json").string();
@@ -334,7 +301,6 @@ int main() {
         return 1;
     }
 
-    // =====================================================================
     std::cout << "== C1. 基础链路：run + co_await，恢复线程 = 完成调度器线程 ==\n";
     {
         std::promise<std::vector<std::string>> pr;
@@ -358,7 +324,6 @@ int main() {
         check(CoroMockConnection::queryCalls == 1 && CoroMockConnection::executeCalls == 3,
               "驱动调用次数 = 1 query + 1 execute + 2 batch（execute 复用）");
 
-        // run() 返回后协程帧自毁：无法直接观察，间接验证 = 之后同场景再次运行无泄漏。
         std::promise<std::vector<std::string>> pr2;
         auto fut2 = pr2.get_future();
         async::run(pipelineBody(std::move(pr2)));
@@ -366,7 +331,6 @@ int main() {
         check(awaitFuture(fut2, trace2) && trace2.size() == 4,
               "同一协程工厂可重复 run（帧生命周期正确回收）");
 
-        // 恢复线程断言：恢复发生在完成调度器线程上，而非调用线程。
         std::promise<std::thread::id> tidPr;
         auto tidFut = tidPr.get_future();
         async::run(tidBody(std::move(tidPr)));
@@ -376,20 +340,18 @@ int main() {
               "co_await 恢复线程 != 调用线程（完成调度器线程，I1 协程版）");
     }
 
-    // =====================================================================
     std::cout << "== C2. 惰性：未 co_await 的 Task 安全放弃（R5）==\n";
     {
         const int before = CoroMockConnection::queryCalls;
         {
             auto t = async::queryAsync("SELECT lazy");
             check(!t.await_ready(), "Task 构造即挂起（惰性，await_ready 恒 false）");
-        } // t 析构：未 co_await，什么都不执行
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         check(CoroMockConnection::queryCalls == before,
               "未 await 即析构 → 零驱动调用（惰性安全放弃）");
     }
 
-    // =====================================================================
     std::cout << "== C4. 语句超时：opts.timeout 与回调形态同源（D7）==\n";
     {
         CoroMockConnection::queryDelayMs = 400;
@@ -404,7 +366,6 @@ int main() {
         CoroMockConnection::queryDelayMs = 0;
     }
 
-    // =====================================================================
     std::cout << "== C5. 治理 fail-fast：审计拦截经协程层同源生效（D2）==\n";
     {
         CfgFlags f;
@@ -429,7 +390,6 @@ int main() {
               "reload 恢复基础配置");
     }
 
-    // =====================================================================
     std::cout << "== C6. 事务：commit / rollback 与回调形态同源（§8.5）==\n";
     {
         CoroMockConnection::resetLog();
@@ -454,7 +414,6 @@ int main() {
               "fn 返回错误 → 回滚且状态非 Ok");
     }
 
-    // =====================================================================
     std::cout << "== C7. 异常传播：内层协程抛出，外层 co_await 捕获 ==\n";
     {
         std::promise<std::string> pr;
@@ -466,7 +425,6 @@ int main() {
               "异常沿 continuation 链传播到外层 try/catch（实测 " + msg + "）");
     }
 
-    // =====================================================================
     std::cout << "== C8. 显式数据源重载 ==\n";
     {
         std::promise<async::QueryResult> pr;
@@ -479,7 +437,6 @@ int main() {
               "queryAsync(ds, sql, params) 路由到指定数据源");
     }
 
-    // =====================================================================
     std::cout << "== C9. 生命周期：shutdown 排水在途协程，之后新任务被拒（T11）==\n";
     {
         CoroMockConnection::queryDelayMs = 150;
@@ -498,7 +455,6 @@ int main() {
         check(async::detail::inFlight() == 0, "排水后 inFlight 归零");
         check(ms >= 100, "shutdown 确实等了在途语句（实测 " + std::to_string(ms) + "ms）");
 
-        // shutdown 后：新协程任务快速失败（ConfigError），协程帧不悬垂。
         std::promise<async::QueryResult> pr2;
         auto fut2 = pr2.get_future();
         async::run(afterShutdownBody(std::move(pr2)));
@@ -508,7 +464,6 @@ int main() {
               "shutdown 后新协程操作被快速拒绝（ConfigError）");
     }
 
-    // 收尾统计
     std::cout << "\n----------------------------------------\n";
     std::cout << "通过 " << g_passed << " 项，失败 " << g_failed << " 项\n";
     return g_failed == 0 ? 0 : 1;

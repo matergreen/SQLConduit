@@ -2,7 +2,6 @@
 
 #include <string>
 
-
 namespace dbmw::config {
     std::string DataSourceConfig::describe() const {
         std::string s = name + "[" + type + "]";
@@ -29,4 +28,4 @@ namespace dbmw::config {
         if (connectionString != extra.end()) replaceAll(connectionString->second);
         return text;
     }
-} // namespace dbmw::config
+}

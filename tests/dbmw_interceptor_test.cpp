@@ -1,9 +1,3 @@
-// M1 SPI 拦截器层单测：覆盖 InterceptorRegistry 生命周期、I11 异常吞掉、
-// I9 分层（开关 false 时零分发）、I7 递归防护。
-//
-// 注：detail::runOnRoute / runBeforeExecution / runAfterExecution 这些函数
-// 没有专属头文件但有 external linkage（前向声明后即可链接），是 dbmw
-// 测试拦截器内部调度的标准入口——避免在头文件暴露实现细节。
 #include "dbmw/core/interceptor.h"
 #include "dbmw/common/context.h"
 
@@ -36,15 +30,13 @@ static void check(bool cond, const std::string &name) {
     else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
 }
 
-// 测试用拦截器：把每次回调写进一个 call_log，按顺序记录 (event, sql/type)。
 struct RecordingInterceptor : public ISqlInterceptor {
     std::vector<std::string> log;
-    bool rejectBefore = false;   // beforeExecution 强制返回 ErrorCode
+    bool rejectBefore = false;
 
     void onRoute(const std::string &ds, const std::string &sql,
                  common::OperationType type, common::SqlContext &ctx) override {
         log.push_back("onRoute:" + ds + ":" + std::to_string(static_cast<int>(type)) + ":" + sql);
-        // 路由期可写 ctx：测试里把 traceId 透传（演示可写字段）
         ctx.traceId = "filled-by-interceptor";
     }
 
@@ -64,7 +56,6 @@ struct RecordingInterceptor : public ISqlInterceptor {
     }
 };
 
-// 会主动抛异常的拦截器：验证 I11（异常吞掉，绝不传播）。
 struct ThrowingInterceptor : public ISqlInterceptor {
     void onRoute(const std::string &, const std::string &,
                  common::OperationType, common::SqlContext &) override {
@@ -114,7 +105,6 @@ struct ReentrantRouteInterceptor : public ISqlInterceptor {
 };
 
 int main() {
-    // ---- 清理可能残留的状态（其他用例共享同一进程级注册表）----
     InterceptorRegistry::clear();
     InterceptorRegistry::setEnabled(false);
 
@@ -141,7 +131,6 @@ int main() {
         InterceptorRegistry::clear();
         check(InterceptorRegistry::snapshot().empty(), "clear 后 snapshot 为空");
 
-        // 两次连续 enabled 翻转之间的时序：不影响隔离
         InterceptorRegistry::setEnabled(false);
     }
 
@@ -176,7 +165,7 @@ int main() {
     std::cout << "== M1 SPI：开关开时按注册顺序回调 + ctx 可写 ==\n";
     {
         InterceptorRegistry::clear();
-        InterceptorRegistry::setEnabled(false); // 先关，add 完再开避免污染
+        InterceptorRegistry::setEnabled(false);
 
         auto first = std::make_shared<RecordingInterceptor>();
         auto second = std::make_shared<RecordingInterceptor>();
@@ -198,7 +187,7 @@ int main() {
         SqlContext ctx2;
         const std::string ds = "ds-order";
         const std::string sql = "SELECT 2";
-        SqlContext captured; // 用作 ExecutionView.ctx 的存储
+        SqlContext captured;
         ExecutionView view{ds, sql, common::OperationType::Query,
                            nullptr, nullptr, 7, std::chrono::microseconds{123},
                            common::Status::OK(), false, 0, captured};
@@ -215,7 +204,6 @@ int main() {
               second->log[2].rfind("afterExecution:", 0) == 0,
               "after 各被记一次（索引 2），顺序一致");
 
-        // 清理，恢复默认
         InterceptorRegistry::clear();
         InterceptorRegistry::setEnabled(false);
     }
@@ -252,7 +240,7 @@ int main() {
         InterceptorRegistry::setEnabled(false);
 
         auto thrower = std::make_shared<ThrowingInterceptor>();
-        auto catcher = std::make_shared<RecordingInterceptor>(); // 应当被调用，证明 thrower 异常没污染链路
+        auto catcher = std::make_shared<RecordingInterceptor>();
         InterceptorRegistry::add(thrower);
         InterceptorRegistry::add(catcher);
         InterceptorRegistry::setEnabled(true);
@@ -299,8 +287,6 @@ int main() {
 
     std::cout << "== M1 SPI：currentInterceptorDepth 用于诊断 ==\n";
     {
-        // 顶层调用时 depth = 0；嵌套 SQL（被拦截器触发）应涨，退出后归零。
-        // runBeforeExecution 内部使用线程局部回调深度，退出后应归零。
         InterceptorRegistry::clear();
         InterceptorRegistry::setEnabled(true);
         const auto beforeLevel = detail::currentInterceptorDepth();
@@ -354,7 +340,6 @@ int main() {
 
     std::cout << "\n----------------------------------------\n";
     std::cout << "通过 " << g_passed << " 项，失败 " << g_failed << " 项\n";
-    // 收尾：保证进程退出时不留静态共享状态污染其他测试
     InterceptorRegistry::clear();
     InterceptorRegistry::setEnabled(false);
     return g_failed == 0 ? 0 : 1;

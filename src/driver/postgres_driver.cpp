@@ -12,27 +12,12 @@
 #ifdef DBMW_ENABLE_POSTGRES
 #include <pqxx/pqxx>
 
-// libpqxx 的版本差异比想象中大，本文件按下面三档做兼容（7.8 ~ 8.x 通吃）：
-//
-//   1) exec(query, params) 与 pqxx::prepped：7.10 才引入，7.9 及更早只有
-//      exec_params() / exec_prepared()。用下面的宏记录"新 API 是否可用"，
-//      供 execParams() / execPrepared() 做版本分派（否则老版本会退化出一堆
-//      废弃告警，新版本又编不过）。
-//
-//   2) pqxx::work 别名：8.0 已删除。7.x 里它本就等价于 transaction<>，
-//      因此统一改用 PgTx（见 postgres_driver.h），两端语义一致。
-//
-//   3) C++ 标准：8.0 起要求 C++20（7.x 只需 C++17）。由 CMakeLists.txt
-//      探测 libpqxx 版本后对 dbmw 目标单独提标，见那里的注释。
-//
-// 拆成两层 #if 是为了避免 -Wundef：内层对版本号的比较只在宏确实已定义时才会被求值。
 #if defined(PQXX_VERSION_MAJOR) && defined(PQXX_VERSION_MINOR)
 #  if (PQXX_VERSION_MAJOR > 7) || (PQXX_VERSION_MAJOR == 7 && PQXX_VERSION_MINOR >= 10)
 #    define DBMW_PQXX_HAS_EXEC_WITH_PARAMS 1
 #  endif
 #endif
 #endif
-
 
 namespace dbmw::driver {
     namespace {
@@ -81,7 +66,6 @@ namespace dbmw::driver {
         };
 #endif
 
-        // 二进制 <-> 十六进制（PostgreSQL bytea 的文本格式为 \xHHHH...）
         std::string toByteaHex(const common::Blob &b) {
             static const char *kHex = "0123456789abcdef";
             std::string s = "\\x";
@@ -111,12 +95,10 @@ namespace dbmw::driver {
                 }
                 return b;
             }
-            // 非标准格式的兜底：按原始字节保留，宁可形式不精确也不丢数据。
             b.assign(s.begin(), s.end());
             return b;
         }
 
-        // PostgreSQL 内置类型 OID（稳定，跨版本不变，可用于列类型判断）。
 #ifdef DBMW_ENABLE_POSTGRES
         std::string connValue(const std::string &value) {
             std::string out = "'";
@@ -128,27 +110,23 @@ namespace dbmw::driver {
             return out;
         }
 
-        static constexpr pqxx::oid kBool = 16;      // boolean
-        static constexpr pqxx::oid kBytea = 17;     // bytea
-        static constexpr pqxx::oid kInt8 = 20;      // bigint
-        static constexpr pqxx::oid kInt2 = 21;      // smallint
-        static constexpr pqxx::oid kInt4 = 23;      // integer
-        static constexpr pqxx::oid kDate = 1082;    // date
+        static constexpr pqxx::oid kBool = 16;
+        static constexpr pqxx::oid kBytea = 17;
+        static constexpr pqxx::oid kInt8 = 20;
+        static constexpr pqxx::oid kInt2 = 21;
+        static constexpr pqxx::oid kInt4 = 23;
+        static constexpr pqxx::oid kDate = 1082;
         static constexpr pqxx::oid kTime = 1083;
-        static constexpr pqxx::oid kTimestamp = 1114;  // timestamp
-        static constexpr pqxx::oid kTimestamptz = 1184;// timestamptz
+        static constexpr pqxx::oid kTimestamp = 1114;
+        static constexpr pqxx::oid kTimestamptz = 1184;
         static constexpr pqxx::oid kTimetz = 1266;
         static constexpr pqxx::oid kNumeric = 1700;
         static constexpr pqxx::oid kJson = 114;
         static constexpr pqxx::oid kJsonb = 3802;
         static constexpr pqxx::oid kUuid = 2950;
-        static constexpr pqxx::oid kFloat4 = 700;   // real
-        static constexpr pqxx::oid kFloat8 = 701;   // double precision
+        static constexpr pqxx::oid kFloat4 = 700;
+        static constexpr pqxx::oid kFloat8 = 701;
 
-        // 将 libpqxx 字段转换为 dbmw 的通用 Value。
-        // libpqxx 7 的行迭代器解引用为 pqxx::field，8.x 则改成了
-        // pqxx::field_ref。两者提供相同的只读字段接口，用模板同时接收，
-        // 避免把 8.x 的轻量引用强行绑定到 pqxx::field const&。
         template<typename Field>
         common::Value fieldToValue(const Field &f) {
             using common::Value;
@@ -174,19 +152,15 @@ namespace dbmw::driver {
                         const std::string s = f.template as<std::string>();
                         common::Timestamp ts{};
                         if (common::tryParseTimestamp(s, ts)) return Value{ts};
-                        return Value{s}; // 解析失败不丢数据，退化为字符串
+                        return Value{s};
                     }
                     default:      return Value{f.template as<std::string>()};
                 }
             } catch (...) {
-                // 转换失败时回退为字符串，保证不丢数据。
                 return Value{f.template as<std::string>()};
             }
         }
 
-        // 结果集行数上限。libpqxx 的 exec 已把整个结果集拉进内存，
-        // 因此能用 r.size() 预知总行数：超限时一行都不转换，尽早止损。
-        // limit <= 0 表示不限制；queryEach 走游标流式，不受此约束。
         void fillResultSet(const pqxx::result &r, common::ResultSet &out, int maxRows = 0) {
             if (maxRows > 0 && r.size() > static_cast<pqxx::result::size_type>(maxRows)) {
                 throw std::runtime_error(
@@ -194,7 +168,6 @@ namespace dbmw::driver {
                     + std::to_string(r.size()) + " > " + std::to_string(maxRows)
                     + "); use queryEach() to stream the result instead");
             }
-            // 记录 SELECT 列表中的列顺序（Row 内部是有序 map，本身不带顺序信息）。
             const auto ncols = r.columns();
             std::vector<std::string> fields;
             fields.reserve(ncols);
@@ -212,8 +185,6 @@ namespace dbmw::driver {
             }
         }
 
-        // 把 dbmw 的 Value 追加为 libpqxx 的绑定参数。
-        // 统一用 std::optional 承载，nullopt 即 SQL NULL。
         void appendParams(pqxx::params &p, const common::Params &ps) {
             for (const auto &v : ps) {
                 if (std::holds_alternative<std::nullptr_t>(v)) {
@@ -223,8 +194,6 @@ namespace dbmw::driver {
                 } else if (const auto *x = std::get_if<std::int64_t>(&v)) {
                     p.append(std::optional<long long>{static_cast<long long>(*x)});
                 } else if (const auto *x = std::get_if<std::uint64_t>(&v)) {
-                    // PostgreSQL 没有 unsigned bigint；以十进制文本发送，由目标列
-                    // 类型决定是否接受，避免在客户端静默溢出。
                     p.append(std::optional<std::string>{std::to_string(*x)});
                 } else if (const auto *x = std::get_if<double>(&v)) {
                     p.append(std::optional<double>{*x});
@@ -250,18 +219,6 @@ namespace dbmw::driver {
             }
         }
 
-        // 执行带参数的语句。
-        //
-        // libpqxx 7.10 起 exec_params() 被标记为废弃（提示 "Use exec(zview, params)
-        // instead"），但推荐的 exec(query, params) 重载只存在于 7.10+；7.9 及更早版本
-        // 只有 exec_params(zview, ...)。两个版本 API 不对称，故在此按版本分派，
-        // 使得两种环境都能干净编译且无废弃告警。
-        //
-        // 注意两点：
-        //   - 7.10 的 exec 签名是 exec(std::string_view, params)，params **按值**传参，
-        //     因此这里显式 std::move，省掉一次拷贝；调用后 parms 被移走，不可再使用。
-        //   - 传 pqxx::zview 而非裸 std::string：zview 是对"以 '\0' 结尾"的显式承诺，
-        //     也是 7.10 推荐写法（zview 派生自 string_view，可隐式转换过去）。
         pqxx::result execParams(pqxx::transaction_base &tx, const std::string &sql,
                                 pqxx::params &parms) {
 #if defined(DBMW_PQXX_HAS_EXEC_WITH_PARAMS)
@@ -271,14 +228,6 @@ namespace dbmw::driver {
 #endif
         }
 
-        // 执行已预备语句（prepared statement）。版本分派的原因与 execParams 相同：
-        // pqxx::prepped 和 exec(..., params) 都是 7.10 才有的，更早的版本只能退回
-        // exec_prepared(zview, ...)。
-        //
-        // exec_prepared 是变参模板，会把实参逐个 append 进它内部的 params；而
-        // pqxx::params 自带 append(params const&) / append(params&&) 重载（7.8 起
-        // 就有，libpqxx 文档明确支持"把 params 塞进 params"），所以把已经组装好的
-        // parms 整体传进去，语义与 exec(prepped, params) 完全等价。
         pqxx::result execPrepared(pqxx::transaction_base &tx, const std::string &name,
                                   pqxx::params &parms) {
 #if defined(DBMW_PQXX_HAS_EXEC_WITH_PARAMS)
@@ -324,19 +273,9 @@ namespace dbmw::driver {
             return common::Status::OK();
         }
 #endif
-    } // namespace
+    }
 
 #ifdef DBMW_ENABLE_POSTGRES
-    // 服务端游标实现：DECLARE CURSOR + FETCH FORWARD n + CLOSE。
-    //
-    // 游标必须活在事务里。两种情况：
-    //   - 调用方已开事务（tx_ 非空，典型为 Session::openCursor 的 BorrowedInSession）：
-    //     借用现有事务，close 只关游标、不动事务（事务归 Session 管）。
-    //   - 调用方未开事务且 auto_transaction=true（典型为 DataSource::openCursor 的
-    //     独立游标）：自建一个 PgTx 兜底，游标生命周期托管该事务，close/析构
-    //     时提交它。这样连接钉住到游标关闭为止，符合“借→钉住→取 N 次→显式关→还”。
-    // auto_transaction=false 且没开事务：PG 无法开游标，直接报错（不静默降级，
-    // 否则调用方会以为拿到游标）。
     class PgCursor : public core::ICursor {
     public:
         explicit PgCursor(PostgresConnection &owner) : owner_(owner) {}
@@ -358,7 +297,6 @@ namespace dbmw::driver {
                     "PostgreSQL requires an active transaction for server-side cursors; "
                     "open within a transaction or set CursorOptions.auto_transaction=true");
             }
-            // 进程级自增的唯一游标名：保证不与同事务内的其它游标/语句名冲突。
             const std::string name = "dbmw_cursor_" + std::to_string(++gCursorSeq_);
             const std::string scroll = opts.scrollable ? "SCROLL" : "NO SCROLL";
             const std::string declare = "DECLARE " + name + " " + scroll
@@ -379,13 +317,12 @@ namespace dbmw::driver {
         }
 
         common::Status fetch(std::size_t n, common::ResultSet &out) override {
-            if (!open_) return common::Status::OK(); // 已到 EOF：追加 0 行（与 query 尾次语义一致）
+            if (!open_) return common::Status::OK();
             const std::size_t want = (n == 0) ? batchSize_ : n;
             try {
                 ActiveOperation active(owner_.operationMtx_, owner_.operationActive_);
                 const auto rows = tx_->exec("FETCH FORWARD "
                     + std::to_string(want) + " FROM " + name_);
-                // 即使 0 行也要先记录列顺序；pqxx 的空结果仍带列元数据。
                 ensureFields(out, rows);
                 if (rows.empty()) { open_ = false; eof_ = true; return common::Status::OK(); }
                 for (const auto &source : rows) {
@@ -422,10 +359,9 @@ namespace dbmw::driver {
                 ActiveOperation active(owner_.operationMtx_, owner_.operationActive_);
                 tx_->exec("CLOSE " + name_);
             } catch (const std::exception &e) {
-                // CLOSE 失败不致命：游标所在事务无论如何会随 close/析构结束。
                 st = postgresError(common::ErrorCode::CursorError, "CLOSE CURSOR", e);
             }
-            rollbackOwned(); // 仅当我们自建的事务：提交它、释放事务快照与连接占用。
+            rollbackOwned();
             return st;
         }
 
@@ -468,11 +404,10 @@ namespace dbmw::driver {
     std::atomic<std::uint64_t> PgCursor::gCursorSeq_{0};
 #endif
 
-    // ---------------------------------------------------------------------------
     common::Status PostgresConnection::connect(const config::DataSourceConfig &cfg) {
         cfg_ = cfg;
 #ifdef DBMW_ENABLE_POSTGRES
-        close(); // 清理任何残留状态
+        close();
 
         std::string cs;
         cs += "host=" + connValue(cfg.host.empty() ? std::string("localhost") : cfg.host);
@@ -480,7 +415,6 @@ namespace dbmw::driver {
         if (!cfg.user.empty())     cs += " user=" + connValue(cfg.user);
         if (!cfg.password.empty()) cs += " password=" + connValue(cfg.password);
         if (!cfg.database.empty()) cs += " dbname=" + connValue(cfg.database);
-        // 连接/套接字超时（libpq 以秒为单位）
         if (cfg.connection_timeout_ms > 0)
             cs += " connect_timeout=" + std::to_string(
                 std::max(1, (cfg.connection_timeout_ms + 999) / 1000));
@@ -504,8 +438,6 @@ namespace dbmw::driver {
                                          "PostgreSQL: connection closed immediately after connect");
         }
 
-        // PostgreSQL 在服务端强制执行 statement_timeout，既覆盖普通查询，
-        // 也覆盖显式事务内语句；比客户端套接字超时更精确且不会静默挂死。
         if (cfg.query_timeout_ms > 0) {
             try {
                 pqxx::nontransaction setup{*conn_};
@@ -518,7 +450,6 @@ namespace dbmw::driver {
             }
         }
 
-        // 字符集（extra["charset"]，如 UTF8 / EUC_CN）
         auto it = cfg.extra.find("charset");
         if (it != cfg.extra.end()) {
             try {
@@ -560,7 +491,6 @@ namespace dbmw::driver {
         ActiveOperation active(operationMtx_, operationActive_);
         try {
             if (tx_) {
-                // 处于 begin() 后的显式事务中：复用该事务，此处不提交
                 fillResultSet(tx_->exec(sql), out, cfg_.max_result_rows);
             } else {
                 PgTx tx{*conn_};
@@ -584,7 +514,6 @@ namespace dbmw::driver {
         if (!open_ || !conn_) return notConnected("query");
         ActiveOperation active(operationMtx_, operationActive_);
 
-        // '?' 是 dbmw 的统一占位符，libpq 需要 $1/$2/... 形式。
         std::size_t found = 0;
         const std::string pgSql = replacePlaceholders(
             sql, [](std::size_t i) { return "$" + std::to_string(i + 1); }, found);
@@ -720,13 +649,8 @@ namespace dbmw::driver {
                 }
                 return common::Status::OK();
             };
-            // 调用方已开事务：沿用外层事务，失败范围由调用方决定，
-            // 此时保留部分影响行数供其判断。
             if (tx_) return run(*tx_);
 
-            // 自建事务：PgTx 析构时自动回滚（RAII），整批原子。
-            // 与基类 executeBatch 的默认实现保持一致：已回滚就不该再报告
-            // 部分影响行数，否则调用方会以为前几组真的写进去了。
             PgTx transaction{*conn_};
             const auto status = run(transaction);
             if (status.ok()) {
@@ -756,7 +680,6 @@ namespace dbmw::driver {
             if (tx_) r = tx_->exec(sql);
             else { PgTx w{*conn_}; r = w.exec(sql); w.commit(); }
             affected = static_cast<std::int64_t>(r.affected_rows());
-            // RETURNING 出来的结果集即生成键；无 RETURNING 则 0 行（keys 为空）。
             fillResultSet(r, out.rows, 0);
             return common::Status::OK();
         } catch (const std::exception &e) {
@@ -785,7 +708,7 @@ namespace dbmw::driver {
             if (tx_) r = execParams(*tx_, pgSql, pp);
             else { PgTx w{*conn_}; r = execParams(w, pgSql, pp); w.commit(); }
             affected = static_cast<std::int64_t>(r.affected_rows());
-            fillResultSet(r, out.rows, 0); // RETURNING 透传为生成键
+            fillResultSet(r, out.rows, 0);
             return common::Status::OK();
         } catch (const std::exception &e) {
             return postgresError(common::ErrorCode::QueryError, "execute(keys)", e);
@@ -810,15 +733,13 @@ namespace dbmw::driver {
 #ifdef DBMW_ENABLE_POSTGRES
         out = core::PreparedStatementHandle{};
         if (!open_ || !conn_) return notConnected("prepare");
-        // dbmw 统一用 '?' 占位，PG 需要 $1/$2；prepare 阶段就要类型签名，
-        // 类型序列不同必须视为不同语句（见 common::paramTypeSignature）。
         std::size_t found = 0;
         const std::string pgSql = replacePlaceholders(
             sql, [](std::size_t i) { return "$" + std::to_string(i + 1); }, found);
         if (found != typesSample.size()) return paramMismatch(typesSample.size(), found);
         const std::string key = sql + common::paramTypeSignature(typesSample);
         if (const auto it = preparedCache_.find(key); it != preparedCache_.end()) {
-            preparedLru_.remove(key); // LRU 移到末尾
+            preparedLru_.remove(key);
             preparedLru_.push_back(key);
             out = it->second;
             return common::Status::OK();
@@ -834,7 +755,6 @@ namespace dbmw::driver {
         preparedCache_[key] = h;
         preparedNames_[preparedSeq_] = name;
         preparedLru_.push_back(key);
-        // 超出每连接上限时按 LRU 淘汰（DEALLOCATE 等价物 = conn_->unprepare）。
         if (preparedLimit_ > 0) {
             while (preparedCache_.size() > static_cast<std::size_t>(preparedLimit_)) {
                 const std::string oldKey = preparedLru_.front();
@@ -946,7 +866,6 @@ namespace dbmw::driver {
         out.reset();
         if (!open_ || !conn_) return notConnected("openCursor");
         ActiveOperation active(operationMtx_, operationActive_);
-        // '?' 占位符改写为 libpq 的 $1/$2/...（与 query(params) 一致）。
         std::size_t found = 0;
         const std::string pgSql = replacePlaceholders(
             sql, [](std::size_t i) { return "$" + std::to_string(i + 1); }, found);
@@ -968,7 +887,6 @@ namespace dbmw::driver {
     }
 
     std::string PostgresConnection::escapeLiteral(const common::Value &v) const {
-        // bytea 用 \xHHHH 形式，标准 SQL 的 X'..' 在 PostgreSQL 里不可用。
         if (const auto *b = std::get_if<common::Blob>(&v)) {
             std::string s = "'";
             s += toByteaHex(*b);
@@ -1115,9 +1033,7 @@ namespace dbmw::driver {
 
     void PostgresConnection::close() {
 #ifdef DBMW_ENABLE_POSTGRES
-        // 先释放本连接上所有预编译句柄（连接即将归还/销毁，named 预备语句随之失效）。
         closeAllPrepared();
-        // 先结束事务再断开连接，避免悬空事务引用已释放的连接。
         if (tx_) { try { tx_->abort(); } catch (...) {} tx_.reset(); }
         if (conn_) { try { conn_->close(); } catch (...) {} conn_.reset(); }
 #endif
@@ -1154,4 +1070,4 @@ namespace dbmw::driver {
         DriverRegistry::instance().registerDriver("postgres",
                                                   []() { return std::make_unique<PostgresDriver>(); });
     }
-} // namespace dbmw::driver
+}

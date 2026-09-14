@@ -392,7 +392,7 @@ void testCacheAsyncAndObservability(Fixture &f) {
     require(!dbmw::DBMW::recentSlowSql(100).empty(), "recent slow SQL records are empty");
 }
 
-} // namespace
+}
 
 int main() {
     Fixture fixture;

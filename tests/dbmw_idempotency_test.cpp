@@ -1,18 +1,3 @@
-// dbmw v0.4.0 M5 单测：幂等声明（Idempotency）叠加到重试决策。
-//
-// 覆盖（docs/roadmap-design-v0.4.0.md §7）：
-//   1. Unspecified + retry_writes=true  → 走既有逻辑（失败重试到 max_attempts）。
-//   2. Unspecified + retry_writes=true + 失败数超过 max → 耗尽后返回失败。
-//   3. NonIdempotent + retry_writes=true → 覆盖配置，绝不重试（仅 1 次）。
-//   4. Idempotent + retry_writes=false   → 覆盖配置，允许重试（到 max_attempts）。
-//   5. Idempotent + retry_writes=false + 失败超 max → 耗尽后失败。
-//   6. NonIdempotent + 可重试错误         → 仍仅 1 次（声明压制重试语义一致）。
-//   7. 读路径不受影响：NonIdempotent 声明下 query 仍按 max_attempts 重试。
-//   8. 异步路径：Idempotent + retry_writes=false → 重试到 max_attempts。
-//   9. 异步路径：NonIdempotent + retry_writes=false → 仅 1 次。
-//
-// 无真实数据库依赖，全部走 mock 驱动；通过"注入 N 次可重试失败 + 数 execute
-// 调用次数"验证重试决策，直接命中 resolveWriteAttempts / maxAttempts 的真实分支。
 #include "dbmw/dbmw.h"
 #include "dbmw/async/dbmw_async.h"
 #include "dbmw/core/connection_pool.h"
@@ -46,18 +31,14 @@ static void check(bool cond, const std::string &name) {
     else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
 }
 
-// ---------------------------------------------------------------------------
-// Mock 驱动：支持"注入 N 次可重试连接失败"，并分别统计 execute / query 调用次数。
-// 这是验证重试决策的最小可控手段——直接数驱动层被调几次即可反推 attempts。
-// ---------------------------------------------------------------------------
 class MockConnection : public core::IDatabaseConnection {
 public:
     static std::atomic<int> alive;
     static std::atomic<int> execCount;
     static std::atomic<int> queryCount;
-    static std::atomic<int> execFailRemaining;   // 前 N 次 execute 返回可重试错误
-    static std::atomic<int> queryFailRemaining;  // 前 N 次 query 返回可重试错误
-    static std::atomic<bool> execFailNonRetryable;// true=注入的错误不可重试
+    static std::atomic<int> execFailRemaining;
+    static std::atomic<int> queryFailRemaining;
+    static std::atomic<bool> execFailNonRetryable;
 
     common::Status connect(const config::DataSourceConfig &) override {
         open_ = true;
@@ -129,7 +110,6 @@ public:
     }
 };
 
-// 每个场景前重置：活连接 / 计数 / 失败注入。
 static void resetMock(int execFails = 0, int queryFails = 0, bool nonRetry = false) {
     MockConnection::alive = 0;
     MockConnection::execCount = 0;
@@ -148,7 +128,6 @@ static config::DataSourceConfig mockLeafCfg(const std::string &name) {
     return c;
 }
 
-// retry_writes / max_attempts 可配；熔断一律关闭，隔离重试测试。
 static core::DataSourceOptions retryOpts(bool retryWrites, int maxAttempts,
                                          int backoffMs = 0) {
     core::DataSourceOptions o;
@@ -160,19 +139,16 @@ static core::DataSourceOptions retryOpts(bool retryWrites, int maxAttempts,
     return o;
 }
 
-// ---------------------------------------------------------------------------
 int main() {
     driver::DriverRegistry::instance().registerDriver(
         "mock", [] { return std::make_unique<MockDriver>(); });
 
-    // ------------------------------------------------------------------
     std::cout << "== M5.1 Unspecified + retry_writes=true：走既有逻辑（失败重试到 max）==\n";
     {
         core::DatabaseManager mgr;
-        mgr.addDataSource(mockLeafCfg("ds"), retryOpts(/*retryWrites=*/true, /*max=*/3));
+        mgr.addDataSource(mockLeafCfg("ds"), retryOpts(true, 3));
         auto ds = mgr.getDataSource("ds");
-        resetMock(/*execFails=*/2);
-        // 不推 ContextScope → idempotency = Unspecified（default）。
+        resetMock(2);
         std::int64_t aff = 0;
         const auto st = ds->execute("INSERT INTO t VALUES (1)", aff);
         check(st.ok(), "Unspecified + retry_writes=true：最终成功");
@@ -181,13 +157,12 @@ int main() {
         mgr.shutdown(std::chrono::milliseconds(0));
     }
 
-    // ------------------------------------------------------------------
     std::cout << "== M5.2 Unspecified + retry_writes=true + 失败超 max：耗尽返回失败 ==\n";
     {
         core::DatabaseManager mgr;
-        mgr.addDataSource(mockLeafCfg("ds"), retryOpts(/*retryWrites=*/true, /*max=*/3));
+        mgr.addDataSource(mockLeafCfg("ds"), retryOpts(true, 3));
         auto ds = mgr.getDataSource("ds");
-        resetMock(/*execFails=*/5);
+        resetMock(5);
         std::int64_t aff = 0;
         const auto st = ds->execute("INSERT INTO t VALUES (1)", aff);
         check(!st.ok(), "Unspecified + retry_writes=true：失败耗尽");
@@ -196,13 +171,12 @@ int main() {
         mgr.shutdown(std::chrono::milliseconds(0));
     }
 
-    // ------------------------------------------------------------------
     std::cout << "== M5.3 NonIdempotent + retry_writes=true：覆盖配置，绝不重试 ==\n";
     {
         core::DatabaseManager mgr;
-        mgr.addDataSource(mockLeafCfg("ds"), retryOpts(/*retryWrites=*/true, /*max=*/3));
+        mgr.addDataSource(mockLeafCfg("ds"), retryOpts(true, 3));
         auto ds = mgr.getDataSource("ds");
-        resetMock(/*execFails=*/5);
+        resetMock(5);
         common::SqlContext context;
         context.idempotency = common::Idempotency::NonIdempotent;
         common::ContextScope scope(context);
@@ -214,13 +188,12 @@ int main() {
         mgr.shutdown(std::chrono::milliseconds(0));
     }
 
-    // ------------------------------------------------------------------
     std::cout << "== M5.4 Idempotent + retry_writes=false：覆盖配置，允许重试写 ==\n";
     {
         core::DatabaseManager mgr;
-        mgr.addDataSource(mockLeafCfg("ds"), retryOpts(/*retryWrites=*/false, /*max=*/3));
+        mgr.addDataSource(mockLeafCfg("ds"), retryOpts(false, 3));
         auto ds = mgr.getDataSource("ds");
-        resetMock(/*execFails=*/2);
+        resetMock(2);
         common::SqlContext context;
         context.idempotency = common::Idempotency::Idempotent;
         common::ContextScope scope(context);
@@ -232,13 +205,12 @@ int main() {
         mgr.shutdown(std::chrono::milliseconds(0));
     }
 
-    // ------------------------------------------------------------------
     std::cout << "== M5.5 Idempotent + retry_writes=false + 失败超 max：耗尽失败 ==\n";
     {
         core::DatabaseManager mgr;
-        mgr.addDataSource(mockLeafCfg("ds"), retryOpts(/*retryWrites=*/false, /*max=*/3));
+        mgr.addDataSource(mockLeafCfg("ds"), retryOpts(false, 3));
         auto ds = mgr.getDataSource("ds");
-        resetMock(/*execFails=*/5);
+        resetMock(5);
         common::SqlContext context;
         context.idempotency = common::Idempotency::Idempotent;
         common::ContextScope scope(context);
@@ -250,13 +222,12 @@ int main() {
         mgr.shutdown(std::chrono::milliseconds(0));
     }
 
-    // ------------------------------------------------------------------
     std::cout << "== M5.6 NonIdempotent + 可重试错误：仍仅 1 次 ==\n";
     {
         core::DatabaseManager mgr;
-        mgr.addDataSource(mockLeafCfg("ds"), retryOpts(/*retryWrites=*/true, /*max=*/3));
+        mgr.addDataSource(mockLeafCfg("ds"), retryOpts(true, 3));
         auto ds = mgr.getDataSource("ds");
-        resetMock(/*execFails=*/5);
+        resetMock(5);
         common::SqlContext context;
         context.idempotency = common::Idempotency::NonIdempotent;
         common::ContextScope scope(context);
@@ -268,13 +239,12 @@ int main() {
         mgr.shutdown(std::chrono::milliseconds(0));
     }
 
-    // ------------------------------------------------------------------
     std::cout << "== M5.7 读路径不受影响：NonIdempotent 下 query 仍按 max 重试 ==\n";
     {
         core::DatabaseManager mgr;
-        mgr.addDataSource(mockLeafCfg("ds"), retryOpts(/*retryWrites=*/false, /*max=*/3));
+        mgr.addDataSource(mockLeafCfg("ds"), retryOpts(false, 3));
         auto ds = mgr.getDataSource("ds");
-        resetMock(/*execFails=*/0, /*queryFails=*/2);
+        resetMock(0, 2);
         common::ResultSet rs;
         const auto st = ds->query("SELECT 1", rs);
         check(st.ok(), "NonIdempotent：query 重试后成功（读不受声明影响）");
@@ -283,9 +253,6 @@ int main() {
         mgr.shutdown(std::chrono::milliseconds(0));
     }
 
-    // ------------------------------------------------------------------
-    // 异步路径：经 DBMW::init 启用内置执行器，声明经 ContextScope 快照进入
-    // async_engine 的 maxAttempts（与同步 resolveWriteAttempts 同源优先级表）。
     std::cout << "== M5.8/9 异步路径：声明叠加到 maxAttempts ==\n";
     {
         const auto path = (std::filesystem::temp_directory_path() /
@@ -305,8 +272,7 @@ int main() {
 })";
         check(DBMW::init(path).ok(), "DBMW::init(async cfg) ok");
 
-        // M5.8：Idempotent + retry_writes=false → 应重试到 max_attempts。
-        resetMock(/*execFails=*/2);
+        resetMock(2);
         {
             std::promise<async::ExecResult> pr;
             auto fut = pr.get_future();
@@ -321,8 +287,7 @@ int main() {
         check(MockConnection::execCount.load() == 3,
               "异步 Idempotent 执行 3 次（覆盖 retry_writes=false）");
 
-        // M5.9：NonIdempotent + retry_writes=false → 仅 1 次。
-        resetMock(/*execFails=*/5);
+        resetMock(5);
         {
             std::promise<async::ExecResult> pr;
             auto fut = pr.get_future();

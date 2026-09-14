@@ -1,11 +1,3 @@
-// dbmw v0.2.0 异步 API 行为验证（设计 §14：T5–T13）。
-//
-// 复用与 dbmw_core_test 相同的手法：mock 驱动跑真实的连接池 / 引擎管线，
-// 不依赖任何第三方测试框架与真实数据库。
-//
-// 运行顺序有依赖：
-//   - 各节通过 DBMW::reload 切换治理开关（审计/限流/缓存/熔断）；
-//   - 生命周期（T11）必须放在最后 —— 它会 shutdown 掉全局引擎。
 #include "dbmw/dbmw.h"
 #include "dbmw/async/dbmw_async.h"
 #include "dbmw/core/idatabase_connection.h"
@@ -39,9 +31,6 @@ static void check(bool cond, const std::string &name) {
     else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
 }
 
-// ---------------------------------------------------------------------------
-// Mock 驱动（异步版：增加时延/取消开关）
-// ---------------------------------------------------------------------------
 class AsyncMockConnection : public core::IDatabaseConnection {
 public:
     static std::atomic<int> alive;
@@ -49,14 +38,9 @@ public:
     static std::atomic<int> queryCalls;
     static std::atomic<int> executeCalls;
     static std::atomic<int> cancelCalls;
-    // >0 时每次 query 睡这么久（毫秒）：制造"正在运行"的语句供取消/超时打断。
     static std::atomic<int> queryDelayMs;
-    // 每次 query() 进入时置 true：测试用它确认语句已真正在驱动里跑起来
-    // （Handle::Running 在借连接前就置位，取消测试不能只等 Running）。
     static std::atomic<bool> queryEntered;
-    // >0 时前 N 次 query 失败（可重试错误）。
     static std::atomic<int> queryFailuresRemaining;
-    // true = 模拟"驱动未实现取消"（cancel 返回 NotSupported）。
     static std::atomic<bool> cancelUnsupported;
     static std::vector<std::string> log;
     static std::mutex logMtx;
@@ -199,8 +183,6 @@ public:
     }
 };
 
-// 模拟已停止/队列满的完成调度器：所有即时投递都拒绝。
-// 异步引擎必须仍然在非调用线程交付回调，不能 caller-runs。
 class RejectingCompletionExecutor final : public async::IExecutor {
 public:
     bool tryPost(Task) override { return false; }
@@ -209,16 +191,13 @@ public:
     [[nodiscard]] async::ExecutorStats stats() const override { return {}; }
 };
 
-// ---------------------------------------------------------------------------
-// 配置与工具
-// ---------------------------------------------------------------------------
 struct CfgFlags {
-    bool auditBlock = false;      // sql_audit: block_no_where_dml + action=block
-    bool readOnlyGroup = false;   // 组 read_only + enforce_read_only
-    bool rateLimit = false;       // global_qps = 1
-    bool cache = false;           // query_cache on
-    int circuitThreshold = 0;     // >0 时启用熔断阈值
-    int circuitOpenMs = 60000;    // 熔断开放时长
+    bool auditBlock = false;
+    bool readOnlyGroup = false;
+    bool rateLimit = false;
+    bool cache = false;
+    int circuitThreshold = 0;
+    int circuitOpenMs = 60000;
     int retryBackoffMs = 20;
 };
 
@@ -271,7 +250,6 @@ static bool waitUntil(const std::function<bool()> &pred, int timeoutMs = 5000) {
     return pred();
 }
 
-// 回调式便捷封装：返回 (结果, 完成时刻)。
 template <class R>
 struct AsyncOutcome {
     R result;
@@ -289,7 +267,6 @@ static AsyncOutcome<R> awaitResult(std::future<R> &&f, int timeoutMs = 5000) {
     return o;
 }
 
-// ---------------------------------------------------------------------------
 int main() {
     g_configPath = (std::filesystem::temp_directory_path() /
                     "dbmw_async_test.json").string();
@@ -304,7 +281,6 @@ int main() {
         return 1;
     }
 
-    // =====================================================================
     std::cout << "== A1. 基础：回调式 query / future 式 execute（T13 前置）==\n";
     {
         std::promise<async::QueryResult> pr;
@@ -332,7 +308,6 @@ int main() {
         check(eout.result.status.ok() && eout.result.affected == 1,
               "future 式 execute 成功且 affected 正确");
 
-        // Handle 一次性：完成后状态为 Done，再 cancel 报错（T8 的一部分）。
         check(h.state() == async::Handle::State::Done, "完成后 Handle 状态为 Done");
         check(h.cancel().code == common::ErrorCode::QueryError,
               "对已完成的 Handle 调 cancel 返回错误");
@@ -342,13 +317,11 @@ int main() {
               "默认构造 Handle 无效且视作 Done");
     }
 
-    // =====================================================================
     std::cout << "== A2. 重试：postAfter 退避，worker 不睡眠阻塞（T7/D6）==\n";
     {
         AsyncMockConnection::queryCalls = 0;
         AsyncMockConnection::executeCalls = 0;
-        AsyncMockConnection::queryFailuresRemaining = 2; // 前 2 次失败，第 3 次成功
-        // 完成时刻在回调内记录（awaitResult 按顺序 await，取结果时刻≠完成时刻）。
+        AsyncMockConnection::queryFailuresRemaining = 2;
         std::promise<async::QueryResult> retryPr;
         std::promise<async::ExecResult> markerPr;
         auto retryFut = retryPr.get_future();
@@ -360,9 +333,6 @@ int main() {
             retryPr.set_value(std::move(r));
         });
         const auto t0 = std::chrono::steady_clock::now();
-        // 重试等待期间提交无故障的 marker（用 execute：与 query 的失败计数器
-        // 隔离，不受重试场景注入的失败影响）：单 worker 下若重试用 sleep 阻塞，
-        // marker 就得等 2 个退避间隔 + 全部重试之后才能跑。
         async::execute("UPDATE marker SET v = 1", [&](async::ExecResult &&r) {
             markerDone = std::chrono::steady_clock::now();
             markerPr.set_value(std::move(r));
@@ -381,17 +351,13 @@ int main() {
         check(markerMs < 100,
               "marker 立即执行（实测 " + std::to_string(markerMs) +
                   "ms）—— worker 未被退避睡眠占用");
-        // 退避时长有抖动且受调度精度影响，不做绝对下限断言；
-        // 逻辑必然性：marker 在退避窗口内完成，必早于重试的第 3 次尝试。
         check(retryMs > markerMs,
               "重试整体耗时长于 marker（" + std::to_string(retryMs) + "ms vs " +
                   std::to_string(markerMs) + "ms，含抖动）");
     }
 
-    // =====================================================================
     std::cout << "== A3. 取消：Running 转发 / Queued 免池 / Done 报错（T8）==\n";
     {
-        // --- Running：慢语句运行中取消，转发到驱动 ---
         AsyncMockConnection::resetLog();
         AsyncMockConnection::cancelCalls = 0;
         AsyncMockConnection::queryEntered = false;
@@ -401,8 +367,6 @@ int main() {
         auto h = async::query("SELECT slow", [&](async::QueryResult &&r) {
             pr.set_value(std::move(r));
         });
-        // 等 queryEntered 而不是 Handle::Running：Running 在借连接前就置位，
-        // 而 cancel 转发需要会话已被钉住（attempt 执行中）。
         check(waitUntil([&] { return AsyncMockConnection::queryEntered.load(); }, 2000),
               "慢语句进入驱动执行（会话已钉住）");
         const auto cstat = h.cancel();
@@ -414,7 +378,6 @@ int main() {
         check(AsyncMockConnection::logHas("cancel"), "驱动侧收到 cancel");
         AsyncMockConnection::queryDelayMs = 0;
 
-        // --- Queued：worker 被慢语句占满，后续操作排队中被取消 ---
         AsyncMockConnection::resetLog();
         AsyncMockConnection::queryEntered = false;
         AsyncMockConnection::queryDelayMs = 300;
@@ -424,9 +387,6 @@ int main() {
         auto h1 = async::query("SELECT busy", [&](async::QueryResult &&r) {
             pr1.set_value(std::move(r));
         });
-        // 先确认占位任务已经借到连接并进入驱动，再为排队任务记录基线。
-        // 否则慢 runner 上 h1 可能在基线之后才建连，测试会把 h1 的连接
-        // 错算成被取消的 h2 创建的连接（macOS CI 曾触发此竞态）。
         check(waitUntil([&] { return AsyncMockConnection::queryEntered.load(); }, 2000),
               "占位任务已进入驱动，连接创建基线稳定");
         const auto connectsBefore = AsyncMockConnection::connectCalls.load();
@@ -446,11 +406,10 @@ int main() {
         AsyncMockConnection::queryDelayMs = 0;
     }
 
-    // =====================================================================
     std::cout << "== A4. 语句超时：QueryTimeout + 未送达取消提示（T9/D7）==\n";
     {
         AsyncMockConnection::queryDelayMs = 400;
-        AsyncMockConnection::cancelUnsupported = true; // 模拟驱动不支持取消
+        AsyncMockConnection::cancelUnsupported = true;
         async::Options opts;
         opts.timeout = std::chrono::milliseconds(60);
         std::promise<async::QueryResult> pr;
@@ -472,7 +431,6 @@ int main() {
         AsyncMockConnection::cancelUnsupported = false;
     }
 
-    // =====================================================================
     std::cout << "== A5. 缓存：命中零驱动调用，写失效（T6 + T12 缓存交互）==\n";
     {
         CfgFlags f = base;
@@ -494,7 +452,6 @@ int main() {
                   "SELECT cacheable",
               "第二次异步查询缓存命中，mock 驱动零调用");
 
-        // 跨路径一致性：异步写入的缓存，同步读得到；同步写失效后异步回源。
         AsyncMockConnection::queryCalls = 0;
         common::ResultSet syncRows;
         check(DBMW::query("SELECT cacheable", syncRows).ok() &&
@@ -515,10 +472,8 @@ int main() {
               "恢复基础配置");
     }
 
-    // =====================================================================
     std::cout << "== A6. 管线 fail-fast：审计 / 限流 / 熔断（T5 + I1）==\n";
     {
-        // --- 审计拦截：无 WHERE 的 DELETE ---
         CfgFlags f = base;
         f.auditBlock = true;
         applyConfig(f);
@@ -538,7 +493,6 @@ int main() {
         check(cbTid != callerTid,
               "拦截结果经完成调度器投递，不在调用线程栈上（I1）");
 
-        // --- 限流：global_qps=1，第二次立即被拒 ---
         CfgFlags rf = base;
         rf.rateLimit = true;
         applyConfig(rf);
@@ -550,14 +504,6 @@ int main() {
         check(second.result.status.code == common::ErrorCode::RateLimited,
               "第二次操作被限流快速拒绝（RateLimited）");
 
-        // --- 熔断：语义对齐同步测试 #22（阈值 2、半开恢复）---
-        // remaining=2 时第一次查询的重试中途熔断打开（attempt1/2 各计一次失败，
-        // 第 3 次尝试被逐尝试闸门拦下）→ CircuitOpen 且恰好 2 次驱动调用。
-        // open_interval 取 2000ms：两次退避名义 ~40ms，但慢 runner（macOS 托管
-        // 机调度抖动大）上重试间隔可膨胀到数百 ms——窗口必须远大于最坏重试
-        // 间隔，否则熔断在重试结束前过期转半开、探测放行（实测踩过：100ms
-        // 窗口在 macOS CI 上 calls=3 且收尾 Ok）。随后冷却 2100ms > 2000ms，
-        // 下一次查询作为半开探测放行。
         CfgFlags cf = base;
         cf.circuitThreshold = 2;
         cf.circuitOpenMs = 2000;
@@ -585,8 +531,6 @@ int main() {
               AsyncMockConnection::queryCalls == 0,
               "熔断开放期间异步查询快速失败且零驱动调用");
         check(ms < 500, "快速失败（实测 " + std::to_string(ms) + "ms）");
-        // 冷却 2500ms > 开放 2000ms（留出 f1 收尾与 f2 快速失败的耗时余量）：
-        // 下一次查询作为半开探测放行。
         std::this_thread::sleep_for(std::chrono::milliseconds(2500));
         AsyncMockConnection::queryFailuresRemaining = 0;
         AsyncMockConnection::queryCalls = 0;
@@ -599,10 +543,8 @@ int main() {
               "恢复基础配置");
     }
 
-    // =====================================================================
     std::cout << "== A7. 异步事务：提交 / 回滚 / 异常 / 只读拦截（T10）==\n";
     {
-        // --- 成功提交 ---
         AsyncMockConnection::resetLog();
         auto okOut = awaitResult(async::transaction([](core::Session &s) {
             std::int64_t n = 0;
@@ -613,7 +555,6 @@ int main() {
               !AsyncMockConnection::logHas("rollback"),
               "fn 成功的异步事务自动提交");
 
-        // --- fn 失败回滚 ---
         AsyncMockConnection::resetLog();
         auto failOut = awaitResult(async::transaction([](core::Session &s) {
             std::int64_t n = 0;
@@ -626,7 +567,6 @@ int main() {
               !AsyncMockConnection::logHas("commit"),
               "fn 失败的异步事务自动回滚");
 
-        // --- fn 抛异常回滚 ---
         AsyncMockConnection::resetLog();
         auto throwOut = awaitResult(async::transaction([](core::Session &) -> Status {
             throw std::runtime_error("user callback blew up");
@@ -635,7 +575,6 @@ int main() {
               AsyncMockConnection::logHas("rollback"),
               "fn 抛异常的异步事务回滚且不外泄异常");
 
-        // --- withSession：不开事务 ---
         AsyncMockConnection::resetLog();
         std::promise<async::OpResult> wsPr;
         auto wsFut = wsPr.get_future();
@@ -647,7 +586,6 @@ int main() {
         check(wsOut.result.status.ok() && !AsyncMockConnection::logHas("begin"),
               "withSession 不自动开事务");
 
-        // --- 只读组拦截写（审计 enforce_read_only）---
         CfgFlags f = base;
         f.readOnlyGroup = true;
         applyConfig(f);
@@ -666,13 +604,11 @@ int main() {
               "恢复基础配置");
     }
 
-    // =====================================================================
     std::cout << "== A8. 一致性矩阵：同步 vs 异步逐项相等（T12/R1）==\n";
     {
         common::ErrorCode syncCode, asyncCode;
         int syncCalls, asyncCalls;
 
-        // --- 场景 1：可重试错误，第 3 次成功（基础配置：熔断关闭）---
         applyConfig(base);
         check(DBMW::reload(g_configPath, std::chrono::milliseconds(500)).ok(),
               "热加载场景 1 配置（无熔断）");
@@ -694,7 +630,6 @@ int main() {
               syncCalls == 3 && asyncCalls == 3,
               "重试场景：最终状态码与驱动调用数同步=异步（Ok / 3 次）");
 
-        // --- 场景 2：熔断（阈值 2，开放 60s）：重试途中打开 + 后续快速失败 ---
         CfgFlags f = base;
         f.circuitThreshold = 2;
         applyConfig(f);
@@ -712,7 +647,6 @@ int main() {
                   "同步：重试途中熔断打开（第一次查询即 CircuitOpen）");
         }
         {
-            // reload 重建数据源以重置熔断状态
             check(DBMW::reload(g_configPath, std::chrono::milliseconds(500)).ok(),
                   "重载数据源重置熔断");
             AsyncMockConnection::queryCalls = 0;
@@ -729,9 +663,8 @@ int main() {
               "（CircuitOpen / 恰好 2 次驱动调用）");
         AsyncMockConnection::queryFailuresRemaining = 0;
 
-        // --- 场景 3：写默认不重试（先 reload 清掉打开的熔断）---
         {
-            applyConfig(base); // 重建数据源，重置熔断状态
+            applyConfig(base);
             check(DBMW::reload(g_configPath, std::chrono::milliseconds(500)).ok(),
                   "重载数据源重置熔断（写场景前）");
             AsyncMockConnection::executeCalls = 0;
@@ -755,7 +688,6 @@ int main() {
               "恢复基础配置");
     }
 
-    // =====================================================================
     std::cout << "== A9. 完成调度器过载：回调仍不在调用栈内执行 ==\n";
     {
         async::setCompletionExecutor(std::make_shared<RejectingCompletionExecutor>());
@@ -768,7 +700,6 @@ int main() {
         const auto delivered = future.get();
         check(delivered.first.ok() && delivered.second != caller,
               "完成调度器拒绝投递时，保底队列异步交付回调");
-        // 后续生命周期用例仍走保底调度器，不再将已拒绝的对象留在全局。
         async::setCompletionExecutor(nullptr);
     }
 
@@ -797,7 +728,6 @@ int main() {
         AsyncMockConnection::queryDelayMs = 0;
     }
 
-    // 收尾统计
     std::cout << "\n----------------------------------------\n";
     std::cout << "通过 " << g_passed << " 项，失败 " << g_failed << " 项\n";
     return g_failed == 0 ? 0 : 1;

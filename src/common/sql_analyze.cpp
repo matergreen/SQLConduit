@@ -2,11 +2,8 @@
 
 #include <cctype>
 
-
 namespace dbmw::common::sql {
     namespace {
-        // 与 observer.cpp 中历史实现保持一致：折叠字符串/数值字面量、保留标识符。
-        // 任何改动都应同步 observer 侧的使用方——这里已抽取为唯一来源。
         std::string buildStructural(const std::string &sql) {
             std::string out;
             out.reserve(sql.size());
@@ -29,7 +26,6 @@ namespace dbmw::common::sql {
                     continue;
                 }
 
-                // 普通注释不影响 SQL 结构；MySQL 版本注释和优化器 Hint 会影响执行，保留。
                 if (c == '-' && i + 1 < n && sql[i + 1] == '-') {
                     while (i < n && sql[i] != '\n') ++i;
                     pendingSpace = !out.empty();
@@ -50,7 +46,6 @@ namespace dbmw::common::sql {
                     continue;
                 }
 
-                // PostgreSQL $$...$$ / $tag$...$tag$。
                 if (c == '$') {
                     std::size_t tagEnd = i + 1;
                     while (tagEnd < n &&
@@ -172,8 +167,6 @@ namespace dbmw::common::sql {
             return out;
         }
 
-        // 把字符串字面量、注释、引号标识符区域替换为空格（保持长度），
-        // 便于在剩下的"裸结构"上做关键字扫描，避免字符串里的 WHERE/LIMIT 误判。
         std::string maskLiteralRegions(const std::string &sql) {
             std::string out = sql;
             const std::size_t n = out.size();
@@ -229,8 +222,6 @@ namespace dbmw::common::sql {
             return out;
         }
 
-        // 在裸结构文本的括号深度 0 查找独立关键字。
-        // CTE/子查询中的 WHERE/LIMIT 不能替外层语句过审。
         bool containsTopLevelKeyword(const std::string &masked, const char *kw) {
             const std::size_t klen = std::char_traits<char>::length(kw);
             const std::size_t n = masked.size();
@@ -265,9 +256,6 @@ namespace dbmw::common::sql {
             const std::string first = upperFirstVerb(masked);
             if (first != "WITH") return first;
 
-            // WITH [RECURSIVE] cte AS (...) [, ...] <main-verb> ...
-            // CTE 查询体都在括号内，因此只要在 depth==0 找第一个真正的
-            // DML 动词即可。标识符和字面量已由 maskLiteralRegions 屏蔽。
             int depth = 0;
             std::string nestedWrite;
             for (std::size_t i = 0; i < masked.size();) {
@@ -291,11 +279,10 @@ namespace dbmw::common::sql {
                 }
                 ++i;
             }
-            return first; // 无法确定时保持保守的 WITH 分类
+            return first;
         }
 
         std::string upperFirstVerb(const std::string &masked) {
-            // 跳过前导空白，取第一个空白/括号/分号前的 token。
             std::size_t i = 0;
             const std::size_t n = masked.size();
             while (i < n && std::isspace(static_cast<unsigned char>(masked[i]))) ++i;
@@ -366,4 +353,4 @@ namespace dbmw::common::sql {
         }
         return false;
     }
-} // namespace dbmw::common::sql
+}

@@ -11,7 +11,6 @@
 #include <variant>
 #include <vector>
 
-
 namespace dbmw::common {
     const char *errorCodeToString(const ErrorCode c) {
         switch (c) {
@@ -81,7 +80,6 @@ namespace dbmw::common {
     }
 
     namespace {
-        // 把 time_point 拆成 civil time；秒以下单独由 fracNs 返回。
         std::tm toTm(const Timestamp &t, long long &fracNs, const bool utc) {
             const auto secs = std::chrono::floor<std::chrono::seconds>(t.time_since_epoch());
             fracNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -118,7 +116,7 @@ namespace dbmw::common {
                 out.push_back(kHex[byte & 0x0F]);
             }
         }
-    } // namespace
+    }
 
     std::string timestampToString(const Timestamp &t) {
         return formatTimestamp(t, false);
@@ -133,7 +131,6 @@ namespace dbmw::common {
     }
 
     bool tryParseTimestamp(const std::string &s, Timestamp &out) {
-        // 手动解析，避免依赖 locale 与各平台 strptime 的行为差异。
         auto readInt = [&](size_t &i, const int width, int &val) -> bool {
             if (i + static_cast<size_t>(width) > s.size()) return false;
             val = 0;
@@ -176,7 +173,7 @@ namespace dbmw::common {
                 if (digits < 9) { v = v * 10 + (s[i] - '0'); ++digits; }
                 ++i;
             }
-            while (digits < 9) { v *= 10; ++digits; } // 归一到纳秒
+            while (digits < 9) { v *= 10; ++digits; }
             fracNs = v;
         }
 
@@ -211,7 +208,6 @@ namespace dbmw::common {
         }
 
         if (hasExplicitZone) {
-            // Gregorian civil date -> days since 1970-01-01（Howard Hinnant 算法）。
             int civilYear = y;
             const unsigned civilMonth = static_cast<unsigned>(mo);
             civilYear -= civilMonth <= 2;
@@ -237,12 +233,10 @@ namespace dbmw::common {
         tm.tm_hour = h;
         tm.tm_min = mi;
         tm.tm_sec = se;
-        tm.tm_isdst = -1; // 交由 mktime 判断夏令时
+        tm.tm_isdst = -1;
         const std::time_t tt = std::mktime(&tm);
         if (tt == static_cast<std::time_t>(-1)) return false;
 
-        // 各平台 system_clock 精度不同（Linux 多为纳秒、macOS 为微秒），
-        // 统一转回时钟自身的 duration 再相加，避免类型不匹配。
         out = std::chrono::system_clock::from_time_t(tt)
               + std::chrono::duration_cast<Timestamp::duration>(
                   std::chrono::nanoseconds(fracNs));
@@ -289,7 +283,6 @@ namespace dbmw::common {
         if (const auto *p = std::get_if<std::int64_t>(&v)) return std::to_string(*p);
         if (const auto *p = std::get_if<std::uint64_t>(&v)) return std::to_string(*p);
         if (const auto *p = std::get_if<double>(&v)) {
-            // NaN/Inf 无法用 SQL 字面量表达，退化成 NULL 而不是产生语法错误。
             if (!std::isfinite(*p)) return "NULL";
             std::ostringstream os;
             os << std::setprecision(17) << *p;
@@ -313,8 +306,6 @@ namespace dbmw::common {
         if (const auto *p = std::get_if<Uuid>(&v)) return quoteText(p->value);
         if (const auto *p = std::get_if<Json>(&v)) return quoteText(p->value);
         if (const auto *p = std::get_if<Blob>(&v)) {
-            // 标准 SQL 的二进制字面量写法。方言差异较大，
-            // 具体驱动应覆盖 escapeLiteral() 给出本方言的正确形式。
             std::string s = "X'";
             appendHex(s, *p);
             s += '\'';
@@ -323,7 +314,7 @@ namespace dbmw::common {
         if (const auto *p = std::get_if<std::string>(&v)) {
             std::string s = "'";
             for (const char c: *p) {
-                if (c == '\'') s += "''"; // SQL 标准：单引号翻倍
+                if (c == '\'') s += "''";
                 else s.push_back(c);
             }
             s += '\'';
@@ -345,8 +336,6 @@ namespace dbmw::common {
     std::int64_t GeneratedKeys::lastInsertId() const {
         if (rows.empty()) return 0;
 
-        // 取首行首列。列顺序按 ResultSet::fields() 声明的 SELECT 顺序；
-        // 驱动没声明 fields 时退化为 Row 内部的字典序首键。
         const auto &firstRow = rows.rows().front();
         std::string column;
         const auto &fields = rows.fields();
@@ -364,20 +353,17 @@ namespace dbmw::common {
             return *i <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())
                 ? static_cast<std::int64_t>(*i) : 0;
         }
-        // PG / ODBC 的 RETURNING 可能把 int8 以文本形式送回，容错解析一次。
         if (const auto *s = std::get_if<std::string>(&v)) {
             try {
                 return static_cast<std::int64_t>(std::stoll(*s));
             } catch (...) {
-                return 0; // 非数字文本：调用方应直接读 rows 自行解释
+                return 0;
             }
         }
         return 0;
     }
 
     StreamSource::StreamSource(std::istream &in, const bool isBinary) : isBinary_(isBinary) {
-        // 按引用捕获：流必须在本次执行期间存活。
-        // StreamSource 的副本共享同一个流与读位置——这与"顺序读一次"的语义一致。
         read_ = [&in](void *buf, const std::size_t n) -> std::size_t {
             if (!in.good()) return 0;
             in.read(static_cast<char *>(buf), static_cast<std::streamsize>(n));
@@ -392,12 +378,8 @@ namespace dbmw::common {
 
         for (const auto &param: params) {
             if (const auto *src = std::get_if<StreamSource>(&param)) {
-                // 参数是 const 的，而 read() 要推进读位置，只能拷一份——
-                // 拷贝共享底层流，读位置是同一个，正是期望行为。
                 StreamSource source = *src;
                 Blob blob;
-                // 有预告长度就预留，但封顶 64MB：一个被伪造的巨大 totalSize
-                // 不该直接把进程内存打爆。
                 if (const auto total = source.totalSize()) {
                     constexpr std::uint64_t kReserveCap = 64ULL * 1024 * 1024;
                     blob.reserve(static_cast<std::size_t>(std::min(*total, kReserveCap)));
@@ -434,4 +416,4 @@ namespace dbmw::common {
         }
         return sig;
     }
-} // namespace dbmw::common
+}

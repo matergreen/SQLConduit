@@ -13,7 +13,6 @@
 #include <sqlext.h>
 #endif
 
-
 namespace dbmw::driver {
     namespace {
 #ifdef DBMW_ENABLE_ODBC
@@ -21,10 +20,6 @@ namespace dbmw::driver {
             return rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO;
         }
 
-        // SQL_NO_DATA is a valid completion for statements that do not produce a
-        // result set (FreeTDS returns it for DDL and zero-row DML).  Keep query
-        // paths strict: there SQL_NO_DATA before fetching is not interchangeable
-        // with a successfully opened result set.
         bool executionCompleted(const SQLRETURN rc) {
             return succeeded(rc) || rc == SQL_NO_DATA;
         }
@@ -87,9 +82,6 @@ namespace dbmw::driver {
 
             StmtGuard &operator=(const StmtGuard &) = delete;
 
-            // 注意：只 =delete 拷贝**不会**自动生成移动——用户声明了拷贝构造且析构函数也是
-            // 用户声明的，移动构造/移动赋值都不会被隐式合成，std::move(x) 会回退到被删除的
-            // 拷贝构造。句柄要转移所有权（游标持有语句句柄），必须显式提供移动语义。
             StmtGuard(StmtGuard &&other) noexcept : stmt_(other.stmt_) {
                 other.stmt_ = SQL_NULL_HSTMT;
             }
@@ -130,8 +122,6 @@ namespace dbmw::driver {
         };
 
         std::string connectionValue(const std::string &value) {
-            // ODBC connection-string values containing separators/braces are enclosed
-            // in braces; a literal closing brace is doubled.
             if (value.find_first_of(";{}") == std::string::npos) return value;
             std::string out = "{";
             for (const char c: value) {
@@ -195,9 +185,6 @@ namespace dbmw::driver {
 
         common::Value textValue(const SQLSMALLINT sqlType, std::string value) {
             try {
-                // SQL Server exposes TIME(n) as the vendor-specific SQL_SS_TIME2
-                // type (-154).  FreeTDS intentionally returns that numeric code
-                // without requiring Microsoft's sqlncli.h extension header.
                 if (sqlType == static_cast<SQLSMALLINT>(-154))
                     return common::Value{common::Time{std::move(value)}};
                 switch (sqlType) {
@@ -497,11 +484,9 @@ namespace dbmw::driver {
             return common::Status::OK();
         }
 #endif
-    } // namespace
+    }
 
 #ifdef DBMW_ENABLE_ODBC
-    // ODBC 真游标：设置 SQL_ATTR_CURSOR_TYPE 后执行，用 SQLFetch 按批取行。
-    // 与 queryEach 的区别在于游标可跨多次调用持续取行，且支持滚动（STATIC 游标）。
     class OdbcCursor : public core::ICursor {
     public:
         OdbcCursor(StmtGuard guard, std::vector<ParamBinding> storage, std::size_t batchSize)
@@ -581,7 +566,7 @@ namespace dbmw::driver {
         void reset() { guard_ = StmtGuard(SQL_NULL_HSTMT); open_ = false; }
 
         StmtGuard guard_;
-        std::vector<ParamBinding> storage_; // 保留参数缓冲存活
+        std::vector<ParamBinding> storage_;
         std::size_t batchSize_;
         std::vector<std::string> names_;
         std::vector<SQLSMALLINT> types_;
@@ -948,7 +933,7 @@ namespace dbmw::driver {
                                          "ODBC: invalid savepoint or no active transaction");
         const auto style = cfg_.extra.find("savepoint_style");
         if (style != cfg_.extra.end() && style->second == "sqlserver")
-            return common::Status::OK(); // SQL Server 没有 RELEASE SAVEPOINT
+            return common::Status::OK();
         std::int64_t affected = 0;
         auto status = execute("RELEASE SAVEPOINT " + name, affected);
         if (!status.ok()) status.code = common::ErrorCode::TxError;
@@ -979,7 +964,6 @@ namespace dbmw::driver {
 
     void OdbcConnection::close() {
 #ifdef DBMW_ENABLE_ODBC
-        // 先释放本连接上所有预编译句柄（连接即将归还/销毁，SQLHSTMT 随之失效）。
         closeAllPrepared();
         if (dbc_) {
             if (txOpen_) SQLEndTran(SQL_HANDLE_DBC, static_cast<SQLHDBC>(dbc_), SQL_ROLLBACK);
@@ -997,14 +981,6 @@ namespace dbmw::driver {
 
     common::Status OdbcConnection::cancel() {
 #ifdef DBMW_ENABLE_ODBC
-        // 只在锁内把语句句柄摘出来，SQLCancelHandle（要等网络响应）放到锁外。
-        //
-        // 锁内做网络 IO 会反过来卡住业务线程：ActiveStatement 的构造和析构都要
-        // 拿这把锁，取消一旦慢，正常的语句执行/清理就被堵住了。项目其他地方
-        // （心跳、连接池借出）都刻意把 IO 挪到锁外，这里必须一致。
-        //
-        // 摘出后置空 slot，保证同一条语句只被取消一次；ActiveStatement 析构时
-        // 看到 slot 已不等于自己的句柄，不会误清别人的。
         void *stmt = nullptr;
         {
             std::lock_guard<std::mutex> lock(activeStmtMtx_);
@@ -1036,7 +1012,6 @@ namespace dbmw::driver {
         if (const auto s = newStatement(static_cast<SQLHDBC>(dbc_), cfg_, raw); !s.ok()) return s;
         StmtGuard stmt(raw);
         ActiveStatement active(activeStmtMtx_, activeStmt_, raw);
-        // 滚动游标：设置 STATIC 游标类型（其余驱动不支持滚动，此处是唯一生效处）。
         if (opts.scrollable) {
             const SQLRETURN rc = SQLSetStmtAttr(
                 raw, SQL_ATTR_CURSOR_TYPE,
@@ -1086,7 +1061,6 @@ namespace dbmw::driver {
         if (const SQLRETURN rc = SQLRowCount(raw, &rows); !succeeded(rc))
             return odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, raw, "SQLRowCount");
         affected = rows < 0 ? 0 : static_cast<std::int64_t>(rows);
-        // RETURNING / OUTPUT 直出的结果集即生成键；无则返回 0 行（keys 为空）。
         const auto st = fetchRows(stmt.get(), out.rows);
         if (!st.ok()) return st;
         return common::Status::OK();
@@ -1142,11 +1116,9 @@ namespace dbmw::driver {
         out = core::PreparedStatementHandle{};
         if (!open_) return common::Status::error(common::ErrorCode::NotConnected,
                                                  "ODBC: not connected (prepare)");
-        // ODBC 用原生 '?' 占位，无需改写；prepare 阶段就要类型签名，
-        // 类型序列不同必须视为不同语句（见 common::paramTypeSignature）。
         const std::string key = sql + common::paramTypeSignature(typesSample);
         if (const auto it = preparedCache_.find(key); it != preparedCache_.end()) {
-            preparedLru_.remove(key); // LRU 移到末尾
+            preparedLru_.remove(key);
             preparedLru_.push_back(key);
             out = it->second;
             return common::Status::OK();
@@ -1166,7 +1138,6 @@ namespace dbmw::driver {
         preparedCache_[key] = h;
         preparedKeys_[id] = key;
         preparedLru_.push_back(key);
-        // 超出每连接上限时按 LRU 淘汰（SQLFreeHandle 释放 SQLHSTMT）。
         if (preparedLimit_ > 0) {
             while (preparedCache_.size() > static_cast<std::size_t>(preparedLimit_)) {
                 const std::string oldKey = preparedLru_.front();
@@ -1269,4 +1240,4 @@ namespace dbmw::driver {
         DriverRegistry::instance().registerDriver("odbc",
                                                   []() { return std::make_unique<OdbcDriver>(); });
     }
-} // namespace dbmw::driver
+}

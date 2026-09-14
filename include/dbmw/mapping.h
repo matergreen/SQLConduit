@@ -1,35 +1,6 @@
 #ifndef DBMW_MAPPING_H
 #define DBMW_MAPPING_H
 
-// ---------------------------------------------------------------------------
-// v0.5.0 结果集实体映射层（设计：docs/mapping-design-v0.5.0.md）
-//
-// 定位：**结果集 ↔ 业务实体的适配层**，不是 ORM。
-//   - 做：行 → 对象（读）、对象 → 绑定参数（写），严格报错、显式声明。
-//   - 不做：关系映射 / 关联加载 / 懒加载 / 脏跟踪 / 自动生成业务 SQL / 实体缓存。
-//
-// 形态：header-only、全模板、零引擎改动。不修改 dbmw.h / dbmw_async.h /
-// database_manager.cpp / async_engine.cpp 的任何既有签名（I4）。
-//
-// 使用三步：
-//   1) 业务侧特化 dbmw::mapping::RowMapper<T> 并提供 describe()；
-//   2) 读：dbmw::queryAs<T>(...) / queryOneAs<T> / queryEachAs<T>；
-//      写：dbmw::insertAs<T>(...) / updateAs<T> / insertBatchAs<T>；
-//   3) 异步三形态在 dbmw::async::queryAs<T>（回调 / future / 协程）。
-//
-// 宽松模式（用户决策 v0.5.0）：类型不符、NULL 落进非 std::optional 目标
-// 仍返回 ErrorCode::MappingError（这两类静默填值是线上最难查的 bug）；
-// 但「声明的列在结果集中缺失」默认**跳过**该字段（保持默认构造值），
-// 不报错、不返回半成品（I5 / I8）。需要严格时可 `.missingColumns(MissingColumns::Error)`。
-//
-// 关键实现约束：
-//   - 判缺列必须用 row.data().find()：Row::at() 对缺失列返回静态 NULL，
-//     会把"SQL 少查一列"伪装成"这列是 NULL"（设计 C2）。
-//   - 映射发生在查询缓存命中之后、SPI 脱敏之后（I1 / I2）。
-//   - 异步映射发生在完成投递线程（默认主执行器 worker；注入 asio 时为
-//     io_context 线程），必须保持轻量（I7）。
-// ---------------------------------------------------------------------------
-
 #include "dbmw/common/types.h"
 #include "dbmw/core/cursor.h"
 #include "dbmw/core/database_manager.h"
@@ -53,21 +24,18 @@
 #include <vector>
 
 namespace dbmw {
-    // 读结果：status 非 Ok 时 items 保证为空（I8）。
     template<class T>
     struct EntityResult {
         common::Status status;
         std::vector<T> items;
     };
 
-    // 单行结果：零行 → value 为空且状态为 Ok（不是错误）；多于一行 → 报错。
     template<class T>
     struct EntityOne {
         common::Status status;
         std::optional<T> value;
     };
 
-    // 写结果：keys 只有 insert 形态会填（且依赖驱动/语句是否给出生成键）。
     template<class T>
     struct WriteResult {
         common::Status status;
@@ -80,17 +48,16 @@ namespace dbmw {
         common::Status status;
         common::BatchResult batch;
     };
-} // namespace dbmw
+}
 
 namespace dbmw::mapping {
-    // ---- 字段标志（位掩码，可组合）----
     enum class FieldFlags : unsigned {
         None = 0,
-        PrimaryKey = 1u << 0, // 参与 UPDATE ... WHERE（多个 = 复合主键）
-        Generated = 1u << 1, // 数据库生成：INSERT 参数跳过，回填时接收
-        ReadOnly = 1u << 2, // 视图/计算列：写方向跳过
-        Lossy = 1u << 3, // 允许有损数值转换（Decimal / string → 数值）
-        Textual = 1u << 4 // 允许与文本表示互转（Date/Time/Uuid/Json/Decimal ↔ string）
+        PrimaryKey = 1u << 0,
+        Generated = 1u << 1,
+        ReadOnly = 1u << 2,
+        Lossy = 1u << 3,
+        Textual = 1u << 4
     };
 
     constexpr FieldFlags operator|(const FieldFlags a, const FieldFlags b) noexcept {
@@ -101,14 +68,10 @@ namespace dbmw::mapping {
         return (static_cast<unsigned>(v) & static_cast<unsigned>(bit)) != 0u;
     }
 
-    // 结果集中出现未声明列时的策略：默认忽略（兼容 SELECT * 与联表）。
     enum class ExtraColumns { Ignore, Error };
 
-    // 实体声明的列在结果集中缺失时的策略：默认忽略（跳过该字段，保持默认值）。
-    // 与 ExtraColumns 对称；严格校验需显式设为 Error。
     enum class MissingColumns { Ignore, Error };
 
-    // 写方向取哪些列。
     enum class WriteCols { Writable, All, PrimaryKey };
 
     namespace detail {
@@ -123,9 +86,8 @@ namespace dbmw::mapping {
         template<class T>
         struct IsOptional<std::optional<T> > : std::true_type {
         };
-    } // namespace detail
+    }
 
-    // ---- 目标类型名（仅用于错误信息，不依赖 RTTI）----
     template<class U>
     struct TypeName {
         static std::string name() {
@@ -155,7 +117,6 @@ namespace dbmw::mapping {
         }
     };
 
-    // 源 Value 的 alternative 名（与 common::Value 的声明顺序一一对应）。
     inline const char *valueTypeName(const common::Value &v) {
         switch (v.index()) {
             case 0: return "NULL";
@@ -183,7 +144,6 @@ namespace dbmw::mapping {
         return mapError("cannot convert " + std::string(valueTypeName(v)) + " to " + target);
     }
 
-    // ---- 解析辅助（仅 Lossy 路径使用，要求整串可解析，不接受前缀）----
     inline bool tryParseIntegral(const std::string &s, std::int64_t &out) {
         if (s.empty()) return false;
         try {
@@ -206,7 +166,6 @@ namespace dbmw::mapping {
         } catch (...) { return false; }
     }
 
-    // 整型范围检查（跨符号安全，不做窄化比较）
     template<class Dst, class Src>
     constexpr bool fitsIn(const Src s) {
         static_assert(std::is_integral_v<Src> && std::is_integral_v<Dst>);
@@ -226,12 +185,6 @@ namespace dbmw::mapping {
                    static_cast<std::int64_t>(std::numeric_limits<Dst>::max());
     }
 
-    // =======================================================================
-    // 值转换：ValueConverter<U>
-    //
-    // 内置实现覆盖 common::Value 的全部 alternative 与常见 C++ 目标类型；
-    // 业务自定义类型（强类型 ID、第三方时间库…）通过**特化**接入，不改库代码。
-    // =======================================================================
     template<class U, class Enable = void>
     struct ValueConverter {
         static common::Status fromValue(const common::Value &, U &, FieldFlags) {
@@ -249,7 +202,6 @@ namespace dbmw::mapping {
         }
     };
 
-    // ---- bool：只接受 bool（int64 0/1 属声明与列类型不符，严格报错）----
     template<>
     struct ValueConverter<bool, void> {
         static common::Status fromValue(const common::Value &v, bool &out, FieldFlags) {
@@ -263,7 +215,6 @@ namespace dbmw::mapping {
         static common::Value toValue(const bool in) { return common::Value(in); }
     };
 
-    // ---- 整型：int64/uint64 + 范围检查；Lossy 才接受 double / Decimal / string ----
     template<class U>
     struct ValueConverter<U, std::enable_if_t<std::is_integral_v<U> && !std::is_same_v<U, bool>> > {
         static common::Status fromValue(const common::Value &v, U &out, const FieldFlags flags) {
@@ -313,7 +264,6 @@ namespace dbmw::mapping {
         }
     };
 
-    // ---- 浮点：只接受 double；Decimal 默认拒绝（防丢精度，与 Value 设计同源）----
     template<class U>
     struct ValueConverter<U, std::enable_if_t<std::is_floating_point_v<U> > > {
         static common::Status fromValue(const common::Value &v, U &out, const FieldFlags flags) {
@@ -351,7 +301,6 @@ namespace dbmw::mapping {
         static common::Value toValue(const U in) { return common::Value(static_cast<double>(in)); }
     };
 
-    // ---- std::string：接受文本型强类型的文本形式；Blob 拒绝（二进制不是文本）----
     template<>
     struct ValueConverter<std::string, void> {
         static common::Status fromValue(const common::Value &v, std::string &out, const FieldFlags flags) {
@@ -395,7 +344,6 @@ namespace dbmw::mapping {
         static common::Value toValue(const std::string &in) { return common::Value(in); }
     };
 
-    // ---- 文本型强类型：精确匹配；Textual 时接受 string ----
     template<class Strong>
     struct StrongTextConverter {
         static common::Status fromValue(const common::Value &v, Strong &out, const FieldFlags flags) {
@@ -434,7 +382,6 @@ namespace dbmw::mapping {
     struct ValueConverter<common::Json, void> : StrongTextConverter<common::Json> {
     };
 
-    // ---- Blob：只接受 Blob（文本与 Blob 互转需业务自行 base64）----
     template<>
     struct ValueConverter<common::Blob, void> {
         static common::Status fromValue(const common::Value &v, common::Blob &out, FieldFlags) {
@@ -448,7 +395,6 @@ namespace dbmw::mapping {
         static common::Value toValue(const common::Blob &in) { return common::Value(in); }
     };
 
-    // ---- Timestamp：精确匹配；Textual 时从 string/Date/Time 解析 ----
     template<>
     struct ValueConverter<common::Timestamp, void> {
         static common::Status fromValue(const common::Value &v, common::Timestamp &out, const FieldFlags flags) {
@@ -469,7 +415,6 @@ namespace dbmw::mapping {
         static common::Value toValue(const common::Timestamp &in) { return common::Value(in); }
     };
 
-    // ---- std::optional<U>：NULL → nullopt ----
     template<class U>
     struct ValueConverter<std::optional<U> > {
         static_assert(!detail::IsOptional<U>::value, "不支持嵌套 std::optional");
@@ -490,7 +435,6 @@ namespace dbmw::mapping {
         }
     };
 
-    // ---- enum class：整型 → 底层类型 + 范围检查 ----
     template<class U>
     struct ValueConverter<U, std::enable_if_t<std::is_enum_v<U> > > {
         using Under = std::underlying_type_t<U>;
@@ -507,9 +451,6 @@ namespace dbmw::mapping {
         }
     };
 
-    // =======================================================================
-    // 字段表与实体声明
-    // =======================================================================
     template<class T>
     class Mapping {
     public:
@@ -518,7 +459,7 @@ namespace dbmw::mapping {
 
         struct Column {
             std::string name;
-            std::string target; // 目标类型名（错误信息用）
+            std::string target;
             FieldFlags flags = FieldFlags::None;
             Assign assign;
             Write write;
@@ -566,15 +507,13 @@ namespace dbmw::mapping {
             return out;
         }
 
-        // 行 → 实体。任一步失败即返回，out 可能已被部分填充（调用方应丢弃）。
         [[nodiscard]] common::Status fromRow(const common::Row &row, T &out) const {
             for (const auto &c: columns_) {
-                // 必须用 find：Row::at() 对缺失列返回静态 NULL，会掩盖"少查一列"。
                 const auto it = row.data().find(c.name);
                 if (it == row.data().end()) {
                     if (missing_ == MissingColumns::Error)
                         return mapError("column '" + c.name + "' not found in result set (target " + c.target + ")");
-                    continue;  // 宽松：跳过失缺列，字段保持默认构造值
+                    continue;
                 }
                 if (const auto s = c.assign(it->second, out); !s.ok())
                     return mapError("column '" + c.name + "': " + s.message);
@@ -591,7 +530,6 @@ namespace dbmw::mapping {
             return !hasFlag(c.flags, FieldFlags::Generated) && !hasFlag(c.flags, FieldFlags::ReadOnly);
         }
 
-        // 该列名是否已在字段表中声明（供 updateSql 的显式列版本校验）。
         [[nodiscard]] bool isDeclaredByName(const std::string &n) const {
             for (const auto &c: columns_) if (c.name == n) return true;
             return false;
@@ -603,7 +541,6 @@ namespace dbmw::mapping {
         MissingColumns missing_ = MissingColumns::Ignore;
     };
 
-    // 用户特化点：提供 static Mapping<T> describe()
     template<class T>
     struct RowMapper;
 
@@ -615,9 +552,8 @@ namespace dbmw::mapping {
         template<class T>
         struct HasDescribe<T, std::void_t<decltype(RowMapper<T>::describe())> > : std::true_type {
         };
-    } // namespace detail
+    }
 
-    // 字段表单例：一次构建、进程内复用（magic static，线程安全，无初始化顺序问题）。
     template<class T>
     const Mapping<T> &mappingFor() {
         static_assert(detail::HasDescribe<T>::value,
@@ -627,7 +563,6 @@ namespace dbmw::mapping {
         return m;
     }
 
-    // ---- 结果集 → 实体（失败时清空 out：不返回半成品，I8）----
     template<class T>
     common::Status fromRows(const common::ResultSet &rs, std::vector<T> &out) {
         const auto &m = mappingFor<T>();
@@ -649,7 +584,6 @@ namespace dbmw::mapping {
         return mappingFor<T>().fromRow(row, out);
     }
 
-    // ---- 写方向：实体 → 参数 ----
     template<class T>
     common::Params paramsOf(const T &entity, const WriteCols which = WriteCols::Writable) {
         const auto &m = mappingFor<T>();
@@ -663,7 +597,6 @@ namespace dbmw::mapping {
         return out;
     }
 
-    // UPDATE 的参数顺序必须与 updateSql 一致：先 SET 列（可写非主键），后主键列。
     template<class T>
     common::Params updateParamsOf(const T &entity) {
         const auto &m = mappingFor<T>();
@@ -685,7 +618,6 @@ namespace dbmw::mapping {
         return out;
     }
 
-    // ---- 结构确定的 SQL 片段（只拼列名与占位符，不生成业务条件）----
     inline std::string joinIdentifiers(const std::vector<std::string> &cols) {
         std::string s;
         for (std::size_t i = 0; i < cols.size(); ++i) {
@@ -704,7 +636,6 @@ namespace dbmw::mapping {
         return s;
     }
 
-    // "col1" = ?, "col2" = ?（SET 与 WHERE 共用同一形态）
     inline std::string buildAssignList(const std::vector<std::string> &cols) {
         std::string s;
         for (std::size_t i = 0; i < cols.size(); ++i) {
@@ -721,7 +652,6 @@ namespace dbmw::mapping {
                ") VALUES (" + placeholders(cols.size()) + ")";
     }
 
-    // 主键为空或无 SET 列时返回空串（调用方必须据此报错，绝不生成无条件 UPDATE）。
     template<class T>
     std::string updateSql(std::string table) {
         const auto &m = mappingFor<T>();
@@ -736,7 +666,6 @@ namespace dbmw::mapping {
                " WHERE " + buildAssignList(keyCols);
     }
 
-    // 显式指定 SET / WHERE 列（必须是已声明的列，否则返回空串）
     template<class T>
     std::string updateSql(std::string table, const std::vector<std::string> &setCols,
                           const std::vector<std::string> &whereCols) {
@@ -750,8 +679,6 @@ namespace dbmw::mapping {
                " WHERE " + buildAssignList(whereCols);
     }
 
-    // 生成键回填：优先按 Generated 列的列名取；MySQL 只有合成列 insert_id 时，
-    // 回退 lastInsertId() 并写入第一个能接受整型的 Generated 列。
     template<class T>
     common::Status applyGeneratedKeys(const common::GeneratedKeys &keys, T &entity) {
         if (keys.empty()) return common::Status::OK();
@@ -779,11 +706,8 @@ namespace dbmw::mapping {
         }
         return common::Status::OK();
     }
-} // namespace dbmw::mapping
+}
 
-// ===========================================================================
-// 同步门面（自由函数，不修改 dbmw.h）
-// ===========================================================================
 namespace dbmw {
     template<class T>
     EntityResult<T> queryAs(const std::string &sql) {
@@ -833,7 +757,6 @@ namespace dbmw {
     }
 
     namespace detail {
-        // 多行不是"取第一行"，而是声明与 SQL 不符 —— 报错（严格模式）。
         template<class T>
         EntityOne<T> queryOneAsImpl(EntityResult<T> &&r) {
             EntityOne<T> o;
@@ -847,7 +770,7 @@ namespace dbmw {
             if (!r.items.empty()) o.value = std::move(r.items.front());
             return o;
         }
-    } // namespace detail
+    }
 
     template<class T>
     EntityOne<T> queryOneAs(const std::string &sql) {
@@ -876,8 +799,6 @@ namespace dbmw {
         return detail::queryOneAsImpl<T>(queryAs<T>(s, sql, params));
     }
 
-    // 流式：逐行映射后回调；返回 false 提前终止。映射失败 → 立即停并以
-    // MappingError 收尾（rows 记录已成功映射的行数）。
     template<class T>
     common::Status queryEachAs(const std::string &sql, const common::Params &params,
                                const std::function<bool(T &&)> &cb, std::uint64_t &rows) {
@@ -945,7 +866,6 @@ namespace dbmw {
         return st;
     }
 
-    // 游标：fetch 之后映射（游标本身不受影响，可继续 fetch）
     template<class T>
     EntityResult<T> fetchAs(core::ICursor &c, const std::size_t n) {
         common::ResultSet rs;
@@ -955,7 +875,6 @@ namespace dbmw {
         return r;
     }
 
-    // 生成键结果集 → 实体（PG/ODBC 的 RETURNING / OUTPUT）
     template<class T>
     EntityResult<T> keysAs(const common::GeneratedKeys &keys) {
         EntityResult<T> r;
@@ -963,10 +882,6 @@ namespace dbmw {
         return r;
     }
 
-    // ---- 写方向 ----
-
-    // insertAs 走 withSession：生成键只在 Session::execute 上可取（门面 execute
-    // 没有生成键重载），而 insert_id / RETURNING 语义本来就要求同一条连接。
     template<class T>
     WriteResult<T> insertAs(std::string table, T &entity) {
         WriteResult<T> r;
@@ -1029,15 +944,8 @@ namespace dbmw {
                                   mapping::batchOf(entities), r.batch);
         return r;
     }
-} // namespace dbmw
+}
 
-// ===========================================================================
-// 异步门面：回调 / future（协程在下一段，需 DBMW_ENABLE_ASYNC_CORO）
-//
-// 全部是既有异步 API 的薄封装：拿到原始结果 → 映射 → 交给用户回调。
-// 映射发生在**完成投递线程**（默认主执行器 worker；注入 asio 时为
-// io_context 线程），因此映射必须保持轻量（I7）。
-// ===========================================================================
 namespace dbmw::async {
     template<class T>
     using EntityQueryCallback = std::function<void(EntityResult<T> &&)>;
@@ -1074,8 +982,6 @@ namespace dbmw::async {
         }), opts);
     }
 
-    // 流式：rowCb 在 worker 上逐行执行（映射在其中完成）；done 经完成调度器投递。
-    // rows 统计的是**成功映射**的行数。
     template<class T>
     Handle queryEachAs(const std::string &sql, const common::Params &params,
                        const std::function<bool(T &&)> &rowCb, EachCallback done,
@@ -1102,7 +1008,6 @@ namespace dbmw::async {
         }, opts);
     }
 
-    // future 式：无 Handle、无取消；用 promise 桥接，不额外占用线程。
     template<class T>
     std::future<EntityResult<T> > queryAs(const std::string &sql, const common::Params &params) {
         auto p = std::make_shared<std::promise<EntityResult<T> > >();
@@ -1110,17 +1015,11 @@ namespace dbmw::async {
         queryAs<T>(sql, params, [p](EntityResult<T> &&r) { p->set_value(std::move(r)); });
         return fut;
     }
-} // namespace dbmw::async
+}
 
 #if defined(DBMW_ENABLE_ASYNC_CORO)
 
 namespace dbmw::async {
-    // 协程形态：复用 task.h 的 OpAwaiter（回调 → 协程帧 → resume）。
-    //
-    // !! GCC 13 已知缺陷（PR109227 系）：co_await 实参里出现**非平凡的花括号
-    // 临时**会 ICE。调用方请把参数先具名构造再传入：
-    //     common::Params p{Value(1)};
-    //     auto r = co_await queryAsAsync<User>("SELECT ...", p);
     template<class T>
     Task<EntityResult<T> > queryAsAsync(std::string sql, common::Params params = {},
                                         Options opts = {}) {
@@ -1131,8 +1030,8 @@ namespace dbmw::async {
                 queryAs<T>(sql, params, [cb](EntityResult<T> &&r) { cb(std::move(r)); }, opts);
             });
     }
-} // namespace dbmw::async
+}
 
-#endif // DBMW_ENABLE_ASYNC_CORO
+#endif
 
-#endif // DBMW_MAPPING_H
+#endif

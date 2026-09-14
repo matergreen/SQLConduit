@@ -1,12 +1,3 @@
-// dbmw v0.5.0 实体映射层行为验证（docs/mapping-design-v0.5.0.md §10：M1–M23）。
-//
-// 手法与 dbmw_core_test / dbmw_async_test 一致：mock 驱动 + 自研 check 宏，
-// 不依赖第三方测试框架与真实数据库。
-//
-// 运行顺序有依赖：
-//   - 各节通过替换全局行夹具（gRows）控制 mock 返回；
-//   - M18（缓存）/ M19（脱敏）会 reload 配置，之后必须 reload 回基础配置；
-//   - 协程段仅在 DBMW_ENABLE_ASYNC_CORO=ON 时编译。
 #include "dbmw/dbmw.h"
 #include "dbmw/mapping.h"
 #include "dbmw/async/dbmw_async.h"
@@ -46,16 +37,13 @@ static void check(const bool cond, const std::string &name) {
     else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
 }
 
-// ---------------------------------------------------------------------------
-// Mock 驱动：查询返回全局行夹具；写操作返回自增键 / RETURNING 夹具
-// ---------------------------------------------------------------------------
 using RowData = std::vector<std::pair<std::string, common::Value>>;
 
 static std::vector<RowData>   gRows;
 static std::atomic<int>       gQueryCalls{0};
 static std::atomic<int>       gExecuteCalls{0};
-static std::int64_t           gInsertId = 0;              // MySQL 路径：合成列 insert_id
-static RowData                gKeyRow;                    // PG/ODBC 路径：RETURNING 行
+static std::int64_t           gInsertId = 0;
+static RowData                gKeyRow;
 
 static common::ResultSet buildResultSet(const std::vector<RowData> &rows) {
     common::ResultSet rs;
@@ -133,7 +121,6 @@ public:
     }
 };
 
-// 直连测试 fetchAs：不经过驱动，构造一个假游标。
 class FakeCursor final : public core::ICursor {
 public:
     explicit FakeCursor(std::vector<RowData> rows) : rows_(std::move(rows)) {}
@@ -165,9 +152,6 @@ private:
     bool open_ = true;
 };
 
-// ---------------------------------------------------------------------------
-// 实体与映射声明（纯手写特化，无宏）
-// ---------------------------------------------------------------------------
 struct User {
     std::int64_t id = 0;
     std::string name;
@@ -176,12 +160,12 @@ struct User {
     common::Timestamp createdAt{};
 };
 
-struct StrictUser {   // 多余列直接报错
+struct StrictUser {
     std::int64_t id = 0;
     std::string name;
 };
 
-struct StrictMissingUser {   // 缺列直接报错
+struct StrictMissingUser {
     std::int64_t id = 0;
     std::string name;
     common::Decimal balance{"0"};
@@ -198,10 +182,10 @@ struct StrRow { std::string s; };
 enum class UserState : std::int32_t { Active = 1, Locked = 2 };
 struct EnumRow { UserState st = UserState::Active; };
 
-struct UserId { std::int64_t v = 0; };          // 业务自定义类型：走 ValueConverter 特化
+struct UserId { std::int64_t v = 0; };
 struct RefRow { UserId uid; };
 
-struct NoPkRow { std::string name; };           // 无主键：updateAs 必须拒绝
+struct NoPkRow { std::string name; };
 
 namespace dbmw::mapping {
 
@@ -272,7 +256,6 @@ namespace dbmw::mapping {
         static Mapping<NoPkRow> describe() { return Mapping<NoPkRow>().field(&NoPkRow::name, "name"); }
     };
 
-    // M9：自定义类型接入
     template <> struct ValueConverter<UserId> {
         static Status fromValue(const common::Value &v, UserId &out, FieldFlags) {
             if (const auto p = std::get_if<std::int64_t>(&v)) { out.v = *p; return Status::OK(); }
@@ -281,11 +264,8 @@ namespace dbmw::mapping {
         static common::Value toValue(const UserId &in) { return common::Value(in.v); }
     };
 
-} // namespace dbmw::mapping
+}
 
-// ---------------------------------------------------------------------------
-// 配置与夹具工具
-// ---------------------------------------------------------------------------
 struct CfgFlags {
     bool cache = false;
     bool interceptors = false;
@@ -337,7 +317,6 @@ static RowData userRow(const std::int64_t id, const std::string &name,
     return rd;
 }
 
-// M19：把 name 列脱敏为 ***
 class MaskingInterceptor final : public core::ISqlInterceptor {
 public:
     void onRoute(const std::string &, const std::string &, common::OperationType,
@@ -352,7 +331,6 @@ public:
 };
 
 #if defined(DBMW_ENABLE_ASYNC_CORO)
-// 协程段：实参一律用具名局部变量（GCC 13 ICE 规避，见 task.h 注释）
 static async::Task<void> coroQueryBody(std::promise<EntityResult<User>> pr) {
     common::Params p;
     auto r = co_await async::queryAsAsync<User>("SELECT coro", p);
@@ -360,7 +338,6 @@ static async::Task<void> coroQueryBody(std::promise<EntityResult<User>> pr) {
 }
 #endif
 
-// ---------------------------------------------------------------------------
 int main() {
     g_configPath = (std::filesystem::temp_directory_path() / "dbmw_mapping_test.json").string();
 
@@ -374,7 +351,6 @@ int main() {
         return 1;
     }
 
-    // =====================================================================
     std::cout << "== M1. 基本映射：全类型往返 ==\n";
     {
         gRows = {userRow(1, "alice", std::string("a@x.com"), "12.50"),
@@ -396,7 +372,6 @@ int main() {
               "queryOneAs 在多行时报错（不是静默取第一行）");
     }
 
-    // =====================================================================
     std::cout << "== M2/M3. NULL 语义 ==\n";
     {
         gRows = {userRow(1, "alice", std::nullopt, "1.00")};
@@ -404,7 +379,6 @@ int main() {
         check(r.status.ok() && r.items.size() == 1 && !r.items[0].email.has_value(),
               "NULL 落进 optional → nullopt（合法）");
 
-        // name 是 std::string（非 optional），给 NULL 必须报错
         RowData bad = userRow(1, "x", std::nullopt, "1.00");
         for (auto &kv : bad) if (kv.first == "name") kv.second = common::Value(nullptr);
         gRows = {bad};
@@ -416,11 +390,10 @@ int main() {
               "错误信息含列名");
     }
 
-    // =====================================================================
     std::cout << "== M4/M5. 列匹配：缺列默认跳过、多余列可配 ==\n";
     {
         RowData missing = userRow(1, "alice", std::nullopt, "1.00");
-        missing.erase(missing.begin() + 3); // 去掉 balance 列
+        missing.erase(missing.begin() + 3);
         gRows = {missing};
         const auto r = queryAs<User>("SELECT 3");
         check(r.status.ok(), "缺列默认跳过（宽松模式，正常返回）");
@@ -430,14 +403,12 @@ int main() {
             check(u.balance.value == "0", "缺失列保持默认构造值（未退化成 NULL 也不报错）");
         }
 
-        // 严格：MissingColumns::Error 下缺列仍报错，并指出列名
         const auto strict = queryAs<StrictMissingUser>("SELECT 3b");
         check(!strict.status.ok() && strict.status.code == common::ErrorCode::MappingError,
               "MissingColumns::Error 下缺列仍报错");
         check(strict.status.message.find("balance") != std::string::npos,
               "错误信息指出缺失的列名");
 
-        // 多余列：默认忽略
         RowData extra = userRow(1, "alice", std::nullopt, "1.00");
         extra.emplace_back("extra_col", common::Value(std::string("x")));
         gRows = {extra};
@@ -447,7 +418,6 @@ int main() {
               "ExtraColumns::Error 下多余列报错");
     }
 
-    // =====================================================================
     std::cout << "== M6. 类型不符矩阵（严格模式全部报错）==\n";
     {
         gRows = {RowData{{"active", common::Value(true)}}};
@@ -479,7 +449,6 @@ int main() {
               "Timestamp ← string 未声明 Textual 时报错");
     }
 
-    // =====================================================================
     std::cout << "== M7. Lossy / Textual 显式放开 ==\n";
     {
         gRows = {RowData{{"amount", common::Value(common::Decimal{"12.50"})}}};
@@ -494,7 +463,6 @@ int main() {
               "Textual 下 Timestamp ← string 解析通过");
     }
 
-    // =====================================================================
     std::cout << "== M8. enum class ==\n";
     {
         gRows = {RowData{{"st", common::Value(std::int64_t(2))}}};
@@ -507,7 +475,6 @@ int main() {
               "enum 底层整型溢出报错（范围检查）");
     }
 
-    // =====================================================================
     std::cout << "== M9. 自定义 ValueConverter ==\n";
     {
         gRows = {RowData{{"uid", common::Value(std::int64_t(5))}}};
@@ -519,7 +486,6 @@ int main() {
         check(!queryAs<RefRow>("SELECT c2").status.ok(), "自定义转换器可拒绝不符类型");
     }
 
-    // =====================================================================
     std::cout << "== M10/M11. 写方向：参数与 SQL 片段 ==\n";
     {
         User u;
@@ -552,12 +518,10 @@ int main() {
         check(up.size() == 5 && std::get<std::int64_t>(up.back()) == 7,
               "updateParamsOf：SET 列在前、主键列在后");
 
-        // 标识符转义：列名/表名带双引号应被翻倍
         const std::string evil = mapping::insertSql<User>("us\"ers");
         check(evil.find("\"us\"\"ers\"") != std::string::npos, "表名含引号时被正确转义");
     }
 
-    // =====================================================================
     std::cout << "== M12. insertAs 生成键回填 ==\n";
     {
         gKeyRow.clear();
@@ -578,7 +542,6 @@ int main() {
         gKeyRow.clear();
     }
 
-    // =====================================================================
     std::cout << "== M13/M14. 无主键拒绝 / 批量 ==\n";
     {
         NoPkRow np;
@@ -597,7 +560,6 @@ int main() {
         check(pb.size() == 2 && pb[0].size() == 4, "batchOf 每行一套可写参数");
     }
 
-    // =====================================================================
     std::cout << "== M15. 流式 queryEachAs ==\n";
     {
         gRows = {userRow(1, "a", std::nullopt, "1.00"),
@@ -616,7 +578,6 @@ int main() {
                                            [&](User &&) { return ++seen < 2; }, rows2);
         check(st2.ok() && rows2 == 2, "回调返回 false 提前终止（rows=2）");
 
-        // 映射失败 → 立即停并以 MappingError 收尾
         RowData bad = userRow(1, "a", std::nullopt, "1.00");
         for (auto &kv : bad) if (kv.first == "name") kv.second = common::Value(std::int64_t(1));
         gRows = {bad, userRow(2, "b", std::nullopt, "2.00")};
@@ -627,7 +588,6 @@ int main() {
               "流式映射失败立即停止并报错");
     }
 
-    // =====================================================================
     std::cout << "== M16. 游标 fetchAs ==\n";
     {
         FakeCursor cur({userRow(1, "a", std::nullopt, "1.00"), userRow(2, "b", std::nullopt, "2.00")});
@@ -636,7 +596,6 @@ int main() {
         check(r.items.size() == 2 && r.items[1].name == "b", "游标结果内容正确");
     }
 
-    // =====================================================================
     std::cout << "== M17. 事务内映射（Session 形态）==\n";
     {
         gRows = {userRow(5, "tx", std::string("t@x.com"), "9.99")};
@@ -650,7 +609,6 @@ int main() {
         check(st.ok() && idSeen == 5, "事务内 queryAs(Session&) 结果一致");
     }
 
-    // =====================================================================
     std::cout << "== M18. 查询缓存：只缓存原始 ResultSet，命中后仍映射 ==\n";
     {
         CfgFlags cf;
@@ -676,7 +634,6 @@ int main() {
         check(DBMW::reload(g_configPath, std::chrono::milliseconds(500)).ok(), "恢复基础配置");
     }
 
-    // =====================================================================
     std::cout << "== M19. 脱敏顺序：映射在 afterExecution 之后 ==\n";
     {
         CfgFlags cf;
@@ -697,14 +654,12 @@ int main() {
         check(DBMW::reload(g_configPath, std::chrono::milliseconds(500)).ok(), "恢复基础配置");
     }
 
-    // =====================================================================
     std::cout << "== M20. 异步三形态：回调 / future / 协程 ==\n";
     {
         gRows = {userRow(1, "async", std::string("a@x.com"), "5.00"),
                  userRow(2, "async2", std::nullopt, "6.00")};
         const auto callerTid = std::this_thread::get_id();
 
-        // 回调式
         std::promise<EntityResult<User>> pr1;
         auto fut1 = pr1.get_future();
         std::thread::id cbTid{};
@@ -720,7 +675,6 @@ int main() {
         check(o1.items.size() == 2 && o1.items[0].name == "async", "回调式内容正确");
         check(cbTid != callerTid, "完成回调不在调用线程（异步语义不变）");
 
-        // future 式
         common::Params p2;
         auto fut2 = async::queryAs<User>("SELECT async2", p2);
         auto o2 = fut2.get();
@@ -744,7 +698,6 @@ int main() {
 #endif
     }
 
-    // =====================================================================
     std::cout << "== M21/M22. 异步映射失败与失败后可用性 ==\n";
     {
         RowData bad = userRow(1, "a", std::nullopt, "1.00");
@@ -765,7 +718,6 @@ int main() {
               "映射失败不影响连接与后续操作（I3：纯 CPU，无副作用）");
     }
 
-    // =====================================================================
     std::cout << "== M23. 一致性矩阵：queryAs 与手工映射等价 ==\n";
     {
         gRows = {userRow(3, "same", std::string("s@x.com"), "7.77")};

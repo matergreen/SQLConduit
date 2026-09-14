@@ -5,7 +5,6 @@
 #include <string>
 #include <utility>
 
-
 namespace dbmw::core {
     HeartbeatManager::HeartbeatManager(std::chrono::milliseconds interval)
         : interval_(interval) {
@@ -35,7 +34,6 @@ namespace dbmw::core {
     }
 
     void HeartbeatManager::sweepExpiredPools() {
-        // 清掉已销毁的池对应的弱引用，避免向量无限增长。
         std::lock_guard<std::mutex> lk(poolsMtx_);
         std::vector<std::weak_ptr<ConnectionPool> > alive;
         alive.reserve(pools_.size());
@@ -55,8 +53,6 @@ namespace dbmw::core {
                     break;
             }
 
-            // 先快照出本轮要检查的池（提升为 shared_ptr），
-            // 之后整轮循环都不持锁——healthCheck 本身耗时（ping/connect）。
             std::vector<std::shared_ptr<ConnectionPool> > snapshot;
             {
                 std::lock_guard<std::mutex> lk(poolsMtx_);
@@ -79,4 +75,4 @@ namespace dbmw::core {
         }
         DBMW_LOG_INFO("heartbeat manager stopped");
     }
-} // namespace dbmw::core
+}

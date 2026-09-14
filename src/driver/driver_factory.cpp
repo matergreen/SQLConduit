@@ -4,7 +4,6 @@
 #include "dbmw/driver/postgres_driver.h"
 #include "dbmw/driver/odbc_driver.h"
 
-
 namespace dbmw::driver {
     std::unique_ptr<IDriver> createDriver(const std::string &type) {
         return DriverRegistry::instance().create(type);
@@ -15,4 +14,4 @@ namespace dbmw::driver {
         registerPostgresDriver();
         registerOdbcDriver();
     }
-} // namespace dbmw::driver
+}

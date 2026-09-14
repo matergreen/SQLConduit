@@ -3,7 +3,6 @@
 #include <cctype>
 #include <string>
 
-
 namespace dbmw::core {
     common::Status IDatabaseConnection::cancel() {
         return common::Status::error(common::ErrorCode::NotSupported,
@@ -51,13 +50,6 @@ namespace dbmw::core {
         out.affected.reserve(batch.size());
         if (batch.empty()) return common::Status::OK();
 
-        // 原子性：整批要么全成、要么全滚。
-        //
-        // 逐条直发的话，第 N 组失败会留下前 N-1 组的写入，而调用方拿到的
-        // BatchResult 又看不出到底落了几组——这类部分写入是最难排查的数据损坏。
-        // 这里与 PostgreSQL 驱动自建事务（PgTx）的行为对齐，让三个驱动语义一致。
-        //
-        // 调用方已在事务里时直接沿用，失败交由调用方决定回滚范围。
         const bool ownTx = !inTransaction();
         if (ownTx) {
             if (const auto st = begin(); !st.ok()) return st;
@@ -74,8 +66,6 @@ namespace dbmw::core {
         if (!ownTx) return status;
 
         if (!status.ok()) {
-            // 已回滚，部分影响行数不再有参考价值，清空避免误导。
-            // 回滚失败不覆盖原始错误——批次本身的失败原因才是调用方要看的。
             (void) rollback();
             out.clear();
             return status;
@@ -161,8 +151,6 @@ namespace dbmw::core {
                     limited.resize(options.maxParamLength);
                     limited += "...[truncated]";
                 }
-                // 诊断渲染仍必须走驱动转义；强类型包装绝不能成为日志路径上的
-                // 原样 SQL 片段，否则恶意 Decimal/JSON 文本可伪造后续语句。
                 return escapeLiteral(common::Value{std::move(limited)});
             };
             if (const auto *x = std::get_if<common::Decimal>(&value))
@@ -220,8 +208,6 @@ namespace dbmw::core {
         for (size_t i = 0; i < n; ++i) {
             const char c = sql[i];
 
-            // PostgreSQL dollar-quoted 字符串（$$...$$ / $tag$...$tag$）。
-            // 其中的问号是正文，不是参数占位符。
             if (c == '$') {
                 size_t tagEnd = i + 1;
                 while (tagEnd < n &&
@@ -241,8 +227,6 @@ namespace dbmw::core {
                 }
             }
 
-            // 字符串字面量 / 标识符：原样搬运，内部的 '?' 不参与替换。
-            // 连续两个同种引号表示转义而不是结束。
             if (c == '\'' || c == '"' || c == '`') {
                 out.push_back(c);
                 ++i;
@@ -267,17 +251,15 @@ namespace dbmw::core {
                 continue;
             }
 
-            // 行注释
             if (c == '-' && i + 1 < n && sql[i + 1] == '-') {
                 while (i < n && sql[i] != '\n') {
                     out.push_back(sql[i]);
                     ++i;
                 }
-                if (i < n) out.push_back(sql[i]); // 换行符
+                if (i < n) out.push_back(sql[i]);
                 continue;
             }
 
-            // 块注释
             if (c == '/' && i + 1 < n && sql[i + 1] == '*') {
                 out.push_back(c);
                 ++i;
@@ -308,7 +290,6 @@ namespace dbmw::core {
                                                  std::string &out) const {
         std::size_t used = 0;
         out = replacePlaceholders(sql, [&](std::size_t i) -> std::string {
-            // 占位符多于参数时原样保留，由下面的数量校验统一报错。
             if (i >= params.size()) return "?";
             return escapeLiteral(params[i]);
         }, used);
@@ -322,10 +303,6 @@ namespace dbmw::core {
         }
         return common::Status::OK();
     }
-
-    // -----------------------------------------------------------------------
-    // 预编译语句：基类默认不支持，驱动按需覆盖。
-    // -----------------------------------------------------------------------
 
     common::Status IDatabaseConnection::prepare(const std::string &sql,
                                                 const common::Params &typesSample,
@@ -358,15 +335,7 @@ namespace dbmw::core {
     }
 
     void IDatabaseConnection::closeAllPrepared() {
-        // 默认没有句柄可释放：预编译缓存是驱动内部实现，未实现的驱动无需关心。
     }
-
-    // -----------------------------------------------------------------------
-    // 生成键：基类默认委托无键 execute，out 留空。
-    //
-    // 这样"拿不到生成键"是一个安静的事实（empty()），而不是一个 NotSupported 错误：
-    // 老驱动与不支持 RETURNING 的语句因此不会因为多传了一个 out 参数而失败。
-    // -----------------------------------------------------------------------
 
     common::Status IDatabaseConnection::execute(const std::string &sql, std::int64_t &affected,
                                                 common::GeneratedKeys &out) {
@@ -381,13 +350,6 @@ namespace dbmw::core {
         out = common::GeneratedKeys{};
         return execute(sql, params, affected);
     }
-
-    // -----------------------------------------------------------------------
-    // 大参数流式：基类默认走"读入 Blob 再委托既有路径"的降级。
-    //
-    // 这是有意为之——libpq 协议不支持参数的 data-at-execution，PostgreSQL 驱动
-    // 必须继承该默认；而所有老驱动也因此自动获得了流式 API，不必改一行代码。
-    // -----------------------------------------------------------------------
 
     common::Status IDatabaseConnection::query(const std::string &sql,
                                               const common::StreamParams &params,
@@ -418,4 +380,4 @@ namespace dbmw::core {
         }
         return executeBatch(sql, plain, out);
     }
-} // namespace dbmw::core
+}

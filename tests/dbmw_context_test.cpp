@@ -1,5 +1,3 @@
-// M1 SPI 上下文层单测：覆盖 SqlContext / ContextScope / parseTraceparent /
-// formatTraceparent / nextSpanId。纯公共层测试，不依赖驱动与执行器。
 #include "dbmw/common/context.h"
 
 #include <atomic>
@@ -46,7 +44,6 @@ int main() {
 
     std::cout << "== M1 上下文：ContextScope LIFO 与 current() ==\n";
     {
-        // 没有任何 Scope 时，current() 是 defaultInstance（全部字段默认）。
         check(ContextScope::current().empty(), "无 Scope 时 current() 走 defaultInstance");
         check(ContextScope::depth() == 0, "空线程下栈深 = 0");
 
@@ -73,7 +70,6 @@ int main() {
             check(ContextScope::depth() == 1, "s2 析构后回到 depth = 1");
             check(ContextScope::current().traceId == "t-a",
                   "LIFO 严格：s2 出栈后 s1 重新可见");
-            // LIFO 不变量：s2 出栈时不能动 s1 之后的栈层；这里等同于 s1 还在。
         }
         check(ContextScope::depth() == 0, "s1 析构后栈完全清空");
         check(ContextScope::current().empty(), "栈空 current() 再次走 defaultInstance");
@@ -88,7 +84,6 @@ int main() {
             check(ContextScope::depth() == 1, "异常路径中 push 也成功");
             throw std::runtime_error("boom");
         } catch (const std::runtime_error &) {
-            // 吞掉，下面验证 RAII 是否正确出栈
         }
         check(ContextScope::depth() == 0, "RAII 保证异常路径栈深归零");
         check(ContextScope::current().empty(), "异常路径不污染 current()");
@@ -104,10 +99,8 @@ int main() {
         std::atomic<bool> workerOk{false};
         std::string workerObserved;
         std::thread t([&] {
-            // worker 自己就是空栈：current() 应为 defaultInstance，与主线程无关。
             workerObserved = ContextScope::current().traceId;
             workerOk.store(ContextScope::current().empty());
-            // worker 自己 push 一层不影响主线程
             SqlContext c; c.traceId = "worker-trace";
             ContextScope ws(c);
         });
@@ -121,7 +114,6 @@ int main() {
     std::cout << "== M1 上下文：parseTraceparent 合法/非法形态 ==\n";
     {
         SqlContext out;
-        // 标准 55 字节格式
         check(parseTraceparent(
                   "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
                   out),
@@ -130,7 +122,6 @@ int main() {
               out.spanId == "b7ad6b7169203331",
               "traceId/spanId 字段填回正确");
 
-        // 长度不对
         SqlContext bad;
         check(!parseTraceparent("00-0af7651916cd43dd8448eb211c80319c", bad),
               "长度不足 55 字节拒绝");
@@ -139,19 +130,16 @@ int main() {
                   bad),
               "长度超出 55 字节拒绝");
 
-        // 版本号不对
         check(!parseTraceparent(
                   "01-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
                   bad),
               "version != 00 拒绝");
 
-        // W3C 禁止全 0 trace-id
         check(!parseTraceparent(
                   "00-00000000000000000000000000000000-b7ad6b7169203331-01",
                   bad),
               "全 0 trace-id 拒绝");
 
-        // 非 hex 字符
         check(!parseTraceparent(
                   "00-0af7651916cd43dd8448eb211c80319g-b7ad6b7169203331-01",
                   bad),
@@ -161,7 +149,6 @@ int main() {
                   bad),
               "spanId 含 z 拒绝");
 
-        // trace-flags 也是固定的两位十六进制字段。
         SqlContext withBadFlags;
         check(!parseTraceparent(
                   "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-zz",
@@ -193,7 +180,6 @@ int main() {
               roundTrip.spanId == ctx.spanId,
               "traceId/spanId 往返无损");
 
-        // 无效 spanId 不能输出一个看似合法但违反 W3C 约束的 header。
         ctx.spanId = "short";
         check(formatTraceparent(ctx).empty(),
               "spanId 长度无效时不生成 traceparent");

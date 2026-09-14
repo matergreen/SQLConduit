@@ -3,7 +3,6 @@
 #include <memory>
 #include <utility>
 
-
 namespace dbmw::driver {
     DriverRegistry &DriverRegistry::instance() {
         static DriverRegistry r;
@@ -30,4 +29,4 @@ namespace dbmw::driver {
         for (const auto &p: factories_) v.push_back(p.first);
         return v;
     }
-} // namespace dbmw::driver
+}

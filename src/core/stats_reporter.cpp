@@ -16,7 +16,6 @@
 #include <utility>
 #include <vector>
 
-
 namespace dbmw::core {
     namespace {
         std::string formatTimestamp(const std::chrono::system_clock::time_point &tp) {
@@ -32,8 +31,6 @@ namespace dbmw::core {
             return std::string(buf);
         }
 
-        // SQL 模板里可能有引号、换行和控制字符，手写 JSON 必须转义，
-        // 否则一次含双引号的查询就会让整行记录变得无法解析。
         std::string escapeJson(const std::string &s) {
             std::string out;
             out.reserve(s.size() + 8);
@@ -68,7 +65,7 @@ namespace dbmw::core {
             if (s.size() <= maxLen) return s;
             return s.substr(0, maxLen) + "...";
         }
-    } // namespace
+    }
 
     StatsReporter::~StatsReporter() {
         stop();
@@ -105,14 +102,11 @@ namespace dbmw::core {
         std::unique_lock<std::mutex> lk(mtx_);
         for (;;) {
             const auto interval = std::chrono::milliseconds(cfg_.interval_ms);
-            // 被唤醒且 running_ 已置 false -> 退出；超时 -> 采样一轮。
             if (cv_.wait_for(lk, interval, [this] { return !running_; })) return;
-            // 采集与写文件期间不持锁，避免 stop() 被长时间阻塞在 join 上。
             lk.unlock();
             try {
                 writeOnce();
             } catch (...) {
-                // 统计是旁路功能，任何失败都只吞掉，绝不影响业务。
             }
             lk.lock();
         }
@@ -122,8 +116,6 @@ namespace dbmw::core {
         const auto now = std::chrono::system_clock::now();
         std::vector<NamedPoolStats> pools;
         if (cfg_.include_pool && collector_) pools = collector_();
-        // M3 池指标观察者通道：与文件落盘共用 cfg_.include_pool 开关；
-        // samplePoolMetrics 内部已 try/catch 兜住所有异常，不影响 writeOnce 主路径。
         if (cfg_.include_pool) {
             (void)common::Observability::samplePoolMetrics();
         }
@@ -138,7 +130,6 @@ namespace dbmw::core {
                                      : renderText(now, pools, slowSql);
 
         if (cfg_.file.empty()) {
-            // 没配文件就只走日志，本地调试时也能看到统计内容。
             DBMW_LOG_INFO("stats report:\n" + text);
             return;
         }
@@ -259,4 +250,4 @@ namespace dbmw::core {
         os << "}";
         return os.str();
     }
-} // namespace dbmw::core
+}

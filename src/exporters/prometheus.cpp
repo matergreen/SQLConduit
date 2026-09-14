@@ -10,11 +10,6 @@
 
 namespace dbmw::exporters {
     namespace {
-        // Prometheus label value 转义：
-        //   - \\ -> \\\\
-        //   - \" -> \\\"
-        //   - \n -> \\n
-        // 其它控制字符替换为 '?'，避免产生 exposition 格式不支持的转义。
         std::string escapeLabel(const std::string &s) {
             std::string out;
             out.reserve(s.size() + 8);
@@ -25,8 +20,6 @@ namespace dbmw::exporters {
                     case '\n': out += "\\n"; break;
                     default:
                         if (static_cast<unsigned char>(c) < 0x20) {
-                            // Prometheus text exposition 只定义 \\, \" 与 \n；
-                            // \uXXXX 会被解析器判为非法 escape。
                             out.push_back('?');
                         } else {
                             out += c;
@@ -36,7 +29,6 @@ namespace dbmw::exporters {
             return out;
         }
 
-        // Prometheus 文本格式 HELP/TYPE + 行。
         void emitHelp(std::ostringstream &os, const std::string &name,
                       const std::string &help) {
             os << "# HELP " << name << ' ' << help << '\n';
@@ -46,7 +38,6 @@ namespace dbmw::exporters {
             os << "# TYPE " << name << ' ' << type << '\n';
         }
 
-        // 标签字符串拼接：k1="v1",k2="v2"，全部转义。空 label map 返回空串。
         std::string renderLabels(const std::vector<std::pair<std::string, std::string>> &kvs) {
             if (kvs.empty()) return {};
             std::ostringstream os;
@@ -59,7 +50,6 @@ namespace dbmw::exporters {
             return os.str();
         }
 
-        // 计数器行：{labels} value（无 label 时省去大括号）。
         void emitMetric(std::ostringstream &os, const std::string &name,
                         const std::string &labels, std::uint64_t value) {
             if (labels.empty()) os << name << ' ' << value << '\n';
@@ -70,7 +60,7 @@ namespace dbmw::exporters {
             if (labels.empty()) os << name << ' ' << value << '\n';
             else os << name << '{' << labels << "} " << value << '\n';
         }
-    } // namespace
+    }
 
     std::string toPrometheusText(const common::PoolMetricsEvent &pools,
                                  const std::vector<common::SlowSqlStats> &slow,
@@ -78,7 +68,6 @@ namespace dbmw::exporters {
                                  std::size_t maxFingerprintLabels) {
         std::ostringstream os;
 
-        // ===== 池指标 =====
         const std::string p_conn = prefix + "_pool_connections";
         const std::string p_max = prefix + "_pool_connections_max";
         const std::string p_min = prefix + "_pool_connections_min";
@@ -100,12 +89,6 @@ namespace dbmw::exporters {
         const std::string p_wait_secs = prefix + "_pool_borrow_wait_seconds_total";
         const std::string p_wait_max = prefix + "_pool_borrow_wait_seconds_max";
 
-        // HELP/TYPE 只在第一个池出现前发一次，避免重复。
-        // 但同一指标可能有多条不同 data_source 的 series，因此把所有数据源
-        // 标签合并后再统一发 HELP/TYPE——这是 Prometheus 的惯例。
-        // 这里采取更直观的策略：每个指标在第一行数据前发一次 HELP/TYPE，
-        // 实现上是"先收集 label 集合，再输出"。
-        // 为简化，每个 metric 用单独 if 分支：第一次进入时输出 HELP/TYPE。
         bool conn_emitted = false, max_emitted = false, min_emitted = false;
         bool idle_emitted = false, borrowed_emitted = false, util_emitted = false;
         bool waiting_emitted = false, req_emitted = false, succ_emitted = false;
@@ -263,9 +246,7 @@ namespace dbmw::exporters {
                        static_cast<double>(s.maxBorrowWait.count()) / 1e6);
         }
 
-        // ===== 慢 SQL =====
         if (!slow.empty()) {
-            // 控制高基数：maxFingerprintLabels 为 0 时按"全部导出"，否则按传入顺序截断。
             const std::size_t take = maxFingerprintLabels == 0
                 ? slow.size()
                 : (std::min)(slow.size(), maxFingerprintLabels);
@@ -315,7 +296,6 @@ namespace dbmw::exporters {
                     emitType(os, s_duration, "histogram");
                     duration_family_emitted = true;
                 }
-                // totalDuration 微秒转秒
                 emitMetric(os, s_sum, lbl,
                            static_cast<double>(s.totalDuration.count()) / 1e6);
 
@@ -327,11 +307,6 @@ namespace dbmw::exporters {
                 emitMetric(os, s_max, lbl,
                            static_cast<double>(s.maxDuration.count()) / 1e6);
 
-                // histogram bucket
-                //   s.histogramBucketsMs 与 s.histogram 等长（同步构造），
-                //   这里逐个 bucket 输出 {le="<sec>"} cumulative count；
-                //   最后一个隐式 +Inf 桶用 totalDuration/count 不准确，
-                //   Prometheus 惯例 +Inf = count。直接读 count。
                 const std::size_t n = std::min(s.histogramBucketsMs.size(),
                                                s.histogram.size());
                 std::uint64_t cumulative = 0;
@@ -348,7 +323,6 @@ namespace dbmw::exporters {
                     });
                     emitMetric(os, s_hist, bucketLbl, cumulative);
                 }
-                // +Inf 桶 = 总样本数。
                 {
                     const std::string bucketLbl = renderLabels({
                         {"data_source", s.dataSource},
@@ -363,4 +337,4 @@ namespace dbmw::exporters {
 
         return os.str();
     }
-} // namespace dbmw::exporters
+}

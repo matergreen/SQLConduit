@@ -11,20 +11,8 @@
 #include <utility>
 #include <vector>
 
-
 namespace dbmw::async {
     namespace {
-        // 内置线程池执行器：N worker + 1 timer + 有界工作队列。
-        //
-        // 正确性要点：
-        //  - worker 里执行的任务一律 catch(...) 兜底：worker 死亡等于服务死亡；
-        //  - timer 线程**内联执行**到期任务：语句超时检查必须在 worker 全被
-        //    慢语句占住时仍然准点触发（否则超时判定被慢语句自己堵在队列后面，
-        //    永远赶不上）。代价是 postAfter 的任务必须短小、不得长阻塞——
-        //    引擎侧只投递重试重投递（step1）与超时检查这类快任务，池的建连/
-        //    ping 走 io.post（tryPost + 内联兜底），不经定时队列；
-        //  - shutdown 后 tryPost 返回 false、postAfter 静默丢弃，
-        //    未到期定时任务一并丢弃（见 IExecutor::shutdown 的说明）。
         class ThreadPoolExecutor final : public IExecutor {
         public:
             explicit ThreadPoolExecutor(const int threads, const std::size_t queueSize)
@@ -75,7 +63,7 @@ namespace dbmw::async {
                 {
                     std::lock_guard<std::mutex> lk(mtx_);
                     if (stopping_.exchange(true, std::memory_order_acq_rel)) return;
-                    delayed_ = {}; // 未到期定时任务丢弃（语义见 IExecutor::shutdown）
+                    delayed_ = {};
                     cvWork_.notify_all();
                     cvTimer_.notify_all();
                     workers = std::move(workers_);
@@ -85,9 +73,6 @@ namespace dbmw::async {
                 for (auto &w: workers) {
                     if (w.joinable()) w.join();
                 }
-                // C++ 不能安全强杀正在访问执行器/连接池状态的 worker。
-                // grace 由引擎排水阶段消耗；到这里后必须协作式 join，
-                // 驱动若不支持 cancel，停机可能等到底层网络超时。
                 (void) grace;
             }
 
@@ -107,18 +92,15 @@ namespace dbmw::async {
         private:
             struct DelayedTask {
                 std::chrono::steady_clock::time_point deadline;
-                std::uint64_t seq; // 同 deadline 时保持先进先出
+                std::uint64_t seq;
                 Task task;
 
-                // 最小堆：deadline 最先者顶置。
                 bool operator<(const DelayedTask &other) const {
                     if (deadline != other.deadline) return deadline > other.deadline;
                     return seq > other.seq;
                 }
             };
 
-            // 惰性启动：首次提交时才创建线程，未使用异步的进程零额外线程。
-            // 调用方必须已持有 mtx_。线程入口会立刻抢锁，这里持锁 spawn 安全。
             void ensureStartedLocked() {
                 if (threadsStarted_) return;
                 threadsStarted_ = true;
@@ -170,7 +152,6 @@ namespace dbmw::async {
                             continue;
                         }
                         const auto next = delayed_.top().deadline;
-                        // 等到最近 deadline，或队列头部被更换 / 进入停机。
                         cvTimer_.wait_until(lk, next, [this, &next] {
                             return stopping_.load(std::memory_order_relaxed)
                                    || delayed_.empty() || delayed_.top().deadline != next;
@@ -180,14 +161,11 @@ namespace dbmw::async {
                         }
                         if (delayed_.empty() || delayed_.top().deadline
                             > std::chrono::steady_clock::now()) {
-                            continue; // 头部被更换或尚未到期，重新等
+                            continue;
                         }
                         task = std::move(const_cast<DelayedTask &>(delayed_.top()).task);
                         delayed_.pop();
                     }
-                    // 到期任务在 timer 线程上内联执行（理由见类头注释）：
-                    // 超时检查不依赖 worker 可用性，重试重投递（step1）本身
-                    // 也是"投递后即返回"的快任务。持锁范围外执行。
                     runGuarded(task);
                 }
             }
@@ -220,10 +198,10 @@ namespace dbmw::async {
             bool threadsStarted_ = false;
             std::atomic<bool> stopping_{false};
         };
-    } // namespace
+    }
 
     std::shared_ptr<IExecutor> makeThreadPoolExecutor(const int threads,
                                                       const std::size_t queueSize) {
         return std::make_shared<ThreadPoolExecutor>(threads, queueSize);
     }
-} // namespace dbmw::async
+}

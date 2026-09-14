@@ -195,7 +195,7 @@ void testTransactionsPreparedBatchCursorAsync(Fixture &f) {
     require(dbmw::DBMW::poolStats(pool) && pool.borrowRequests > 0, "pool metrics empty");
     require(!dbmw::DBMW::slowSqlStats().empty(), "slow SQL metrics empty");
 }
-} // namespace
+}
 
 int main() {
     Fixture fixture;

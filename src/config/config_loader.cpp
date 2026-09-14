@@ -4,12 +4,10 @@
 #include <iostream>
 #include <utility>
 
-
 namespace dbmw::config {
     using json = nlohmann::json;
 
     bool ConfigLoader::loadFromFile(const std::string &path, GlobalConfig &out, std::string &error) {
-        // 同一个输出对象可用于配置热加载，不保留上一版的数组或默认值。
         out = GlobalConfig{};
         error.clear();
         std::ifstream f(path);
@@ -182,7 +180,6 @@ namespace dbmw::config {
                 cfg.include_pool = report.value("include_pool", cfg.include_pool);
                 cfg.include_slow_sql = report.value("include_slow_sql", cfg.include_slow_sql);
                 cfg.slow_sql_limit = report.value("slow_sql_limit", cfg.slow_sql_limit);
-                // 间隔过小会让写文件本身变成热点，这里静默抬到下限而不是报错。
                 if (cfg.interval_ms < 1000) cfg.interval_ms = 1000;
                 if (cfg.format != "text" && cfg.format != "json") {
                     error = "observability.stats_report.format must be 'text' or 'json'";
@@ -195,7 +192,6 @@ namespace dbmw::config {
             }
         }
 
-        // ---- 限流 ----
         if (j.contains("rate_limit")) {
             if (!j["rate_limit"].is_object()) {
                 error = "rate_limit must be an object";
@@ -221,7 +217,6 @@ namespace dbmw::config {
             }
         }
 
-        // ---- SQL 审计 ----
         if (j.contains("sql_audit")) {
             if (!j["sql_audit"].is_object()) {
                 error = "sql_audit must be an object";
@@ -250,7 +245,6 @@ namespace dbmw::config {
             }
         }
 
-        // ---- 查询缓存 ----
         if (j.contains("query_cache")) {
             if (!j["query_cache"].is_object()) {
                 error = "query_cache must be an object";
@@ -271,7 +265,6 @@ namespace dbmw::config {
         }
     }
 
-    // ---- 游标 ----
     if (j.contains("cursor")) {
         if (!j["cursor"].is_object()) {
             error = "cursor must be an object";
@@ -291,7 +284,6 @@ namespace dbmw::config {
         }
     }
 
-    // ---- 预编译语句缓存 ----
     if (j.contains("prepared_cache")) {
         if (!j["prepared_cache"].is_object()) {
             error = "prepared_cache must be an object";
@@ -301,15 +293,12 @@ namespace dbmw::config {
         out.prepared_cache.enabled = pc.value("enabled", out.prepared_cache.enabled);
         out.prepared_cache.max_per_connection = pc.value(
             "max_per_connection", out.prepared_cache.max_per_connection);
-        // 负数直接判为配置错误，而不是悄悄当 0 处理：
-        // 0 是"不限制"的合法取值，静默纠偏会让调用方误以为自己设了上限。
         if (out.prepared_cache.max_per_connection < 0) {
             error = "invalid prepared_cache configuration: max_per_connection must be >= 0";
             return false;
         }
     }
 
-    // ---- SPI 拦截器总开关（v0.4.0 M1）----
     if (j.contains("interceptors")) {
         if (!j["interceptors"].is_object()) {
             error = "interceptors must be an object";
@@ -317,8 +306,6 @@ namespace dbmw::config {
         }
         const auto &ic = j["interceptors"];
         out.interceptors.enabled = ic.value("enabled", out.interceptors.enabled);
-        // 当前仅暴露 enabled——注册顺序 / 列表必须在代码中显式调 API。
-        // 这里拒收任何其他字段，避免配置层/代码层语义漂移。
         for (auto it = ic.begin(); it != ic.end(); ++it) {
             if (it.key() != "enabled") {
                 error = "unknown interceptors field: " + it.key();
@@ -327,7 +314,6 @@ namespace dbmw::config {
         }
     }
 
-    // ---- 异步执行器 ----
     if (j.contains("async")) {
         if (!j["async"].is_object()) {
             error = "async must be an object";
@@ -462,11 +448,6 @@ namespace dbmw::config {
                     }
                 }
                 group.read_only = g.value("read_only", false);
-                // M8（§10.2 改动 A）：副本 + 零窗口=陈旧读风险。仅打 WARN，
-                // 不阻断 load——既有行为不变（默认值 0 维持），但引导用户修正。
-                // 这里使用 std::cerr；DBMW_LOG_* 抽象在 ConfigLoader 下面会成
-                // 循环依赖（config 依赖 core，core 依赖 common→logger）。
-                // logger 的等价路径是 DBMW_LOG_WARN（INFO 也可），但那是 InfoLog 风格宏。
                 if (!group.replicas.empty() && group.read_after_write_ms == 0) {
                     std::cerr
                         << "dbmw WARN: datasource group '" << group.name << "' has "
@@ -535,10 +516,6 @@ namespace dbmw::config {
                         return false;
                     }
                 }
-                // M6 影子库（§8）：解析 shadow 字段。
-                // 仅做类型与基本形状校验；引用完整性（必须存在、非本组成员、
-                // 非任何组名）在 DatabaseManager::resolveShadows 统一验证——
-                // 那时 datasources_/groups_ 已经构建完成。
                 if (g.contains("shadow") && !g["shadow"].is_string()) {
                     error = "group '" + group.name + "' shadow must be a string";
                     return false;
@@ -560,4 +537,4 @@ namespace dbmw::config {
             return false;
         }
     }
-} // namespace dbmw::config
+}

@@ -975,6 +975,135 @@ A type mismatch or NULL landing in a non-`optional` member is an **error** (`Err
 
 Full design (conversion matrix, invariants, M1–M23 test matrix) lives in `docs/mapping-design-v0.5.0.md`.
 
+## Routines and indexes (v0.5.1: lifecycle and call protocol for functions / procedures / indexes)
+
+`dbmw/util.h` provides `dbmw::common::util`. It owns the **call protocol** and the **lifecycle**;
+it does **not** translate SQL dialects — routine bodies (`BEGIN ... END` / `$$ ... $$` / `AS ...`)
+are written by the application in the target dialect.
+
+### Dialects
+
+```cpp
+enum class Dialect { Auto, MySQL, Postgres, SqlServer };
+```
+
+`Auto` is inferred from the data source driver type (`mysql*` -> MySQL, `postgres*` -> Postgres,
+`odbc*` / `mssql*` -> SQL Server). When detection fails it returns `Auto`, and every entry point
+that must generate SQL then answers `NotSupported` — the middleware **never guesses a dialect**.
+Pass an explicit `Dialect` for custom or mock drivers.
+
+### Call protocol (`makeCallSql`)
+
+| Dialect | No result set | With result set |
+|---|---|---|
+| MySQL | `CALL p(?, ?)` | `CALL p(?, ?)` |
+| PostgreSQL | `CALL p(?, ?)` (procedure) | `SELECT * FROM f(?, ?)` (function) |
+| SQL Server | `EXEC p ?, ?` | `{CALL p(?, ?)}` |
+
+Asking a PostgreSQL procedure for a result set yields `NotSupported` (PG procedures return no
+result set; use a function).
+
+### Create / drop
+
+```cpp
+util::CreateRoutineOptions o;
+o.dataSource = "main";
+o.stripDelimiter = true;          // default: strip DELIMITER directives from scripts and log it
+util::createRoutine("CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END", o);
+
+util::RoutineRef ref{"public.p", util::RoutineKind::Procedure, "pg"};
+util::DropRoutineOptions d;
+d.cascade = true;                 // PostgreSQL only; other dialects -> NotSupported
+util::dropRoutine(ref, d);
+```
+
+`replace` (`CREATE OR REPLACE`) is PostgreSQL only and `ifNotExists` is supported by no dialect in
+this matrix — both answer `NotSupported`.
+
+### Indexes
+
+```cpp
+util::IndexSpec spec{"t", "idx_t_a", {"a", "b"}};
+spec.unique = true;
+spec.usingMethod = "BTREE";       // MySQL: after the column list; PG: after ON; SQL Server: rejected
+util::createIndex(spec);
+util::dropIndex("t", "idx_t_a");
+```
+
+`ifNotExists` / `concurrent` are PostgreSQL only, and `CONCURRENTLY` inside a transaction block
+returns `TxError` (PG semantics). The column list is passed through verbatim, so expressions such
+as `lower(name)` are allowed.
+
+### Structured calls: multiple result sets and OUT / INOUT
+
+```cpp
+util::RoutineRef proc{"p", util::RoutineKind::Procedure, "my"};
+
+// IN only — the pool path is enough, every result set comes back in one call
+util::CallParams params;
+params.emplace_back(common::Value(std::int64_t(7)));
+util::CallResult r;
+util::call(proc, params, r);
+// r.sets: every result set produced; r.rowCount(): rows across all of them
+
+// OUT / INOUT — the Session overload is required
+params.emplace_back(util::CallParam{util::ParamDirection::Out, common::Value(std::int64_t(0))});
+DBMW::transaction("my", [&](core::Session &s) { return util::call(s, proc, params, r); });
+// r.outParams[0] is the OUT value
+
+// affected rows only: returnsRows = false
+util::CallOptions o;
+o.returnsRows = false;
+util::call(proc, params, r, o);
+```
+
+| Dialect | OUT | INOUT | Mechanism / limit |
+|---|---|---|---|
+| MySQL | ✅ needs `Session` | ✅ needs `Session` | `CALL p(?, @dbmw_out_1)` then `SELECT @dbmw_out_1` on the same connection; INOUT also runs `SET @dbmw_out_0 = ?` first |
+| PostgreSQL (function) | ✅ pool path | ✅ pool path | The values are the leading N columns of the `SELECT * FROM f(...)` result row |
+| PostgreSQL (procedure) | ❌ | ❌ | PG's `CALL` does not hand OUT values to the client → `NotSupported` |
+| SQL Server | ❌ | ❌ | Requires `DECLARE @var <type>` first; dbmw cannot infer the type → `NotSupported` |
+
+The async path has no connection affinity, so `SELECT @var` may land on a different connection —
+**OUT / INOUT are not supported there**. Use `async::util::callAll()` (callback / future /
+coroutine) when you need multiple result sets.
+
+Multiple result sets depend on driver capability: MySQL implements real `mysql_next_result`
+collection; other drivers fall back to a single result set. MySQL's `query` / `execute` now drain
+the remaining result sets (otherwise the connection is stuck in `Commands out of sync`); dropped
+sets are logged as WARN with a hint to use `queryAll()`.
+
+### Governance (invariants)
+
+| # | Behaviour |
+|---|---|
+| I1 | DDL / index operations are pinned to the primary: the request's `shadow` flag is cleared, so they never land on a shadow database |
+| I2 | Defaults to `Idempotency::NonIdempotent` — no retries on failure; declare `Idempotent` explicitly to retry per `max_attempts` |
+| I3 | A structural change invalidates that data source's query cache (guaranteed by core `markWrite()`) |
+| I4 | Auditing still applies: allow/deny lists, read-only and `require_limit_select` all stay — only "semicolons inside a routine body" is exempt |
+| I5 | Unsupported dialect combinations answer `NotSupported`; never a silent downgrade |
+| I7 | Callback / future / coroutine forms share the synchronous path — same governance, same error codes |
+
+### Auditing and routine bodies (the core bug fixed in v0.5.1)
+
+MySQL / SQL Server routine bodies contain top-level semicolons (`BEGIN SELECT 1; SELECT 2; END`),
+and the old "multiple statements" rule treated that as two statements, **hard-blocking** it when
+`action=block`. PostgreSQL `$$ ... $$` bodies were already masked as literals, so the bug only ever
+surfaced on MySQL / ODBC.
+
+`hasMultipleStatements(sql, allowRoutineBody=true)` now masks the whole `BEGIN ... END` region
+(including nested `IF` / `CASE` / `LOOP` blocks) before judging the remainder. Routine bodies pass,
+while `CREATE PROCEDURE ... END; DROP TABLE t` is **still blocked**.
+
+### Known limitations
+
+1. **Multiple result sets**: `CALL` on MySQL / SQL Server can return several; v0.5.1 guarantees the first only.
+2. **OUT / INOUT parameters**: `Params` is input-only, unsupported in this release.
+3. **DDL inside a transaction**: MySQL commits implicitly and cannot roll back; util cannot change that, so DDL runs outside transactions by default.
+4. **No dialect translation for routine bodies**: keep one script per dialect and let util manage and run them.
+
+Full design (cross-driver matrix, conflict analysis, U1–U20 test matrix) lives in `docs/util-design-v0.5.1.md`.
+
 ## Observability
 
 Full SQL, slow SQL, and pool metrics are configured via `observability`; full parameter values are off by default:

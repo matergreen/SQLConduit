@@ -19,6 +19,14 @@ namespace dbmw::async {
     Handle query(const std::string &dataSource, const std::string &sql,
                  const common::Params &params, QueryCallback cb, Options opts = {});
 
+    Handle queryAll(const std::string &sql, MultiQueryCallback cb, Options opts = {});
+    Handle queryAll(const std::string &dataSource, const std::string &sql,
+                    MultiQueryCallback cb, Options opts = {});
+    Handle queryAll(const std::string &sql, const common::Params &params,
+                    MultiQueryCallback cb, Options opts = {});
+    Handle queryAll(const std::string &dataSource, const std::string &sql,
+                    const common::Params &params, MultiQueryCallback cb, Options opts = {});
+
     Handle execute(const std::string &sql, ExecCallback cb, Options opts = {});
     Handle execute(const std::string &dataSource, const std::string &sql,
                    ExecCallback cb, Options opts = {});

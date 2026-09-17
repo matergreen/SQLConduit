@@ -40,6 +40,16 @@ namespace dbmw
 
         static common::Status execute(const std::string& dataSource, const std::string& sql, const common::Params& params, std::int64_t& affected);
 
+        static common::Status queryAll(const std::string& sql,
+                                       std::vector<common::ResultSet>& out);
+        static common::Status queryAll(const std::string& sql, const common::Params& params,
+                                       std::vector<common::ResultSet>& out);
+        static common::Status queryAll(const std::string& dataSource, const std::string& sql,
+                                       std::vector<common::ResultSet>& out);
+        static common::Status queryAll(const std::string& dataSource, const std::string& sql,
+                                       const common::Params& params,
+                                       std::vector<common::ResultSet>& out);
+
         static common::Status queryEach(const std::string &sql,
                                         const common::Params &params,
                                         const common::RowCallback &callback,

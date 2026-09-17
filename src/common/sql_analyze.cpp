@@ -252,6 +252,97 @@ namespace dbmw::common::sql {
 
         std::string upperFirstVerb(const std::string &masked);
 
+        bool matchWordAt(const std::string &s, const std::size_t i, const char *kw) {
+            const std::size_t len = std::char_traits<char>::length(kw);
+            if (i + len > s.size()) return false;
+            for (std::size_t k = 0; k < len; ++k)
+                if (std::toupper(static_cast<unsigned char>(s[i + k])) !=
+                    std::toupper(static_cast<unsigned char>(kw[k]))) return false;
+            const auto identChar = [](const unsigned char c) {
+                return std::isalnum(c) || c == '_';
+            };
+            if (i > 0 && identChar(static_cast<unsigned char>(s[i - 1]))) return false;
+            if (i + len < s.size() && identChar(static_cast<unsigned char>(s[i + len])))
+                return false;
+            return true;
+        }
+
+        bool eatWord(const std::string &s, const std::size_t i, const char *kw,
+                     std::size_t &next) {
+            if (!matchWordAt(s, i, kw)) return false;
+            next = i + std::char_traits<char>::length(kw);
+            return true;
+        }
+
+        std::size_t nextNonSpace(const std::string &s, std::size_t i) {
+            while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
+            return i;
+        }
+
+        bool eatBlockTerminator(const std::string &s, const std::size_t i, std::size_t &next) {
+            for (const char *kw : {"CASE", "IF", "LOOP", "WHILE", "REPEAT", "TRY", "CATCH"})
+                if (eatWord(s, i, kw, next)) return true;
+            return false;
+        }
+
+        bool maskCompoundBody(std::string &s) {
+            std::size_t beginPos = std::string::npos;
+            for (std::size_t i = 0; i < s.size(); ++i) {
+                std::size_t next = 0;
+                if (eatWord(s, i, "BEGIN", next)) {
+                    beginPos = i;
+                    break;
+                }
+            }
+            if (beginPos == std::string::npos) return false;
+
+            int depth = 0;
+            std::size_t endPos = std::string::npos;
+            std::size_t i = beginPos;
+            while (i < s.size()) {
+                std::size_t next = 0;
+                if (eatWord(s, i, "BEGIN", next)) {
+                    ++depth;
+                    i = next;
+                    continue;
+                }
+                if (eatWord(s, i, "END", next)) {
+                    --depth;
+                    const std::size_t afterSpace = nextNonSpace(s, next);
+                    std::size_t afterKw = 0;
+                    if (afterSpace < s.size() && eatBlockTerminator(s, afterSpace, afterKw))
+                        i = afterKw;
+                    else
+                        i = next;
+                    if (depth <= 0) {
+                        endPos = i;
+                        break;
+                    }
+                    continue;
+                }
+                bool opened = false;
+                for (const char *kw : {"CASE", "LOOP", "WHILE", "REPEAT"}) {
+                    if (eatWord(s, i, kw, next)) {
+                        ++depth;
+                        i = next;
+                        opened = true;
+                        break;
+                    }
+                }
+                if (opened) continue;
+                if (eatWord(s, i, "IF", next)) {
+                    const std::size_t afterSpace = nextNonSpace(s, next);
+                    if (afterSpace < s.size() && s[afterSpace] != '(') ++depth;
+                    i = next;
+                    continue;
+                }
+                ++i;
+            }
+            if (endPos == std::string::npos || endPos <= beginPos) return false;
+            for (std::size_t p = beginPos; p < endPos && p < s.size(); ++p) s[p] = ' ';
+            return true;
+        }
+
         std::string upperMainVerb(const std::string &masked) {
             const std::string first = upperFirstVerb(masked);
             if (first != "WITH") return first;
@@ -341,7 +432,12 @@ namespace dbmw::common::sql {
     }
 
     bool hasMultipleStatements(const std::string &sql) {
-        const std::string masked = maskLiteralRegions(sql);
+        return hasMultipleStatements(sql, false);
+    }
+
+    bool hasMultipleStatements(const std::string &sql, const bool allowRoutineBody) {
+        std::string masked = maskLiteralRegions(sql);
+        if (allowRoutineBody && isRoutineDdl(sql)) maskCompoundBody(masked);
         int depth = 0;
         bool ended = false;
         for (const char ch: masked) {
@@ -352,5 +448,13 @@ namespace dbmw::common::sql {
             if (ended && !std::isspace(static_cast<unsigned char>(ch))) return true;
         }
         return false;
+    }
+
+    bool isRoutineDdl(const std::string &sql) {
+        const std::string masked = maskLiteralRegions(sql);
+        const std::string verb = upperMainVerb(masked);
+        if (verb != "CREATE" && verb != "ALTER") return false;
+        return containsTopLevelKeyword(masked, "PROCEDURE") ||
+               containsTopLevelKeyword(masked, "FUNCTION");
     }
 }

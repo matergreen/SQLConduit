@@ -111,6 +111,35 @@ namespace dbmw {
         return ds->execute(sql, params, affected);
     }
 
+    common::Status DBMW::queryAll(const std::string &sql,
+                                  std::vector<common::ResultSet> &out) {
+        std::shared_ptr<core::DataSource> ds;
+        if (const auto st = resolve(std::string(), ds); !st.ok()) return st;
+        return ds->queryAll(sql, out);
+    }
+
+    common::Status DBMW::queryAll(const std::string &sql, const common::Params &params,
+                                  std::vector<common::ResultSet> &out) {
+        std::shared_ptr<core::DataSource> ds;
+        if (const auto st = resolve(std::string(), ds); !st.ok()) return st;
+        return ds->queryAll(sql, params, out);
+    }
+
+    common::Status DBMW::queryAll(const std::string &dataSource, const std::string &sql,
+                                  std::vector<common::ResultSet> &out) {
+        std::shared_ptr<core::DataSource> ds;
+        if (const auto st = resolve(dataSource, ds); !st.ok()) return st;
+        return ds->queryAll(sql, out);
+    }
+
+    common::Status DBMW::queryAll(const std::string &dataSource, const std::string &sql,
+                                  const common::Params &params,
+                                  std::vector<common::ResultSet> &out) {
+        std::shared_ptr<core::DataSource> ds;
+        if (const auto st = resolve(dataSource, ds); !st.ok()) return st;
+        return ds->queryAll(sql, params, out);
+    }
+
     common::Status DBMW::queryEach(const std::string &sql, const common::Params &params,
                                    const common::RowCallback &callback, std::uint64_t &rows) {
         std::shared_ptr<core::DataSource> ds;

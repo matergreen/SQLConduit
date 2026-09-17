@@ -28,7 +28,14 @@
 
 namespace dbmw::core {
     namespace {
+        thread_local int gTxDepth = 0;
+    }
 
+    int currentTransactionDepth() noexcept {
+        return gTxDepth;
+    }
+
+    namespace {
         int resolveWriteAttempts(const config::RetryConfig &retry) {
             const auto idem = common::ContextScope::current().idempotency;
             if (idem == common::Idempotency::NonIdempotent) return 1;
@@ -36,15 +43,15 @@ namespace dbmw::core {
             return retry.retry_writes ? std::max(1, retry.max_attempts) : 1;
         }
 
-void pinRequestWrite() {
-    auto &s = common::ContextScope::stack();
-    if (s.empty()) return;
-    const auto sz = s.size();
-    if (sz >= 2) s[sz - 2].wroteInThisRequest = true;
-    else s.back().wroteInThisRequest = true;
-}
+        void pinRequestWrite() {
+            auto &s = common::ContextScope::stack();
+            if (s.empty()) return;
+            const auto sz = s.size();
+            if (sz >= 2) s[sz - 2].wroteInThisRequest = true;
+            else s.back().wroteInThisRequest = true;
+        }
 
-        template <typename Fn>
+        template<typename Fn>
         common::Status runWithInterceptors(ExecutionView &view,
                                            common::ResultSet *result,
                                            std::int64_t *affected,
@@ -165,8 +172,8 @@ void pinRequestWrite() {
             if (connection) {
                 renderer = [connection, &sql, &params](
                     const common::SqlRenderOptions &options, std::string &out) {
-                    return connection->renderSqlForLogging(sql, params, options, out);
-                };
+                            return connection->renderSqlForLogging(sql, params, options, out);
+                        };
             }
             common::Observability::emitSql(std::move(event), sql, renderer, result);
             return status;
@@ -260,11 +267,13 @@ void pinRequestWrite() {
         try {
             if ((*h_)->rollback().ok()) {
                 txOpen_ = false;
+                if (gTxDepth > 0) --gTxDepth;
                 return;
             }
         } catch (...) {
         }
         txOpen_ = false;
+        if (gTxDepth > 0) --gTxDepth;
         h_->invalidate();
     }
 
@@ -292,8 +301,9 @@ void pinRequestWrite() {
                                             common::GeneratedKeys *keys) const {
         IDatabaseConnection *conn = h_->get();
         if (keys || !preparedPathUsable(*conn)) {
-            return keys ? conn->execute(sql, params, affected, *keys)
-                        : conn->execute(sql, params, affected);
+            return keys
+                       ? conn->execute(sql, params, affected, *keys)
+                       : conn->execute(sql, params, affected);
         }
         PreparedStatementHandle handle;
         if (const auto st = conn->prepare(sql, params, handle); !st.ok())
@@ -301,93 +311,122 @@ void pinRequestWrite() {
         return conn->executePrepared(handle, params, affected);
     }
 
-    common::Status Session::query(const std::string &sql, common::ResultSet &out) const
-    {
+    common::Status Session::query(const std::string &sql, common::ResultSet &out) const {
         if (const auto a = auditStatement(sql, common::OperationType::Query); !a.ok()) return a;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(dataSource_, sql, common::OperationType::Query, ctx);
-        ExecutionView view{dataSource_, sql, common::OperationType::Query,
-                            nullptr,  &out,
-                            0, std::chrono::microseconds{0},
-                           common::Status::OK(),  false,
-                            0, ctx};
+        ExecutionView view{
+            dataSource_, sql, common::OperationType::Query,
+            nullptr, &out,
+            0, std::chrono::microseconds{0},
+            common::Status::OK(), false,
+            0, ctx
+        };
         return runWithInterceptors(view, &out, nullptr, [&] {
             std::uint64_t rows = 0;
             const common::Params params;
             const auto status = observeSql(dataSource_, common::OperationType::Query, sql, params,
                                            h_->get(), &out, rows, [&] {
-                const auto result = (*h_)->query(sql, out);
-                rows = out.rowCount();
-                return result;
-            });
+                                               const auto result = (*h_)->query(sql, out);
+                                               rows = out.rowCount();
+                                               return result;
+                                           });
             if (status.connectionBroken) h_->invalidate();
             return status;
         });
     }
 
     common::Status Session::query(const std::string &sql, const common::Params &params,
-                                  common::ResultSet &out) const
-    {
+                                  common::ResultSet &out) const {
         if (const auto a = auditStatement(sql, common::OperationType::Query); !a.ok()) return a;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(dataSource_, sql, common::OperationType::Query, ctx);
-        ExecutionView view{dataSource_, sql, common::OperationType::Query,
-                           &params, &out, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            dataSource_, sql, common::OperationType::Query,
+            &params, &out, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, &out, nullptr, [&] {
             std::uint64_t rows = 0;
             const auto status = observeSql(dataSource_, common::OperationType::Query, sql, params,
                                            h_->get(), rows, [&] {
-                const auto result = runPreparedQuery(sql, params, out);
-                rows = out.rowCount();
-                return result;
-            });
+                                               const auto result = runPreparedQuery(sql, params, out);
+                                               rows = out.rowCount();
+                                               return result;
+                                           });
             if (status.connectionBroken) h_->invalidate();
             return status;
         });
     }
 
-    common::Status Session::execute(const std::string &sql, std::int64_t &affected) const
-    {
+    common::Status Session::queryAll(const std::string &sql,
+                                     std::vector<common::ResultSet> &out) const {
+        return queryAll(sql, common::Params{}, out);
+    }
+
+    // Collects every result set produced by a single statement (typically CALL).
+    // Interceptors are intentionally bypassed: their ExecutionView carries one
+    // ResultSet, so there is no well-defined way to hand them N sets.
+    common::Status Session::queryAll(const std::string &sql, const common::Params &params,
+                                     std::vector<common::ResultSet> &out) const {
+        out.clear();
+        if (const auto a = auditStatement(sql, common::OperationType::Query); !a.ok()) return a;
+        common::SqlContext ctx = common::ContextScope::current();
+        detail::runOnRoute(dataSource_, sql, common::OperationType::Query, ctx);
+        std::uint64_t rows = 0;
+        const auto status = observeSql(dataSource_, common::OperationType::Query, sql, params,
+                                       h_->get(), rows, [&] {
+                                           const auto r = (*h_)->queryAll(sql, params, out);
+                                           for (const auto &set: out) rows += set.rowCount();
+                                           return r;
+                                       });
+        if (status.connectionBroken) h_->invalidate();
+        return status;
+    }
+
+    common::Status Session::execute(const std::string &sql, std::int64_t &affected) const {
         if (const auto a = auditStatement(sql, common::OperationType::Execute); !a.ok()) return a;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(dataSource_, sql, common::OperationType::Execute, ctx);
-        ExecutionView view{dataSource_, sql, common::OperationType::Execute,
-                           nullptr, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            dataSource_, sql, common::OperationType::Execute,
+            nullptr, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, &affected, [&] {
             std::uint64_t rows = 0;
             const common::Params params;
             const auto status = observeSql(dataSource_, common::OperationType::Execute, sql, params,
                                            h_->get(), rows, [&] {
-                const auto result = (*h_)->execute(sql, affected);
-                rows = affected > 0 ? static_cast<std::uint64_t>(affected) : 0;
-                if (result.ok()) didWrite_ = true;
-                return result;
-            });
+                                               const auto result = (*h_)->execute(sql, affected);
+                                               rows = affected > 0 ? static_cast<std::uint64_t>(affected) : 0;
+                                               if (result.ok()) didWrite_ = true;
+                                               return result;
+                                           });
             if (status.connectionBroken) h_->invalidate();
             return status;
         });
     }
 
     common::Status Session::execute(const std::string &sql, const common::Params &params,
-                                    std::int64_t &affected) const
-    {
+                                    std::int64_t &affected) const {
         if (const auto a = auditStatement(sql, common::OperationType::Execute); !a.ok()) return a;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(dataSource_, sql, common::OperationType::Execute, ctx);
-        ExecutionView view{dataSource_, sql, common::OperationType::Execute,
-                           &params, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            dataSource_, sql, common::OperationType::Execute,
+            &params, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, &affected, [&] {
             std::uint64_t rows = 0;
             const auto status = observeSql(dataSource_, common::OperationType::Execute, sql, params,
                                            h_->get(), rows, [&] {
-                const auto result = runPreparedExec(sql, params, affected, nullptr);
-                rows = affected > 0 ? static_cast<std::uint64_t>(affected) : 0;
-                if (result.ok()) didWrite_ = true;
-                return result;
-            });
+                                               const auto result = runPreparedExec(sql, params, affected, nullptr);
+                                               rows = affected > 0 ? static_cast<std::uint64_t>(affected) : 0;
+                                               if (result.ok()) didWrite_ = true;
+                                               return result;
+                                           });
             if (status.connectionBroken) h_->invalidate();
             return status;
         });
@@ -399,9 +438,11 @@ void pinRequestWrite() {
         if (const auto a = auditStatement(sql, common::OperationType::Stream); !a.ok()) return a;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(dataSource_, sql, common::OperationType::Stream, ctx);
-        ExecutionView view{dataSource_, sql, common::OperationType::Stream,
-                           &params, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            dataSource_, sql, common::OperationType::Stream,
+            &params, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, nullptr, [&] {
             std::uint64_t observedRows = 0;
             std::exception_ptr callbackError;
@@ -417,23 +458,23 @@ void pinRequestWrite() {
             };
             const auto status = observeSql(dataSource_, common::OperationType::Stream, sql, params,
                                            h_->get(), observedRows, [&] {
-                auto result = (*h_)->queryEach(sql, params, guardedCallback, rows);
-                if (result.ok() && callbackError) {
-                    try {
-                        std::rethrow_exception(callbackError);
-                    } catch (const std::exception &e) {
-                        result = common::Status::error(
-                            common::ErrorCode::QueryError,
-                            std::string("stream callback threw: ") + e.what());
-                    } catch (...) {
-                        result = common::Status::error(
-                            common::ErrorCode::QueryError,
-                            "stream callback threw an unknown exception");
-                    }
-                }
-                observedRows = rows;
-                return result;
-            });
+                                               auto result = (*h_)->queryEach(sql, params, guardedCallback, rows);
+                                               if (result.ok() && callbackError) {
+                                                   try {
+                                                       std::rethrow_exception(callbackError);
+                                                   } catch (const std::exception &e) {
+                                                       result = common::Status::error(
+                                                           common::ErrorCode::QueryError,
+                                                           std::string("stream callback threw: ") + e.what());
+                                                   } catch (...) {
+                                                       result = common::Status::error(
+                                                           common::ErrorCode::QueryError,
+                                                           "stream callback threw an unknown exception");
+                                                   }
+                                               }
+                                               observedRows = rows;
+                                               return result;
+                                           });
             if (status.connectionBroken) h_->invalidate();
             return status;
         });
@@ -445,20 +486,23 @@ void pinRequestWrite() {
         if (const auto a = auditStatement(sql, common::OperationType::Batch); !a.ok()) return a;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(dataSource_, sql, common::OperationType::Batch, ctx);
-        ExecutionView view{dataSource_, sql, common::OperationType::Batch,
-                           nullptr, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            dataSource_, sql, common::OperationType::Batch,
+            nullptr, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, nullptr, [&] {
             std::uint64_t rows = 0;
             const common::Params noParams;
             const auto status = observeSql(dataSource_, common::OperationType::Batch, sql, noParams,
                                            nullptr, rows, [&] {
-                const auto result = (*h_)->executeBatch(sql, batch, out);
-                rows = out.totalAffected() > 0
-                    ? static_cast<std::uint64_t>(out.totalAffected()) : 0;
-                if (result.ok()) didWrite_ = true;
-                return result;
-            });
+                                               const auto result = (*h_)->executeBatch(sql, batch, out);
+                                               rows = out.totalAffected() > 0
+                                                          ? static_cast<std::uint64_t>(out.totalAffected())
+                                                          : 0;
+                                               if (result.ok()) didWrite_ = true;
+                                               return result;
+                                           });
             if (status.connectionBroken) h_->invalidate();
             return status;
         });
@@ -469,19 +513,21 @@ void pinRequestWrite() {
         if (const auto a = auditStatement(sql, common::OperationType::Execute); !a.ok()) return a;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(dataSource_, sql, common::OperationType::Execute, ctx);
-        ExecutionView view{dataSource_, sql, common::OperationType::Execute,
-                           nullptr, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            dataSource_, sql, common::OperationType::Execute,
+            nullptr, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, &affected, [&] {
             std::uint64_t rows = 0;
             const common::Params params;
             const auto status = observeSql(dataSource_, common::OperationType::Execute, sql, params,
                                            h_->get(), rows, [&] {
-                const auto result = (*h_)->execute(sql, affected, out);
-                rows = affected > 0 ? static_cast<std::uint64_t>(affected) : 0;
-                if (result.ok()) didWrite_ = true;
-                return result;
-            });
+                                               const auto result = (*h_)->execute(sql, affected, out);
+                                               rows = affected > 0 ? static_cast<std::uint64_t>(affected) : 0;
+                                               if (result.ok()) didWrite_ = true;
+                                               return result;
+                                           });
             if (status.connectionBroken) h_->invalidate();
             return status;
         });
@@ -492,18 +538,20 @@ void pinRequestWrite() {
         if (const auto a = auditStatement(sql, common::OperationType::Execute); !a.ok()) return a;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(dataSource_, sql, common::OperationType::Execute, ctx);
-        ExecutionView view{dataSource_, sql, common::OperationType::Execute,
-                           &params, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            dataSource_, sql, common::OperationType::Execute,
+            &params, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, &affected, [&] {
             std::uint64_t rows = 0;
             const auto status = observeSql(dataSource_, common::OperationType::Execute, sql, params,
                                            h_->get(), rows, [&] {
-                const auto result = runPreparedExec(sql, params, affected, &out);
-                rows = affected > 0 ? static_cast<std::uint64_t>(affected) : 0;
-                if (result.ok()) didWrite_ = true;
-                return result;
-            });
+                                               const auto result = runPreparedExec(sql, params, affected, &out);
+                                               rows = affected > 0 ? static_cast<std::uint64_t>(affected) : 0;
+                                               if (result.ok()) didWrite_ = true;
+                                               return result;
+                                           });
             if (status.connectionBroken) h_->invalidate();
             return status;
         });
@@ -514,18 +562,20 @@ void pinRequestWrite() {
         if (const auto a = auditStatement(sql, common::OperationType::Query); !a.ok()) return a;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(dataSource_, sql, common::OperationType::Query, ctx);
-        ExecutionView view{dataSource_, sql, common::OperationType::Query,
-                           nullptr, &out, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            dataSource_, sql, common::OperationType::Query,
+            nullptr, &out, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, &out, nullptr, [&] {
             std::uint64_t rows = 0;
             const common::Params noParams;
             const auto status = observeSql(dataSource_, common::OperationType::Query, sql, noParams,
                                            h_->get(), rows, [&] {
-                const auto result = (*h_)->query(sql, params, out);
-                rows = out.rowCount();
-                return result;
-            });
+                                               const auto result = (*h_)->query(sql, params, out);
+                                               rows = out.rowCount();
+                                               return result;
+                                           });
             if (status.connectionBroken) h_->invalidate();
             return status;
         });
@@ -536,19 +586,21 @@ void pinRequestWrite() {
         if (const auto a = auditStatement(sql, common::OperationType::Execute); !a.ok()) return a;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(dataSource_, sql, common::OperationType::Execute, ctx);
-        ExecutionView view{dataSource_, sql, common::OperationType::Execute,
-                           nullptr, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            dataSource_, sql, common::OperationType::Execute,
+            nullptr, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, &affected, [&] {
             std::uint64_t rows = 0;
             const common::Params noParams;
             const auto status = observeSql(dataSource_, common::OperationType::Execute, sql, noParams,
                                            h_->get(), rows, [&] {
-                const auto result = (*h_)->execute(sql, params, affected, out);
-                rows = affected > 0 ? static_cast<std::uint64_t>(affected) : 0;
-                if (result.ok()) didWrite_ = true;
-                return result;
-            });
+                                               const auto result = (*h_)->execute(sql, params, affected, out);
+                                               rows = affected > 0 ? static_cast<std::uint64_t>(affected) : 0;
+                                               if (result.ok()) didWrite_ = true;
+                                               return result;
+                                           });
             if (status.connectionBroken) h_->invalidate();
             return status;
         });
@@ -560,20 +612,23 @@ void pinRequestWrite() {
         if (const auto a = auditStatement(sql, common::OperationType::Batch); !a.ok()) return a;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(dataSource_, sql, common::OperationType::Batch, ctx);
-        ExecutionView view{dataSource_, sql, common::OperationType::Batch,
-                           nullptr, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            dataSource_, sql, common::OperationType::Batch,
+            nullptr, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, nullptr, [&] {
             std::uint64_t rows = 0;
             const common::Params noParams;
             const auto status = observeSql(dataSource_, common::OperationType::Batch, sql, noParams,
                                            nullptr, rows, [&] {
-                const auto result = (*h_)->executeBatch(sql, batch, out);
-                rows = out.totalAffected() > 0
-                    ? static_cast<std::uint64_t>(out.totalAffected()) : 0;
-                if (result.ok()) didWrite_ = true;
-                return result;
-            });
+                                               const auto result = (*h_)->executeBatch(sql, batch, out);
+                                               rows = out.totalAffected() > 0
+                                                          ? static_cast<std::uint64_t>(out.totalAffected())
+                                                          : 0;
+                                               if (result.ok()) didWrite_ = true;
+                                               return result;
+                                           });
             if (status.connectionBroken) h_->invalidate();
             return status;
         });
@@ -585,9 +640,11 @@ void pinRequestWrite() {
         if (const auto a = auditStatement(sql, common::OperationType::Query); !a.ok()) return a;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(dataSource_, sql, common::OperationType::Query, ctx);
-        ExecutionView view{dataSource_, sql, common::OperationType::Query,
-                           &typesSample, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            dataSource_, sql, common::OperationType::Query,
+            &typesSample, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, nullptr, [&] {
             return (*h_)->prepare(sql, typesSample, out);
         });
@@ -598,17 +655,19 @@ void pinRequestWrite() {
                                             common::ResultSet &out) const {
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(dataSource_, "<prepared>", common::OperationType::Query, ctx);
-        ExecutionView view{dataSource_, "<prepared>", common::OperationType::Query,
-                           &params, &out, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            dataSource_, "<prepared>", common::OperationType::Query,
+            &params, &out, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, &out, nullptr, [&] {
             std::uint64_t rows = 0;
             const auto status = observeSql(dataSource_, common::OperationType::Query, "<prepared>",
                                            params, h_->get(), &out, rows, [&] {
-                const auto result = (*h_)->executePrepared(h, params, out);
-                rows = out.rowCount();
-                return result;
-            });
+                                               const auto result = (*h_)->executePrepared(h, params, out);
+                                               rows = out.rowCount();
+                                               return result;
+                                           });
             if (status.connectionBroken) h_->invalidate();
             return status;
         });
@@ -619,18 +678,20 @@ void pinRequestWrite() {
                                             std::int64_t &affected) const {
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(dataSource_, "<prepared>", common::OperationType::Execute, ctx);
-        ExecutionView view{dataSource_, "<prepared>", common::OperationType::Execute,
-                           &params, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            dataSource_, "<prepared>", common::OperationType::Execute,
+            &params, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, &affected, [&] {
             std::uint64_t rows = 0;
             const auto status = observeSql(dataSource_, common::OperationType::Execute, "<prepared>",
                                            params, h_->get(), rows, [&] {
-                const auto result = (*h_)->executePrepared(h, params, affected);
-                rows = affected > 0 ? static_cast<std::uint64_t>(affected) : 0;
-                if (result.ok()) didWrite_ = true;
-                return result;
-            });
+                                               const auto result = (*h_)->executePrepared(h, params, affected);
+                                               rows = affected > 0 ? static_cast<std::uint64_t>(affected) : 0;
+                                               if (result.ok()) didWrite_ = true;
+                                               return result;
+                                           });
             if (status.connectionBroken) h_->invalidate();
             return status;
         });
@@ -650,14 +711,15 @@ void pinRequestWrite() {
 
     common::Status Session::openCursor(const std::string &sql, const common::Params &params,
                                        const CursorOptions &opts,
-                                       std::unique_ptr<Cursor> &out) const
-    {
+                                       std::unique_ptr<Cursor> &out) const {
         if (const auto a = auditStatement(sql, common::OperationType::Select); !a.ok()) return a;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(dataSource_, sql, common::OperationType::Select, ctx);
-        ExecutionView view{dataSource_, sql, common::OperationType::Select,
-                           &params, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            dataSource_, sql, common::OperationType::Select,
+            &params, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, nullptr, [&] {
             std::unique_ptr<ICursor> impl;
             const auto status = (*h_)->openCursor(sql, params, opts, impl);
@@ -666,10 +728,12 @@ void pinRequestWrite() {
                 return common::Status::error(common::ErrorCode::CursorError,
                                              "driver opened no cursor");
             Cursor::RowTransform transform = [dataSource = dataSource_, sql, params, ctx]
-                                             (common::Row &row) mutable {
-                ExecutionView rowView{dataSource, sql, common::OperationType::Select,
-                                      &params, nullptr, 0, std::chrono::microseconds{0},
-                                      common::Status::OK(), false, 0, ctx};
+            (common::Row &row) mutable {
+                ExecutionView rowView{
+                    dataSource, sql, common::OperationType::Select,
+                    &params, nullptr, 0, std::chrono::microseconds{0},
+                    common::Status::OK(), false, 0, ctx
+                };
                 detail::runOnRow(rowView, row);
             };
             out = std::make_unique<Cursor>(nullptr, std::move(impl), audit_,
@@ -684,7 +748,10 @@ void pinRequestWrite() {
         const auto st = observe(dataSource_, common::OperationType::Begin, rows,
                                 [&] { return (*h_)->begin(); });
         if (st.connectionBroken) h_->invalidate();
-        if (st.ok()) txOpen_ = true;
+        if (st.ok()) {
+            if (!txOpen_) ++gTxDepth;
+            txOpen_ = true;
+        }
         return st;
     }
 
@@ -693,7 +760,10 @@ void pinRequestWrite() {
         const auto st = observe(dataSource_, common::OperationType::Begin, rows,
                                 [&] { return (*h_)->begin(options); });
         if (st.connectionBroken) h_->invalidate();
-        if (st.ok()) txOpen_ = true;
+        if (st.ok()) {
+            if (!txOpen_) ++gTxDepth;
+            txOpen_ = true;
+        }
         return st;
     }
 
@@ -702,7 +772,10 @@ void pinRequestWrite() {
         const auto st = observe(dataSource_, common::OperationType::Commit, rows,
                                 [&] { return (*h_)->commit(); });
         if (st.connectionBroken) h_->invalidate();
-        txOpen_ = false;
+        if (txOpen_) {
+            txOpen_ = false;
+            if (gTxDepth > 0) --gTxDepth;
+        }
         return st;
     }
 
@@ -711,7 +784,10 @@ void pinRequestWrite() {
         const auto st = observe(dataSource_, common::OperationType::Rollback, rows,
                                 [&] { return (*h_)->rollback(); });
         if (st.connectionBroken) h_->invalidate();
-        txOpen_ = false;
+        if (txOpen_) {
+            txOpen_ = false;
+            if (gTxDepth > 0) --gTxDepth;
+        }
         return st;
     }
 
@@ -798,7 +874,8 @@ void pinRequestWrite() {
         if (const auto s = SqlAuditor::check(sql, type, readOnly_); !s.ok()) return s;
         if (rateLimiter_) {
             const std::uint64_t fp = rateLimiter_->usesFingerprint()
-                ? common::sql::fingerprintTemplate(sql) : 0;
+                                         ? common::sql::fingerprintTemplate(sql)
+                                         : 0;
             if (!rateLimiter_->acquire(fp)) {
                 auto status = common::Status::error(common::ErrorCode::RateLimited,
                                                     "datasource '" + name_ + "' rate limited");
@@ -823,11 +900,11 @@ void pinRequestWrite() {
     bool DataSource::isCircuitOpen() const {
         if (circuitBreaker_.failure_threshold <= 0) return false;
         return circuitOpenUntil_.load(std::memory_order_acquire) >
-            std::chrono::steady_clock::now();
+               std::chrono::steady_clock::now();
     }
 
-    std::vector<std::shared_ptr<DataSource>> DataSource::writeTargets() const {
-        std::vector<std::shared_ptr<DataSource>> targets;
+    std::vector<std::shared_ptr<DataSource> > DataSource::writeTargets() const {
+        std::vector<std::shared_ptr<DataSource> > targets;
         if (!primary_) return targets;
         if (shadow_ && common::ContextScope::current().shadow) {
             targets.push_back(shadow_);
@@ -907,7 +984,7 @@ void pinRequestWrite() {
         }
         if (openUntil != std::chrono::steady_clock::time_point{}) {
             if (bool expected = false; !halfOpenInFlight_.compare_exchange_strong(expected, true,
-                                                                                  std::memory_order_acq_rel)) {
+                std::memory_order_acq_rel)) {
                 return common::Status::error(common::ErrorCode::CircuitOpen,
                                              "datasource '" + name_ + "' circuit is half-open");
             }
@@ -950,8 +1027,7 @@ void pinRequestWrite() {
     }
 
     common::Status DataSource::borrowSession(std::unique_ptr<ConnectionPool::Handle> &out,
-                                             std::chrono::milliseconds timeout) const
-    {
+                                             std::chrono::milliseconds timeout) const {
         const auto pool = pool_.lock();
         if (!pool) {
             return common::Status::error(common::ErrorCode::PoolClosed,
@@ -975,7 +1051,7 @@ void pinRequestWrite() {
 
     bool DataSource::cacheEligible() const {
         return !primary_ && QueryCache::enabled() &&
-            (!QueryCache::replicaOnly() || readReplica_.load(std::memory_order_acquire));
+               (!QueryCache::replicaOnly() || readReplica_.load(std::memory_order_acquire));
     }
 
     bool DataSource::cacheLookup(const std::string &sql, const common::Params &params,
@@ -992,23 +1068,23 @@ void pinRequestWrite() {
         if (!primary_ && QueryCache::enabled()) QueryCache::put(name_, key, rows);
     }
 
-    common::Status DataSource::query(const std::string &sql, common::ResultSet &out) const
-    {
+    common::Status DataSource::query(const std::string &sql, common::ResultSet &out) const {
         if (const auto g = preGate(sql, common::OperationType::Query); !g.ok()) return g;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(name_, sql, common::OperationType::Query, ctx);
-        ExecutionView view{name_, sql, common::OperationType::Query,
-                            nullptr,  &out,
-                            0, std::chrono::microseconds{0},
-                           common::Status::OK(),  false,
-                            0, ctx};
+        ExecutionView view{
+            name_, sql, common::OperationType::Query,
+            nullptr, &out,
+            0, std::chrono::microseconds{0},
+            common::Status::OK(), false,
+            0, ctx
+        };
         return runWithInterceptors(view, &out, nullptr, [&] {
             return queryUngated(sql, out);
         });
     }
 
-    common::Status DataSource::queryUngated(const std::string &sql, common::ResultSet &out) const
-    {
+    common::Status DataSource::queryUngated(const std::string &sql, common::ResultSet &out) const {
         if (primary_) {
             const auto target = readTarget();
             auto status = target->queryUngated(sql, out);
@@ -1021,8 +1097,8 @@ void pinRequestWrite() {
             return status;
         }
         const bool caching = QueryCache::enabled() &&
-            (!QueryCache::replicaOnly() || readReplica_.load(std::memory_order_acquire)) &&
-            !common::ContextScope::current().shadow;
+                             (!QueryCache::replicaOnly() || readReplica_.load(std::memory_order_acquire)) &&
+                             !common::ContextScope::current().shadow;
         std::string key;
         if (caching) {
             key = cacheKey(sql, common::Params{});
@@ -1051,22 +1127,22 @@ void pinRequestWrite() {
     }
 
     common::Status DataSource::query(const std::string &sql, const common::Params &params,
-                                     common::ResultSet &out) const
-    {
+                                     common::ResultSet &out) const {
         if (const auto g = preGate(sql, common::OperationType::Query); !g.ok()) return g;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(name_, sql, common::OperationType::Query, ctx);
-        ExecutionView view{name_, sql, common::OperationType::Query,
-                           &params, &out, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            name_, sql, common::OperationType::Query,
+            &params, &out, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, &out, nullptr, [&] {
             return queryUngated(sql, params, out);
         });
     }
 
     common::Status DataSource::queryUngated(const std::string &sql, const common::Params &params,
-                                            common::ResultSet &out) const
-    {
+                                            common::ResultSet &out) const {
         if (primary_) {
             const auto target = readTarget();
             auto status = target->queryUngated(sql, params, out);
@@ -1079,8 +1155,8 @@ void pinRequestWrite() {
             return status;
         }
         const bool caching = QueryCache::enabled() &&
-            (!QueryCache::replicaOnly() || readReplica_.load(std::memory_order_acquire)) &&
-            !common::ContextScope::current().shadow;
+                             (!QueryCache::replicaOnly() || readReplica_.load(std::memory_order_acquire)) &&
+                             !common::ContextScope::current().shadow;
         std::string key;
         if (caching) {
             key = cacheKey(sql, params);
@@ -1108,22 +1184,54 @@ void pinRequestWrite() {
         return status;
     }
 
-    common::Status DataSource::execute(const std::string &sql, std::int64_t &affected) const
-    {
+    // Multiple result sets are never cached: the cache stores a single ResultSet,
+    // so caching would silently drop every set after the first.
+    common::Status DataSource::queryAll(const std::string &sql,
+                                        std::vector<common::ResultSet> &out) const {
+        return queryAll(sql, common::Params{}, out);
+    }
+
+    common::Status DataSource::queryAll(const std::string &sql, const common::Params &params,
+                                        std::vector<common::ResultSet> &out) const {
+        out.clear();
+        if (const auto g = preGate(sql, common::OperationType::Query); !g.ok()) return g;
+        common::SqlContext ctx = common::ContextScope::current();
+        detail::runOnRoute(name_, sql, common::OperationType::Query, ctx);
+        common::Status status;
+        const int attempts = std::max(1, retry_.max_attempts);
+        for (int attempt = 1; attempt <= attempts; ++attempt) {
+            if (const auto gate = beforeAttempt(); !gate.ok()) return gate;
+            if (attempt > 1) out.clear();
+            std::unique_ptr<ConnectionPool::Handle> h;
+            status = borrowSession(h, kUsePoolDefault);
+            if (status.ok()) {
+                Session s(std::move(h), name_);
+                status = s.queryAll(sql, params, out);
+            }
+            afterAttempt(status);
+            if (status.ok()) return status;
+            if (!status.retryable || attempt == attempts) return status;
+            std::this_thread::sleep_for(retryDelay(attempt));
+        }
+        return status;
+    }
+
+    common::Status DataSource::execute(const std::string &sql, std::int64_t &affected) const {
         if (const auto g = preGate(sql, common::OperationType::Execute); !g.ok()) return g;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(name_, sql, common::OperationType::Execute, ctx);
-        ExecutionView view{name_, sql, common::OperationType::Execute,
-                           nullptr, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            name_, sql, common::OperationType::Execute,
+            nullptr, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, &affected, [&] {
             return executeUngated(sql, affected);
         });
     }
 
     common::Status DataSource::executeUngated(const std::string &sql,
-                                              std::int64_t &affected) const
-    {
+                                              std::int64_t &affected) const {
         if (primary_) {
             std::function<common::Status()> buffered;
             if (writeBuffer_ && writeBuffer_->enabled()) {
@@ -1162,14 +1270,15 @@ void pinRequestWrite() {
     }
 
     common::Status DataSource::execute(const std::string &sql, const common::Params &params,
-                                       std::int64_t &affected) const
-    {
+                                       std::int64_t &affected) const {
         if (const auto g = preGate(sql, common::OperationType::Execute); !g.ok()) return g;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(name_, sql, common::OperationType::Execute, ctx);
-        ExecutionView view{name_, sql, common::OperationType::Execute,
-                           &params, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            name_, sql, common::OperationType::Execute,
+            &params, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, &affected, [&] {
             return executeUngated(sql, params, affected);
         });
@@ -1177,8 +1286,7 @@ void pinRequestWrite() {
 
     common::Status DataSource::executeUngated(const std::string &sql,
                                               const common::Params &params,
-                                              std::int64_t &affected) const
-    {
+                                              std::int64_t &affected) const {
         if (primary_) {
             std::function<common::Status()> buffered;
             if (writeBuffer_ && writeBuffer_->enabled()) {
@@ -1221,9 +1329,11 @@ void pinRequestWrite() {
         if (const auto g = preGate(sql, common::OperationType::Execute); !g.ok()) return g;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(name_, sql, common::OperationType::Execute, ctx);
-        ExecutionView view{name_, sql, common::OperationType::Execute,
-                           nullptr, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            name_, sql, common::OperationType::Execute,
+            nullptr, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, &affected, [&] {
             return executeUngated(sql, affected, out);
         });
@@ -1269,9 +1379,11 @@ void pinRequestWrite() {
         if (const auto g = preGate(sql, common::OperationType::Execute); !g.ok()) return g;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(name_, sql, common::OperationType::Execute, ctx);
-        ExecutionView view{name_, sql, common::OperationType::Execute,
-                           &params, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            name_, sql, common::OperationType::Execute,
+            &params, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, &affected, [&] {
             return executeUngated(sql, params, affected, out);
         });
@@ -1318,9 +1430,11 @@ void pinRequestWrite() {
         if (const auto g = preGate(sql, common::OperationType::Query); !g.ok()) return g;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(name_, sql, common::OperationType::Query, ctx);
-        ExecutionView view{name_, sql, common::OperationType::Query,
-                           nullptr, &out, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            name_, sql, common::OperationType::Query,
+            nullptr, &out, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, &out, nullptr, [&] {
             return queryUngated(sql, params, out);
         });
@@ -1357,9 +1471,11 @@ void pinRequestWrite() {
         if (const auto g = preGate(sql, common::OperationType::Execute); !g.ok()) return g;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(name_, sql, common::OperationType::Execute, ctx);
-        ExecutionView view{name_, sql, common::OperationType::Execute,
-                           nullptr, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            name_, sql, common::OperationType::Execute,
+            nullptr, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, &affected, [&] {
             return executeUngated(sql, params, affected, out);
         });
@@ -1398,9 +1514,11 @@ void pinRequestWrite() {
         if (const auto g = preGate(sql, common::OperationType::Batch); !g.ok()) return g;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(name_, sql, common::OperationType::Batch, ctx);
-        ExecutionView view{name_, sql, common::OperationType::Batch,
-                           nullptr, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            name_, sql, common::OperationType::Batch,
+            nullptr, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, nullptr, [&] {
             return executeBatchUngated(sql, batch, out);
         });
@@ -1436,9 +1554,11 @@ void pinRequestWrite() {
         if (const auto g = preGate(sql, common::OperationType::Stream); !g.ok()) return g;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(name_, sql, common::OperationType::Stream, ctx);
-        ExecutionView view{name_, sql, common::OperationType::Stream,
-                           &params, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            name_, sql, common::OperationType::Stream,
+            &params, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, nullptr, [&] {
             return queryEachUngated(sql, params, callback, rows);
         });
@@ -1474,9 +1594,11 @@ void pinRequestWrite() {
         if (const auto g = preGate(sql, common::OperationType::Batch); !g.ok()) return g;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(name_, sql, common::OperationType::Batch, ctx);
-        ExecutionView view{name_, sql, common::OperationType::Batch,
-                           nullptr, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            name_, sql, common::OperationType::Batch,
+            nullptr, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, nullptr, [&] {
             return executeBatchUngated(sql, batch, out);
         });
@@ -1484,8 +1606,7 @@ void pinRequestWrite() {
 
     common::Status DataSource::openCursor(const std::string &sql, const common::Params &params,
                                           const CursorOptions &opts,
-                                          std::unique_ptr<Cursor> &out) const
-    {
+                                          std::unique_ptr<Cursor> &out) const {
         if (!cursorEnabled_)
             return common::Status::error(common::ErrorCode::NotSupported,
                                          "cursors are disabled for this datasource");
@@ -1498,9 +1619,11 @@ void pinRequestWrite() {
         if (const auto g = preGate(sql, common::OperationType::Select); !g.ok()) return g;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(name_, sql, common::OperationType::Select, ctx);
-        ExecutionView view{name_, sql, common::OperationType::Select,
-                           &params, nullptr, 0, std::chrono::microseconds{0},
-                           common::Status::OK(), false, 0, ctx};
+        ExecutionView view{
+            name_, sql, common::OperationType::Select,
+            &params, nullptr, 0, std::chrono::microseconds{0},
+            common::Status::OK(), false, 0, ctx
+        };
         return runWithInterceptors(view, nullptr, nullptr, [&] {
             return openCursorUngated(sql, params, effective, out);
         });
@@ -1508,8 +1631,7 @@ void pinRequestWrite() {
 
     common::Status DataSource::openCursorUngated(const std::string &sql, const common::Params &params,
                                                  const CursorOptions &opts,
-                                                 std::unique_ptr<Cursor> &out) const
-    {
+                                                 std::unique_ptr<Cursor> &out) const {
         if (primary_) {
             const auto target = readTarget();
             auto status = target->openCursorUngated(sql, params, opts, out);
@@ -1538,17 +1660,19 @@ void pinRequestWrite() {
                 if (status.ok() && impl) {
                     auto rowContext = common::ContextScope::current();
                     Cursor::RowTransform transform = [dataSource = name_, sql, params, rowContext]
-                                                     (common::Row &row) mutable {
-                        ExecutionView rowView{dataSource, sql, common::OperationType::Select,
-                                              &params, nullptr, 0,
-                                              std::chrono::microseconds{0},
-                                              common::Status::OK(), false, 0, rowContext};
+                    (common::Row &row) mutable {
+                        ExecutionView rowView{
+                            dataSource, sql, common::OperationType::Select,
+                            &params, nullptr, 0,
+                            std::chrono::microseconds{0},
+                            common::Status::OK(), false, 0, rowContext
+                        };
                         detail::runOnRow(rowView, row);
                     };
                     out = std::make_unique<Cursor>(std::move(h), std::move(impl),
-                                                    Session::AuditContext{true, readOnly_},
-                                                    Cursor::Binding::OwnsHandle,
-                                                    std::move(cursorLease), std::move(transform));
+                                                   Session::AuditContext{true, readOnly_},
+                                                   Cursor::Binding::OwnsHandle,
+                                                   std::move(cursorLease), std::move(transform));
                     return status;
                 }
             }
@@ -1649,14 +1773,12 @@ void pinRequestWrite() {
         return any;
     }
 
-    common::Status DataSource::withSession(const SessionFn &fn) const
-    {
+    common::Status DataSource::withSession(const SessionFn &fn) const {
         return withSession(fn, kUsePoolDefault);
     }
 
     common::Status DataSource::withSession(const SessionFn &fn,
-                                           const std::chrono::milliseconds borrowTimeout) const
-    {
+                                           const std::chrono::milliseconds borrowTimeout) const {
         if (const auto g = gateSession(); !g.ok()) return g;
         if (primary_) {
             bool wrote = false;
@@ -1670,8 +1792,7 @@ void pinRequestWrite() {
     common::Status DataSource::withSessionInternal(const SessionFn &fn,
                                                    const std::chrono::milliseconds borrowTimeout,
                                                    bool *wroteOut,
-                                                   const bool enforceReadOnly) const
-    {
+                                                   const bool enforceReadOnly) const {
         if (wroteOut) *wroteOut = false;
         if (primary_)
             return primary_->withSessionInternal(fn, borrowTimeout, wroteOut,
@@ -1693,16 +1814,14 @@ void pinRequestWrite() {
         return status;
     }
 
-    common::Status DataSource::transaction(const SessionFn &fn) const
-    {
+    common::Status DataSource::transaction(const SessionFn &fn) const {
         if (const auto g = gateSession(); !g.ok()) return g;
         return transactionInternal(common::TransactionOptions{}, fn,
                                    kUsePoolDefault, readOnly_);
     }
 
     common::Status DataSource::transaction(const SessionFn &fn,
-                                           const std::chrono::milliseconds borrowTimeout) const
-    {
+                                           const std::chrono::milliseconds borrowTimeout) const {
         if (const auto g = gateSession(); !g.ok()) return g;
         return transactionInternal(common::TransactionOptions{}, fn, borrowTimeout, readOnly_);
     }
@@ -1715,8 +1834,7 @@ void pinRequestWrite() {
 
     common::Status DataSource::transaction(const common::TransactionOptions &options,
                                            const SessionFn &fn,
-                                           const std::chrono::milliseconds borrowTimeout) const
-    {
+                                           const std::chrono::milliseconds borrowTimeout) const {
         if (const auto g = gateSession(); !g.ok()) return g;
         return transactionInternal(options, fn, borrowTimeout, readOnly_);
     }
@@ -1724,8 +1842,7 @@ void pinRequestWrite() {
     common::Status DataSource::transactionInternal(const common::TransactionOptions &options,
                                                    const SessionFn &fn,
                                                    const std::chrono::milliseconds borrowTimeout,
-                                                   const bool enforceReadOnly) const
-    {
+                                                   const bool enforceReadOnly) const {
         if (primary_) {
             const auto status = primary_->transactionInternal(
                 options, fn, borrowTimeout, enforceReadOnly || readOnly_);
@@ -1756,8 +1873,8 @@ void pinRequestWrite() {
         std::thread watcher;
         const bool hasDeadline = options.timeout > std::chrono::milliseconds(0);
         const auto deadline = hasDeadline
-            ? std::chrono::steady_clock::now() + options.timeout
-            : std::chrono::steady_clock::time_point::max();
+                                  ? std::chrono::steady_clock::now() + options.timeout
+                                  : std::chrono::steady_clock::time_point::max();
         if (hasDeadline) {
             watcher = std::thread([&] {
                 std::unique_lock<std::mutex> lock(deadlineMutex);
@@ -1788,9 +1905,9 @@ void pinRequestWrite() {
                 common::ErrorCode::QueryTimeout,
                 "transaction timed out after " + std::to_string(options.timeout.count()) + "ms"
                 + (cancelDelivered.load()
-                    ? ""
-                    : " (driver could not cancel the running statement; "
-                      "the callback had to run to completion)"));
+                       ? ""
+                       : " (driver could not cancel the running statement; "
+                       "the callback had to run to completion)"));
             operationStatus.retryable = true;
         }
 
@@ -1881,7 +1998,7 @@ void pinRequestWrite() {
                     common::ErrorCode::ConfigError,
                     "group '" + group.name
                     + "' configures automatic write failover without acknowledging "
-                      "external fencing");
+                    "external fencing");
             }
             if (group.failover.write_buffer.enabled &&
                 !group.failover.write_buffer.acknowledge_data_loss_and_duplicates) {
@@ -1889,7 +2006,7 @@ void pinRequestWrite() {
                     common::ErrorCode::ConfigError,
                     "group '" + group.name
                     + "' enables volatile write buffering without acknowledging data-loss "
-                      "and duplicate-replay risk");
+                    "and duplicate-replay risk");
             }
             if (const auto st = validateGroupRefs(group, newPools, replicaNames); !st.ok())
                 return st;
@@ -1947,8 +2064,10 @@ void pinRequestWrite() {
             staleSources.clear();
             staleBuffers.clear();
             staleHeartbeat.reset();
-            (void) stalePools; (void) staleSources;
-            (void) staleBuffers; (void) staleHeartbeat;
+            (void) stalePools;
+            (void) staleSources;
+            (void) staleBuffers;
+            (void) staleHeartbeat;
             return rs;
         }
 
@@ -1960,8 +2079,9 @@ void pinRequestWrite() {
         common::Observability::setPoolMetricsCollector(
             [lease = poolCollectorLease_] {
                 std::lock_guard<std::mutex> lock(lease->mutex);
-                return lease->owner ? lease->owner->allPoolStats()
-                                    : std::vector<common::NamedPoolStats>{};
+                return lease->owner
+                           ? lease->owner->allPoolStats()
+                           : std::vector<common::NamedPoolStats>{};
             },
             this);
 
@@ -1977,8 +2097,8 @@ void pinRequestWrite() {
         for (auto &kv: oldPools) {
             const auto now = std::chrono::steady_clock::now();
             kv.second->shutdown(now < drainDeadline
-                ? std::chrono::duration_cast<std::chrono::milliseconds>(drainDeadline - now)
-                : std::chrono::milliseconds(0));
+                                    ? std::chrono::duration_cast<std::chrono::milliseconds>(drainDeadline - now)
+                                    : std::chrono::milliseconds(0));
         }
         oldPools.clear();
 
@@ -2013,9 +2133,9 @@ void pinRequestWrite() {
             }
             if (replicaNames.find(candidate) != replicaNames.end()) {
                 DBMW_LOG_WARN("group [" + cfg.name + "] failover candidate '"
-                              + candidate
-                              + "' is also configured as a read replica; make sure it is"
-                                " writable when promoted");
+                    + candidate
+                    + "' is also configured as a read replica; make sure it is"
+                    " writable when promoted");
             }
         }
         return common::Status::OK();
@@ -2062,17 +2182,18 @@ void pinRequestWrite() {
             false,
             replicaNames.find(dsc.name) != replicaNames.end());
         outSource->applyCursorConfig(cursor);
+        outSource->driverType_ = dsc.type;
         DBMW_LOG_INFO("datasource registered: " + dsc.describe()
-                      + (poolCfg.enabled ? "" : " (pooling disabled)"));
+            + (poolCfg.enabled ? "" : " (pooling disabled)"));
         return common::Status::OK();
     }
 
     common::Status DatabaseManager::buildSingleDataSourceGroup(
         const config::DataSourceGroupConfig &group,
-        const config::PoolConfig & ,
+        const config::PoolConfig &,
         const GroupOptions &opts,
         const std::unordered_map<std::string, std::shared_ptr<DataSource> > &sources,
-        const std::unordered_set<std::string> & ,
+        const std::unordered_set<std::string> &,
         std::vector<std::shared_ptr<WriteBuffer> > &outBuffers,
         std::shared_ptr<DataSource> &outSource) {
         if (group.name.empty()) {
@@ -2084,7 +2205,7 @@ void pinRequestWrite() {
                 common::ErrorCode::ConfigError,
                 "group '" + group.name
                 + "' is read_only but enables failover.write_buffer;"
-                  " a read-only group never writes");
+                " a read-only group never writes");
         }
         const auto primaryIt = sources.find(group.primary);
         if (primaryIt == sources.end()) {
@@ -2093,7 +2214,7 @@ void pinRequestWrite() {
                 "group '" + group.name + "' references unknown primary '"
                 + group.primary + "'");
         }
-        std::vector<std::shared_ptr<DataSource>> weightedReplicas;
+        std::vector<std::shared_ptr<DataSource> > weightedReplicas;
         weightedReplicas.reserve(group.replicas.size());
         for (const auto &replica: group.replicas) {
             const auto replicaIt = sources.find(replica.name);
@@ -2126,8 +2247,8 @@ void pinRequestWrite() {
         std::shared_ptr<WriteBuffer> writeBuffer;
         if (group.failover.write_buffer.enabled) {
             DBMW_LOG_WARN("group [" + group.name
-                          + "] volatile write buffer enabled: Buffered means accepted, not "
-                            "committed; process failure may lose writes and replay may duplicate them");
+                + "] volatile write buffer enabled: Buffered means accepted, not "
+                "committed; process failure may lose writes and replay may duplicate them");
             WriteBuffer::Config wbc;
             wbc.enabled = true;
             wbc.max_queue = group.failover.write_buffer.max_queue;
@@ -2147,25 +2268,26 @@ void pinRequestWrite() {
             writeBuffer);
         outSource->applyCursorConfig(opts.cursor);
         outSource->shadowName_ = group.shadow;
+        outSource->driverType_ = primaryIt->second->driverType_;
         DBMW_LOG_INFO("datasource group registered: " + group.name
-                      + " primary=" + group.primary
-                      + (group.read_only ? " (read-only)" : "")
-                      + (group.failover.primaries.empty()
-                             ? ""
-                             : " failover=" + std::to_string(
-                                   group.failover.primaries.size()) + " candidate(s)")
-                      + (writeBuffer ? " write-buffer=on" : "")
-                      + (group.shadow.empty() ? "" : " shadow=" + group.shadow));
+            + " primary=" + group.primary
+            + (group.read_only ? " (read-only)" : "")
+            + (group.failover.primaries.empty()
+                ? ""
+                : " failover=" + std::to_string(
+                    group.failover.primaries.size()) + " candidate(s)")
+            + (writeBuffer ? " write-buffer=on" : "")
+            + (group.shadow.empty() ? "" : " shadow=" + group.shadow));
         return common::Status::OK();
     }
 
     common::Status DatabaseManager::resolveShadows() {
         std::lock_guard<std::mutex> lk(mtx_);
         std::unordered_set<std::string> groupNames;
-        for (const auto &kv : datasources_) {
+        for (const auto &kv: datasources_) {
             if (kv.second && kv.second->primary_) groupNames.insert(kv.first);
         }
-        for (const auto &kv : datasources_) {
+        for (const auto &kv: datasources_) {
             const auto &ds = kv.second;
             if (!ds || ds->shadowName_.empty()) continue;
             const auto &name = ds->shadowName_;
@@ -2188,7 +2310,7 @@ void pinRequestWrite() {
                     "group '" + ds->name_ + "' shadow '" + name
                     + "' is the group's primary; self-shadowing is rejected");
             }
-            for (const auto &replica : ds->replicas_) {
+            for (const auto &replica: ds->replicas_) {
                 if (replica && replica == it->second) {
                     return common::Status::error(
                         common::ErrorCode::ConfigError,
@@ -2202,7 +2324,7 @@ void pinRequestWrite() {
     }
 
     common::Status DatabaseManager::addDataSource(const config::DataSourceConfig &cfg,
-                                                 const DataSourceOptions &opts) {
+                                                  const DataSourceOptions &opts) {
         if (cfg.name.empty()) {
             return common::Status::error(common::ErrorCode::ConfigError,
                                          "datasource name must not be empty");
@@ -2319,7 +2441,7 @@ void pinRequestWrite() {
             return common::Status::error(common::ErrorCode::ConfigError,
                                          "group name must not be empty");
         }
-        std::vector<std::shared_ptr<WriteBuffer>> stagedBuffers;
+        std::vector<std::shared_ptr<WriteBuffer> > stagedBuffers;
         std::shared_ptr<DataSource> source;
         {
             std::lock_guard<std::mutex> lk(mtx_);
@@ -2333,14 +2455,14 @@ void pinRequestWrite() {
                     common::ErrorCode::ConfigError,
                     "group '" + cfg.name
                     + "' configures automatic write failover without acknowledging "
-                      "external fencing");
+                    "external fencing");
             }
             if (cfg.failover.write_buffer.enabled && !opts.acknowledge_data_loss_and_duplicates) {
                 return common::Status::error(
                     common::ErrorCode::ConfigError,
                     "group '" + cfg.name
                     + "' enables volatile write buffering without acknowledging data-loss "
-                      "and duplicate-replay risk");
+                    "and duplicate-replay risk");
             }
             if (const auto st = validateGroupRefs(cfg, pools_, {}); !st.ok())
                 return st;
@@ -2348,7 +2470,7 @@ void pinRequestWrite() {
                 cfg, {}, opts, datasources_, {},
                 stagedBuffers, source); !st.ok())
                 return st;
-            for (const auto &replica : cfg.replicas) {
+            for (const auto &replica: cfg.replicas) {
                 const auto it = datasources_.find(replica.name);
                 if (it != datasources_.end() && it->second)
                     it->second->readReplica_.store(true, std::memory_order_release);
@@ -2368,7 +2490,7 @@ void pinRequestWrite() {
                     if (buffer) buffer->stop();
                     writeBuffers_.erase(std::remove(writeBuffers_.begin(),
                                                     writeBuffers_.end(), buffer),
-                                       writeBuffers_.end());
+                                        writeBuffers_.end());
                 }
                 return common::Status::error(common::ErrorCode::Unknown,
                                              "write buffer start failed");
@@ -2381,7 +2503,7 @@ void pinRequestWrite() {
                 if (buffer) buffer->stop();
                 writeBuffers_.erase(std::remove(writeBuffers_.begin(),
                                                 writeBuffers_.end(), buffer),
-                                   writeBuffers_.end());
+                                    writeBuffers_.end());
             }
             return rs;
         }
@@ -2413,14 +2535,14 @@ void pinRequestWrite() {
             bufferToStop = it->second->writeBuffer_;
             wasGroup = true;
             datasources_.erase(it);
-            for (auto &entry : datasources_) {
+            for (auto &entry: datasources_) {
                 if (entry.second && !entry.second->primary_)
                     entry.second->readReplica_.store(false, std::memory_order_release);
             }
-            for (const auto &entry : datasources_) {
+            for (const auto &entry: datasources_) {
                 const auto &group = entry.second;
                 if (!group || !group->primary_) continue;
-                for (const auto &replica : group->replicas_) {
+                for (const auto &replica: group->replicas_) {
                     if (replica)
                         replica->readReplica_.store(true, std::memory_order_release);
                 }
@@ -2428,7 +2550,7 @@ void pinRequestWrite() {
             if (bufferToStop) {
                 writeBuffers_.erase(std::remove(writeBuffers_.begin(),
                                                 writeBuffers_.end(), bufferToStop),
-                                   writeBuffers_.end());
+                                    writeBuffers_.end());
             }
         }
         if (wasGroup && bufferToStop) bufferToStop->stop();
@@ -2479,8 +2601,8 @@ void pinRequestWrite() {
         for (auto &kv: oldPools) {
             const auto now = std::chrono::steady_clock::now();
             kv.second->shutdown(now < drainDeadline
-                ? std::chrono::duration_cast<std::chrono::milliseconds>(drainDeadline - now)
-                : std::chrono::milliseconds(0));
+                                    ? std::chrono::duration_cast<std::chrono::milliseconds>(drainDeadline - now)
+                                    : std::chrono::milliseconds(0));
         }
         oldPools.clear();
     }
@@ -2494,7 +2616,7 @@ void pinRequestWrite() {
         std::vector<NamedPoolStats> result;
         std::lock_guard<std::mutex> lk(mtx_);
         result.reserve(pools_.size());
-        for (const auto & [fst, snd]: pools_)
+        for (const auto &[fst, snd]: pools_)
             result.push_back(NamedPoolStats{fst, snd->stats()});
         std::sort(result.begin(), result.end(), [](const auto &a, const auto &b) {
             return a.dataSource < b.dataSource;

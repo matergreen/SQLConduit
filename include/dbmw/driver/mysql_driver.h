@@ -67,6 +67,20 @@ namespace dbmw::driver {
                                  const common::RowCallback &callback,
                                  std::uint64_t &rows) override;
 
+        [[nodiscard]] bool supportsMultipleResultSets() const override {
+#ifdef DBMW_ENABLE_MYSQL
+            return true;
+#else
+            return false;
+#endif
+        }
+
+        common::Status queryAll(const std::string &sql,
+                                std::vector<common::ResultSet> &out) override;
+
+        common::Status queryAll(const std::string &sql, const common::Params &params,
+                                std::vector<common::ResultSet> &out) override;
+
         common::Status openCursor(const std::string &sql, const common::Params &params,
                                  const core::CursorOptions &opts,
                                  std::unique_ptr<core::ICursor> &out) override;
@@ -102,6 +116,11 @@ namespace dbmw::driver {
 
     private:
         common::Status lastError(const char *where);
+
+        // Consumes (and discards) every result set after the first. MySQL leaves
+        // the connection in "Commands out of sync" until they are all read; CALL
+        // routinely emits more than one.
+        common::Status drainRemainingResults();
 
         friend class MyCursor;
 

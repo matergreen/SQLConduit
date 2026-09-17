@@ -6,6 +6,7 @@
 #include "dbmw/core/cursor.h"
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace dbmw::core {
     class PreparedStatementHandle {
@@ -62,6 +63,18 @@ namespace dbmw::core {
                                          const common::Params &params,
                                          const common::RowCallback &callback,
                                          std::uint64_t &rows);
+
+        // Multiple result sets: a single statement (typically CALL) may return
+        // several result sets before the terminating OK packet. Drivers that do
+        // not implement it fall back to the single result set of query().
+        [[nodiscard]] virtual bool supportsMultipleResultSets() const { return false; }
+
+        virtual common::Status queryAll(const std::string &sql,
+                                        std::vector<common::ResultSet> &out);
+
+        virtual common::Status queryAll(const std::string &sql,
+                                        const common::Params &params,
+                                        std::vector<common::ResultSet> &out);
 
         virtual common::Status openCursor(const std::string &sql,
                                           const common::Params &params,

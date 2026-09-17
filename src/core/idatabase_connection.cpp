@@ -43,6 +43,24 @@ namespace dbmw::core {
         return common::Status::OK();
     }
 
+    common::Status IDatabaseConnection::queryAll(const std::string &sql,
+                                                 std::vector<common::ResultSet> &out) {
+        return queryAll(sql, common::Params{}, out);
+    }
+
+    common::Status IDatabaseConnection::queryAll(const std::string &sql,
+                                                 const common::Params &params,
+                                                 std::vector<common::ResultSet> &out) {
+        out.clear();
+        common::ResultSet rs;
+        const auto status = params.empty() ? query(sql, rs) : query(sql, params, rs);
+        if (!status.ok()) return status;
+        // A statement that returns no columns still "succeeds"; report it as an
+        // empty set only when the driver actually produced a shape.
+        if (!rs.fields().empty() || rs.rowCount() > 0) out.push_back(std::move(rs));
+        return common::Status::OK();
+    }
+
     common::Status IDatabaseConnection::executeBatch(
         const std::string &sql, const common::ParamBatch &batch,
         common::BatchResult &out) {

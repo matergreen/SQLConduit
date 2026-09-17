@@ -1018,6 +1018,127 @@ auto b = dbmw::insertBatchAs(std::vector<User>{...}, "users");
 
 完整设计（转换矩阵、不变量、M1–M23 测试矩阵）见 `docs/mapping-design-v0.5.0.md`。
 
+## 例程与索引（v0.5.1：函数 / 存储过程 / 索引的生命周期与调用协议）
+
+`dbmw/util.h` 提供 `dbmw::common::util`。它管的是**调用协议**与**生命周期**，
+**不做 SQL 方言翻译**——例程体（`BEGIN ... END` / `$$ ... $$` / `AS ...`）由业务按目标方言书写。
+
+### 方言
+
+```cpp
+enum class Dialect { Auto, MySQL, Postgres, SqlServer };
+```
+
+`Auto` 从数据源的驱动类型推断（`mysql*` → MySQL，`postgres*` → Postgres，`odbc*`/`mssql*` → SQL Server）；
+识别不出来时返回 `Auto`，此时任何需要生成 SQL 的接口都返回 `NotSupported`——**绝不猜方言**。
+自建驱动 / mock 驱动请显式传 `Dialect`。
+
+### 调用协议（`makeCallSql`）
+
+| 方言 | 无结果集 | 有结果集 |
+|---|---|---|
+| MySQL | `CALL p(?, ?)` | `CALL p(?, ?)` |
+| PostgreSQL | `CALL p(?, ?)`（存储过程） | `SELECT * FROM f(?, ?)`（函数） |
+| SQL Server | `EXEC p ?, ?` | `{CALL p(?, ?)}` |
+
+PG 存储过程要结果集 → `NotSupported`（PG 的过程不返回结果集，请改用函数）。
+
+### 创建 / 删除
+
+```cpp
+util::CreateRoutineOptions o;
+o.dataSource = "main";
+o.stripDelimiter = true;          // 默认：剥离脚本里的 DELIMITER 指令并留痕
+util::createRoutine("CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END", o);
+
+util::RoutineRef ref{"public.p", util::RoutineKind::Procedure, "pg"};
+util::DropRoutineOptions d;
+d.cascade = true;                 // 仅 PG；其余方言 → NotSupported
+util::dropRoutine(ref, d);
+```
+
+`replace`（`CREATE OR REPLACE`）仅 PG 支持，`ifNotExists` 三个方言都不支持 → 一律 `NotSupported`。
+
+### 索引
+
+```cpp
+util::IndexSpec spec{"t", "idx_t_a", {"a", "b"}};
+spec.unique = true;
+spec.usingMethod = "BTREE";       // MySQL 放列清单之后，PG 放 ON 之后，SQL Server 不支持
+util::createIndex(spec);
+util::dropIndex("t", "idx_t_a");
+```
+
+`ifNotExists` / `concurrent` 仅 PG；`CONCURRENTLY` 在事务块内会返回 `TxError`（PG 语义）。
+列清单原样透传，因此可以是表达式（如 `lower(name)`）。
+
+### 结构化调用：多结果集与 OUT / INOUT
+
+```cpp
+util::RoutineRef proc{"p", util::RoutineKind::Procedure, "my"};
+
+// 纯 IN —— 池路径即可，一次拿回所有结果集
+util::CallParams params;
+params.emplace_back(common::Value(std::int64_t(7)));
+util::CallResult r;
+util::call(proc, params, r);
+// r.sets：本次调用产生的每个结果集；r.rowCount()：行数合计
+
+// OUT / INOUT —— 必须走 Session 重载
+params.emplace_back(util::CallParam{util::ParamDirection::Out, common::Value(std::int64_t(0))});
+DBMW::transaction("my", [&](core::Session &s) { return util::call(s, proc, params, r); });
+// r.outParams[0] 即 OUT 值
+
+// 只要 affected：returnsRows = false
+util::CallOptions o;
+o.returnsRows = false;
+util::call(proc, params, r, o);
+```
+
+| 方言 | OUT | INOUT | 机制与限制 |
+|---|---|---|---|
+| MySQL | ✅ 需 `Session` | ✅ 需 `Session` | `CALL p(?, @dbmw_out_1)` → 同连接 `SELECT @dbmw_out_1`；INOUT 额外先 `SET @dbmw_out_0 = ?` |
+| PostgreSQL（函数） | ✅ 池路径即可 | ✅ 池路径即可 | 值就是 `SELECT * FROM f(...)` 结果行的前 N 列 |
+| PostgreSQL（存储过程） | ❌ | ❌ | PG 的 `CALL` 不把 OUT 回传客户端 → `NotSupported` |
+| SQL Server | ❌ | ❌ | 需先 `DECLARE @var <type>`，dbmw 无法推断类型 → `NotSupported` |
+
+异步路径没有连接亲和，`SELECT @var` 可能落到另一条连接上，因此**异步不支持 OUT / INOUT**；
+需要多结果集时用 `async::util::callAll()`（回调 / future / 协程三形态）。
+
+多结果集依赖驱动能力：MySQL 实现了真正的 `mysql_next_result` 收集；其余驱动退化为"单结果集"。
+MySQL 的 `query` / `execute` 现在会消费完剩余结果集（否则连接会停在 `Commands out of sync`），
+被丢弃的结果集会写 WARN 日志并提示改用 `queryAll()`。
+
+### 治理行为（不变量）
+
+| # | 行为 |
+|---|---|
+| I1 | DDL / 索引操作强制走主库：清除请求上下文的 `shadow` 标记，绝不落到影子库 |
+| I2 | 默认 `Idempotency::NonIdempotent`，失败不重试；显式声明 `Idempotent` 才按 `max_attempts` 重试 |
+| I3 | 结构变更后失效该数据源的查询缓存（由核心 `markWrite()` 保证） |
+| I4 | 审计仍生效：黑白名单 / read-only / `require_limit_select` 全部保留，只豁免"例程体里的分号" |
+| I5 | 不支持的方言组合显式 `NotSupported`，不静默降级 |
+| I7 | 异步三形态（回调 / future / 协程）与同步同源，治理链路与错误码一致 |
+
+### 审计与例程体（v0.5.1 修的核心 bug）
+
+MySQL / SQL Server 的例程体含顶层分号（`BEGIN SELECT 1; SELECT 2; END`），
+旧版审计的"多语句"判定会把它当成两条语句并在 `action=block` 时**硬拒绝**。
+PG 的 `$$ ... $$` 体本来就被字面量 mask，所以这个 bug 只在 MySQL / ODBC 上暴露。
+
+现在 `hasMultipleStatements(sql, allowRoutineBody=true)` 会先把 `BEGIN ... END`
+（含嵌套 `IF` / `CASE` / `LOOP`）整段 mask，再判定剩余部分。
+因此：例程体照常放行，而 `CREATE PROCEDURE ... END; DROP TABLE t` **仍然被拦**。
+
+### 已知限制
+
+1. **多结果集**：MySQL / SQL Server 的 `CALL` 可能返回多个结果集，v0.5.1 只保证第一个。
+2. **OUT / INOUT 参数**：`Params` 是纯输入，本期不支持。
+3. **事务内 DDL**：MySQL 隐式提交、不可回滚；util 无法改变，DDL 默认不带事务执行。
+4. **例程体不做翻译**：跨库部署请维护 N 份方言脚本，由 util 统一管理与执行。
+
+完整设计（跨驱动差异矩阵、冲突分析、U1–U20 测试矩阵）见 `docs/util-design-v0.5.1.md`。
+
 ## 可观测性
 
 完整 SQL、慢 SQL 与池指标通过 `observability` 配置；完整参数值默认关闭：

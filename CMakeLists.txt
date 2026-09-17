@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(dbmw VERSION 0.5.0 LANGUAGES CXX)
+project(dbmw VERSION 0.5.1 LANGUAGES CXX)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL "" FORCE)
 

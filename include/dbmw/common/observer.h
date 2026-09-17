@@ -21,7 +21,8 @@ namespace dbmw::common {
         Stream,
         Batch,
         Savepoint,
-        Select
+        Select,
+        Routine
     };
 
     struct OperationEvent {

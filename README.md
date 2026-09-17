@@ -153,6 +153,55 @@ if (r.status.ok() && !r.items.empty()) use(r.items[0]);
 
 类型不符、NULL 落到非 `optional` 成员返回 `MappingError`（不填默认值）；缺列默认跳过、多余列默认忽略，可分别用 `.missingColumns(...)` / `.extraColumns(...)` 收紧。写方向有 `paramsOf` / `insertSql` / `updateSql` / `insertAs` / `updateAs` / `insertBatchAs`，并支持生成键回填。异步侧 `dbmw::async::queryAs<T>` 提供回调 / future / 协程三形态。
 
+### 5.x 例程与索引（`dbmw/util.h`）
+
+`common::util` 管的是**调用协议与生命周期**，不做 SQL 方言翻译——例程体由业务按目标方言书写。
+
+```cpp
+#include "dbmw/util.h"
+namespace util = dbmw::common::util;
+
+util::CreateRoutineOptions o;
+o.dataSource = "main";
+auto st = util::createRoutine(R"(CREATE PROCEDURE p(IN x INT) BEGIN UPDATE t SET a = x; END)", o);
+
+util::RoutineRef fn{"public.f", util::RoutineKind::Function, "pg"};
+std::string sql;
+util::makeCallSql(fn, 2, util::Dialect::Postgres, true, sql);   // SELECT * FROM "public"."f"(?, ?)
+
+common::ResultSet rs;
+util::callQuery(sql, {common::Value(std::int64_t(1))}, rs);
+
+util::IndexSpec idx{"t", "idx_t_a", {"a"}, false, false, false, "BTREE"};
+util::createIndex(idx);
+```
+
+结构化调用可以一次拿回**全部结果集**，并支持 OUT / INOUT 参数：
+
+```cpp
+util::RoutineRef proc{"p", util::RoutineKind::Procedure, "my"};
+
+// 纯 IN：池路径即可，sets 里是这次调用产生的每个结果集
+util::CallParams params;
+params.emplace_back(common::Value(std::int64_t(7)));
+util::CallResult r;
+util::call(proc, params, r);   // r.sets / r.rowCount() / r.affected
+
+// OUT / INOUT：必须用 Session 重载（需要在同一条连接上回读会话变量）
+params.emplace_back(util::CallParam{util::ParamDirection::Out, common::Value(std::int64_t(0))});
+DBMW::transaction("my", [&](core::Session &s) { return util::call(s, proc, params, r); });
+// r.outParams[0] 即 OUT 值
+```
+
+OUT / INOUT 的方言支持范围：MySQL（需 `Session`）、postgres 函数（池路径即可，值来自结果行前 N 列）；
+postgres 存储过程与 SQL Server 返回 `NotSupported`，异步路径同样不支持（无连接亲和）。
+异步侧用 `async::util::callAll()` 收集多结果集。
+
+治理行为：DDL 强制走主库（清除 shadow 标记）、默认 `NonIdempotent`（不重试）、
+结构变更后失效该数据源查询缓存；方言不支持的组合（`CREATE OR REPLACE`、
+`IF NOT EXISTS`、`CASCADE`、`CONCURRENTLY`、`USING`）一律返回 `NotSupported`，不静默降级。
+详见 [util 设计文档](docs/util-design-v0.5.1.md)。
+
 ### 6. 运行测试
 
 ```bash
@@ -180,4 +229,5 @@ ctest --test-dir build --output-on-failure
 连接池、异步 API、游标、故障转移、可观测性、错误码、配置项和驱动扩展等内容见
 [dbmw 详细指南](docs/guide.md)。异步实现设计见
 [异步设计文档](docs/async-design-v0.2.0.md)，实体映射设计见
-[映射设计文档](docs/mapping-design-v0.5.0.md)。
+[映射设计文档](docs/mapping-design-v0.5.0.md)，例程与索引设计见
+[util 设计文档](docs/util-design-v0.5.1.md)。

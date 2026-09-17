@@ -858,6 +858,34 @@ namespace dbmw::async {
             {}, std::move(cb), opts);
     }
 
+    Handle queryAll(const std::string &sql, MultiQueryCallback cb, const Options opts) {
+        return queryAll(std::string(), sql, std::move(cb), opts);
+    }
+
+    Handle queryAll(const std::string &sql, const common::Params &params,
+                    MultiQueryCallback cb, const Options opts) {
+        return queryAll(std::string(), sql, params, std::move(cb), opts);
+    }
+
+    Handle queryAll(const std::string &dataSource, const std::string &sql,
+                    MultiQueryCallback cb, const Options opts) {
+        return queryAll(dataSource, sql, common::Params{}, std::move(cb), opts);
+    }
+
+    Handle queryAll(const std::string &dataSource, const std::string &sql,
+                    const common::Params &params, MultiQueryCallback cb, const Options opts) {
+        detail::StatementPolicy policy;
+        policy.isWrite = false;
+        policy.retry = detail::RetryMode::ReadRetries;
+        policy.cacheable = false; // the cache stores one ResultSet, not N
+        return detail::AsyncEngine::submitStatement<MultiQueryResult>(
+            resolve(dataSource), sql, params, common::OperationType::Query, policy,
+            [sql, params](const core::Session &s, MultiQueryResult &r) {
+                r.status = s.queryAll(sql, params, r.sets);
+            },
+            {}, std::move(cb), opts);
+    }
+
     Handle execute(const std::string &sql, ExecCallback cb, const Options opts) {
         return execute(std::string(), sql, std::move(cb), opts);
     }

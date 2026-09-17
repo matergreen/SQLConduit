@@ -164,6 +164,60 @@ values). Missing columns are skipped by default and extra columns ignored; each 
 `updateSql` / `insertAs` / `updateAs` / `insertBatchAs`, including generated-key back-fill. On the
 async side, `dbmw::async::queryAs<T>` comes in callback / future / coroutine form.
 
+### 5.x Routines and indexes (`dbmw/util.h`)
+
+`common::util` owns the **call protocol and the lifecycle** — it does not translate SQL dialects, so
+routine bodies are written by the application in the target dialect.
+
+```cpp
+#include "dbmw/util.h"
+namespace util = dbmw::common::util;
+
+util::CreateRoutineOptions o;
+o.dataSource = "main";
+auto st = util::createRoutine(R"(CREATE PROCEDURE p(IN x INT) BEGIN UPDATE t SET a = x; END)", o);
+
+util::RoutineRef fn{"public.f", util::RoutineKind::Function, "pg"};
+std::string sql;
+util::makeCallSql(fn, 2, util::Dialect::Postgres, true, sql);   // SELECT * FROM "public"."f"(?, ?)
+
+common::ResultSet rs;
+util::callQuery(sql, {common::Value(std::int64_t(1))}, rs);
+
+util::IndexSpec idx{"t", "idx_t_a", {"a"}, false, false, false, "BTREE"};
+util::createIndex(idx);
+```
+
+A structured call returns **every result set** the routine produced and can carry OUT / INOUT
+parameters:
+
+```cpp
+util::RoutineRef proc{"p", util::RoutineKind::Procedure, "my"};
+
+// IN only: the pool path is enough, sets holds every result set from this call
+util::CallParams params;
+params.emplace_back(common::Value(std::int64_t(7)));
+util::CallResult r;
+util::call(proc, params, r);   // r.sets / r.rowCount() / r.affected
+
+// OUT / INOUT: the Session overload is required (the session variable must be read
+// back on the same connection)
+params.emplace_back(util::CallParam{util::ParamDirection::Out, common::Value(std::int64_t(0))});
+DBMW::transaction("my", [&](core::Session &s) { return util::call(s, proc, params, r); });
+// r.outParams[0] is the OUT value
+```
+
+OUT / INOUT support: MySQL (requires `Session`) and postgres functions (pool path is enough, the
+values are the leading columns of the result row). postgres procedures and SQL Server return
+`NotSupported`, and so does the async path (no connection affinity). Use
+`async::util::callAll()` to collect multiple result sets asynchronously.
+
+Governance: DDL is pinned to the primary (the `shadow` flag is cleared), defaults to
+`NonIdempotent` (no retries), and invalidates that data source's query cache after a structural
+change. Dialect combinations that do not exist (`CREATE OR REPLACE`, `IF NOT EXISTS`, `CASCADE`,
+`CONCURRENTLY`, `USING`) return `NotSupported` instead of silently degrading.
+See the [util design document](docs/util-design-v0.5.1.md).
+
 ### 6. Run tests
 
 ```bash
@@ -192,4 +246,5 @@ ctest --test-dir build --output-on-failure
 See the [dbmw detailed guide](docs/guide_en.md) for connection pooling, asynchronous APIs,
 cursors, failover, observability, error codes, configuration, and driver extensions. See the
 [asynchronous design document](docs/async-design-v0.2.0.md) for implementation details, and the
-[mapping design document](docs/mapping-design-v0.5.0.md) for entity mapping.
+[mapping design document](docs/mapping-design-v0.5.0.md) for entity mapping, and the
+[util design document](docs/util-design-v0.5.1.md) for routine/index management.

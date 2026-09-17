@@ -67,7 +67,7 @@ namespace dbmw::core {
         checked_.fetch_add(1, std::memory_order_relaxed);
         using namespace common::sql;
 
-        if (hasMultipleStatements(sql)) {
+        if (hasMultipleStatements(sql, true)) {
             return verdict(policy->block, policy->log_blocked,
                            "multiple SQL statements are not allowed", sql,
                            warned_, blocked_);

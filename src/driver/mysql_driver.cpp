@@ -1,4 +1,5 @@
 #include "dbmw/driver/mysql_driver.h"
+#include "dbmw/common/logger.h"
 #include "dbmw/driver/driver_registry.h"
 
 #include <cstring>
@@ -237,6 +238,43 @@ namespace dbmw::driver {
 #endif
     }
 
+#ifdef DBMW_ENABLE_MYSQL
+    namespace {
+        void freeMysqlResult(MYSQL_RES *r) { if (r) mysql_free_result(r); }
+
+        common::Status fillResultSet(MYSQL_RES *res, const config::DataSourceConfig &cfg,
+                                     common::ResultSet &out) {
+            if (const auto st = rowLimitExceeded(mysql_num_rows(res), cfg.max_result_rows);
+                !st.ok()) return st;
+
+            const unsigned int nfields = mysql_num_fields(res);
+            MYSQL_FIELD *fields = mysql_fetch_fields(res);
+
+            std::vector<std::string> names;
+            names.reserve(nfields);
+            for (unsigned int i = 0; i < nfields; ++i) names.emplace_back(fields[i].name);
+            out.setFields(std::move(names));
+
+            MYSQL_ROW row;
+            while ((row = mysql_fetch_row(res)) != nullptr) {
+                unsigned long *lengths = mysql_fetch_lengths(res);
+                common::Row r;
+                for (unsigned int i = 0; i < nfields; ++i) {
+                    const char *colName = fields[i].name;
+                    if (row[i] == nullptr) {
+                        r.set(colName, nullptr);
+                        continue;
+                    }
+                    r.set(colName, fieldToValue(fields[i].type, fields[i].flags,
+                                                row[i], lengths[i]));
+                }
+                out.addRow(std::move(r));
+            }
+            return common::Status::OK();
+        }
+    }
+#endif
+
     common::Status MySQLConnection::ping() {
 #ifdef DBMW_ENABLE_MYSQL
         if (!open_ || !m_) return notConnected("ping");
@@ -255,44 +293,90 @@ namespace dbmw::driver {
             return lastError("mysql_real_query");
 
         std::unique_ptr<MYSQL_RES, void(*)(MYSQL_RES *)> res(
-            mysql_store_result(m_),
-            [](MYSQL_RES *r) { if (r) mysql_free_result(r); });
+            mysql_store_result(m_), &freeMysqlResult);
         if (!res) {
-            if (mysql_field_count(m_) == 0) return common::Status::OK();
+            if (mysql_field_count(m_) == 0) return drainRemainingResults();
             return lastError("mysql_store_result");
         }
 
-        if (const auto st = rowLimitExceeded(mysql_num_rows(res.get()),
-                                             cfg_.max_result_rows); !st.ok())
-            return st;
+        if (const auto st = fillResultSet(res.get(), cfg_, out); !st.ok()) return st;
+        // Anything after the first result set is dropped here; use queryAll() when
+        // the remaining sets matter. They must still be consumed or the connection
+        // is left unusable.
+        return drainRemainingResults();
+#else
+        (void) sql;
+        (void) out;
+        return common::Status::error(common::ErrorCode::DriverDisabled, "MySQL driver disabled");
+#endif
+    }
 
-        unsigned int nfields = mysql_num_fields(res.get());
-        MYSQL_FIELD *fields = mysql_fetch_fields(res.get());
+    common::Status MySQLConnection::queryAll(const std::string &sql,
+                                             std::vector<common::ResultSet> &out) {
+#ifdef DBMW_ENABLE_MYSQL
+        out.clear();
+        if (!open_ || !m_) return notConnected("queryAll");
+        ActiveMysqlOperation active(operationMtx_, activeThreadId_, mysql_thread_id(m_));
+        if (mysql_real_query(m_, sql.data(), sql.size()) != 0)
+            return lastError("mysql_real_query");
 
-        std::vector<std::string> names;
-        names.reserve(nfields);
-        for (unsigned int i = 0; i < nfields; ++i) names.emplace_back(fields[i].name);
-        out.setFields(std::move(names));
-
-        MYSQL_ROW row;
-        while ((row = mysql_fetch_row(res.get())) != nullptr) {
-            unsigned long *lengths = mysql_fetch_lengths(res.get());
-            common::Row r;
-            for (unsigned int i = 0; i < nfields; ++i) {
-                const char *colName = fields[i].name;
-                if (row[i] == nullptr) {
-                    r.set(colName, nullptr);
-                    continue;
-                }
-                r.set(colName, fieldToValue(fields[i].type, fields[i].flags,
-                                            row[i], lengths[i]));
+        for (;;) {
+            std::unique_ptr<MYSQL_RES, void(*)(MYSQL_RES *)> res(
+                mysql_store_result(m_), &freeMysqlResult);
+            if (res) {
+                common::ResultSet rs;
+                if (const auto st = fillResultSet(res.get(), cfg_, rs); !st.ok()) return st;
+                out.push_back(std::move(rs));
+            } else if (mysql_field_count(m_) != 0) {
+                return lastError("mysql_store_result");
             }
-            out.addRow(std::move(r));
+            const int rc = mysql_next_result(m_);
+            if (rc > 0) return lastError("mysql_next_result");
+            if (rc < 0) break;
         }
         return common::Status::OK();
 #else
         (void) sql;
         (void) out;
+        return common::Status::error(common::ErrorCode::DriverDisabled, "MySQL driver disabled");
+#endif
+    }
+
+    common::Status MySQLConnection::queryAll(const std::string &sql,
+                                             const common::Params &params,
+                                             std::vector<common::ResultSet> &out) {
+#ifdef DBMW_ENABLE_MYSQL
+        out.clear();
+        if (params.empty()) return queryAll(sql, out);
+        // Multiple result sets need mysql_next_result(), which has no counterpart
+        // on the prepared-statement path, so build the statement text instead.
+        std::string built;
+        if (const auto st = buildSql(sql, params, built); !st.ok()) return st;
+        return queryAll(built, out);
+#else
+        (void) sql;
+        (void) params;
+        (void) out;
+        return common::Status::error(common::ErrorCode::DriverDisabled, "MySQL driver disabled");
+#endif
+    }
+
+    common::Status MySQLConnection::drainRemainingResults() {
+#ifdef DBMW_ENABLE_MYSQL
+        std::size_t discarded = 0;
+        for (;;) {
+            const int rc = mysql_next_result(m_);
+            if (rc > 0) return lastError("mysql_next_result");
+            if (rc < 0) break;
+            std::unique_ptr<MYSQL_RES, void(*)(MYSQL_RES *)> res(
+                mysql_store_result(m_), &freeMysqlResult);
+            ++discarded;
+        }
+        if (discarded > 0)
+            DBMW_LOG_WARN("mysql: discarded " + std::to_string(discarded) +
+                " extra result set(s); use queryAll() to collect them");
+        return common::Status::OK();
+#else
         return common::Status::error(common::ErrorCode::DriverDisabled, "MySQL driver disabled");
 #endif
     }
@@ -305,7 +389,9 @@ namespace dbmw::driver {
         if (mysql_real_query(m_, sql.data(), sql.size()) != 0)
             return lastError("mysql_real_query");
         affected = static_cast<std::int64_t>(mysql_affected_rows(m_));
-        return common::Status::OK();
+        // CALL can leave further result sets pending even when only the OK packet
+        // was asked for; leaving them unconsumed poisons the connection.
+        return drainRemainingResults();
 #else
         (void) sql;
         affected = 0;

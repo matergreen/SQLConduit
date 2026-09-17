@@ -16,6 +16,18 @@ namespace dbmw::async {
         common::ResultSet rows;
     };
 
+    // Every result set a single statement produced, in order.
+    struct MultiQueryResult {
+        common::Status status;
+        std::vector<common::ResultSet> sets;
+
+        [[nodiscard]] std::size_t rowCount() const {
+            std::size_t n = 0;
+            for (const auto &s: sets) n += s.rowCount();
+            return n;
+        }
+    };
+
     struct ExecResult {
         common::Status status;
         std::int64_t affected = 0;
@@ -42,6 +54,7 @@ namespace dbmw::async {
     };
 
     using QueryCallback = std::function<void(QueryResult &&)>;
+    using MultiQueryCallback = std::function<void(MultiQueryResult &&)>;
     using ExecCallback = std::function<void(ExecResult &&)>;
     using ExecKeysCallback = std::function<void(ExecKeysResult &&)>;
     using EachCallback = std::function<void(EachResult &&)>;

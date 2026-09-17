@@ -72,6 +72,12 @@ namespace dbmw {
         common::Status query(const std::string &sql, const common::Params &params,
                              common::ResultSet &out) const;
 
+        common::Status queryAll(const std::string &sql,
+                                std::vector<common::ResultSet> &out) const;
+
+        common::Status queryAll(const std::string &sql, const common::Params &params,
+                                std::vector<common::ResultSet> &out) const;
+
         common::Status execute(const std::string &sql, std::int64_t &affected) const;
 
         common::Status execute(const std::string &sql, const common::Params &params,
@@ -290,6 +296,12 @@ namespace dbmw {
         common::Status query(const std::string &sql, const common::Params &params,
                              common::ResultSet &out) const;
 
+        common::Status queryAll(const std::string &sql,
+                                std::vector<common::ResultSet> &out) const;
+
+        common::Status queryAll(const std::string &sql, const common::Params &params,
+                                std::vector<common::ResultSet> &out) const;
+
         common::Status execute(const std::string &sql, std::int64_t &affected) const;
 
         common::Status execute(const std::string &sql, const common::Params &params,
@@ -339,6 +351,8 @@ namespace dbmw {
                                    std::chrono::milliseconds borrowTimeout) const;
 
         [[nodiscard]] const std::string &name() const { return name_; }
+
+        [[nodiscard]] const std::string &driverType() const { return driverType_; }
 
         bool poolStats(ConnectionPool::Stats &out) const;
 
@@ -459,6 +473,7 @@ namespace dbmw {
         bool requireHealthy_ = false;
         std::string shadowName_;
         std::shared_ptr<DataSource> shadow_;
+        std::string driverType_;
         std::shared_ptr<WriteBuffer> writeBuffer_;
         struct CursorBudgetState {
             std::atomic<int> limit{0};
@@ -470,6 +485,8 @@ namespace dbmw {
         int defaultBatchSize_ = 256;
         bool cursorScrollable_ = false;
     };
+
+    int currentTransactionDepth() noexcept;
 
     class StatsReporter;
     struct PoolCollectorLease;

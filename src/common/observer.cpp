@@ -285,6 +285,7 @@ namespace dbmw::common {
                 case OperationType::Stream: return "stream";
                 case OperationType::Batch: return "batch";
                 case OperationType::Select: return "select";
+                case OperationType::Routine: return "routine";
                 default: return "operation";
             }
         }

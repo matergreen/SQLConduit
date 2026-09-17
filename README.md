@@ -202,6 +202,25 @@ postgres 存储过程与 SQL Server 返回 `NotSupported`，异步路径同样�
 `IF NOT EXISTS`、`CASCADE`、`CONCURRENTLY`、`USING`）一律返回 `NotSupported`，不静默降级。
 详见 [util 设计文档](docs/util-design-v0.5.1.md)。
 
+#### 5.x.1 脚本执行（目录 / 文件列表 / 内存）
+
+`util` 还能批量跑 SQL 脚本：按目录递归收集 `.sql`、给定文件列表、或直接执行内存里的脚本字符串。
+每条语句都走与 `createRoutine` / `createIndex` 相同的治理链路（强制主库、不重试、失效缓存），
+`;` 会正确规避字符串字面量、注释与 `BEGIN..END` 复合块。
+
+```cpp
+util::ScriptOptions o;
+o.dataSource = "main";
+
+util::runScriptsInDir("./migrations", o);                                  // 递归执行目录下所有 .sql
+util::runScripts({"./a.sql", "./b.sql"}, o);                               // 显式文件列表
+util::runScriptText("CREATE TABLE t(id INT); INSERT INTO t VALUES (1);", o); // 内存脚本
+```
+
+失败时：文件 / 目录问题返回 `IoError`；语句错误按 `stopOnError`（默认 `true`）首错即停，
+`stopOnError=false` 跑完全部、最后一条错误胜出。逐文件结果落在 `perFile`。
+异步见 `async::util::runScriptText` / `runScripts` / `runScriptsInDir`（回调 / future / 协程）。
+
 ### 6. 运行测试
 
 ```bash

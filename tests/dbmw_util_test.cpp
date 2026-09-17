@@ -256,6 +256,13 @@ static async::Task<void> coroCallAllBody(std::promise<async::MultiQueryResult> p
     auto r = co_await async::util::callAllAsync("CALL `p`(?)", p, o);
     pr.set_value(std::move(r));
 }
+
+static async::Task<void> coroScriptBody(std::promise<async::ExecResult> pr) {
+    common::util::ScriptOptions o;
+    o.dataSource = "main";
+    auto r = co_await async::util::runScriptTextAsync("SELECT 1; SELECT 2; SELECT 3", o);
+    pr.set_value(std::move(r));
+}
 #endif
 
 int main() {
@@ -954,6 +961,172 @@ int main() {
         const auto st = util::call(proc, params, r, o);
         check(st.ok() && r.sets.empty() && r.affected == 4,
               "U29 returnsRows=false → 只报 affected");
+    }
+
+    std::cout << "== U30. splitSqlScript 拆分 ==\n";
+    {
+        std::vector<std::string> out;
+        util::splitSqlScript("SELECT 1; SELECT 2; SELECT 3", out);
+        check(out.size() == 3, "U30 普通三条语句拆成 3 段");
+
+        out.clear();
+        util::splitSqlScript("SELECT 'a;b' ; SELECT 2", out);
+        check(out.size() == 2 && out[0] == "SELECT 'a;b'", "U30 字符串内的分号不被拆");
+
+        out.clear();
+        util::splitSqlScript("SELECT 1 -- c;d\n; SELECT 2", out);
+        check(out.size() == 2, "U30 行注释内的分号不被拆");
+
+        out.clear();
+        util::splitSqlScript("SELECT 1 /* x;y */ ; SELECT 2", out);
+        check(out.size() == 2, "U30 块注释内的分号不被拆");
+
+        out.clear();
+        util::splitSqlScript("CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END", out);
+        check(out.size() == 1, "U30 BEGIN..END 复合块整段不拆");
+
+        out.clear();
+        util::splitSqlScript("SELECT 1 ; ; SELECT 2", out);
+        check(out.size() == 2, "U30 空语句被丢弃");
+    }
+
+    std::cout << "== U31. runScriptText 内存脚本 ==\n";
+    {
+        resetCounters();
+        util::ScriptOptions o;
+        o.dataSource = "main";
+        std::size_t ex = 0;
+        const auto st = util::runScriptText("SELECT 1; SELECT 2; SELECT 3", o, &ex);
+        check(st.ok() && ex == 3, "U31 三条语句全部执行");
+        check(gMainExec.load() == 3, "U31 主库 execute 计数 = 3");
+        resetCounters();
+    }
+
+    std::cout << "== U32. stopOnError=false 继续执行 ==\n";
+    {
+        resetCounters();
+        gFailRemaining = 1;
+        util::ScriptOptions o;
+        o.dataSource = "main";
+        o.stopOnError = false;
+        std::size_t ex = 0;
+        const auto st = util::runScriptText("SELECT 1; SELECT 2; SELECT 3", o, &ex);
+        check(!st.ok() && st.code == ErrorCode::QueryError, "U32 失败后返回错误");
+        check(ex == 2, "U32 后续语句仍执行（executed=2）");
+        check(gMainExec.load() == 3, "U32 三条语句都尝试过");
+        resetCounters();
+        gFailRemaining = 0;
+    }
+
+    std::cout << "== U33/U34. runScripts / runScriptsInDir ==\n";
+    {
+        const std::string base = (std::filesystem::temp_directory_path() /
+                                  "dbmw_script_test").string();
+        std::error_code rec;
+        std::filesystem::remove_all(base, rec);
+        std::filesystem::create_directories(base + "/sub", rec);
+        auto writef = [](const std::string &p, const std::string &c) {
+            std::ofstream(p) << c;
+        };
+        writef(base + "/01.sql", "SELECT 1; SELECT 2");
+        writef(base + "/02.sql", "SELECT 3");
+        writef(base + "/sub/03.sql", "SELECT 4; SELECT 5; SELECT 6");
+        writef(base + "/notes.txt", "not sql");
+
+        resetCounters();
+        util::ScriptOptions o;
+        o.dataSource = "main";
+        std::vector<util::ScriptResult> per;
+        const auto s1 = util::runScripts({base + "/01.sql", base + "/02.sql"}, o, &per);
+        check(s1.ok() && per.size() == 2, "U33 两个文件均执行");
+        check(per[0].statements == 2 && per[0].executed == 2, "U33 01.sql 2 条全执行");
+        check(per[1].statements == 1 && per[1].executed == 1, "U33 02.sql 1 条全执行");
+        check(gMainExec.load() == 3, "U33 主库 execute = 3");
+        resetCounters();
+
+        std::vector<util::ScriptResult> per2;
+        const auto s2 = util::runScriptsInDir(base, o, &per2);
+        check(s2.ok() && per2.size() == 3, "U34 递归发现 3 个 .sql（notes.txt 被过滤）");
+        std::size_t totalExec = 0;
+        for (const auto &r: per2) totalExec += r.executed;
+        check(totalExec == 6, "U34 共执行 6 条语句");
+        check(gMainExec.load() == 6, "U34 主库 execute = 6");
+
+        resetCounters();
+        util::ScriptOptions flat = o;
+        flat.recursive = false;
+        std::vector<util::ScriptResult> per3;
+        const auto s3 = util::runScriptsInDir(base, flat, &per3);
+        check(s3.ok() && per3.size() == 2, "U34 非递归仅顶层 2 个 .sql");
+        resetCounters();
+        std::filesystem::remove_all(base, rec);
+    }
+
+    std::cout << "== U35. 目录不存在 → IoError ==\n";
+    {
+        util::ScriptOptions o;
+        o.dataSource = "main";
+        const auto st = util::runScriptsInDir("/no/such/dbmw_dir_xyz", o);
+        check(!st.ok() && st.code == ErrorCode::IoError, "U35 目录不存在返回 IoError");
+    }
+
+    std::cout << "== U36. 文件不可读 / stopOnError 行为 ==\n";
+    {
+        util::ScriptOptions o;
+        o.dataSource = "main";
+        std::vector<util::ScriptResult> per;
+        const auto st = util::runScripts({"/no/such/dbmw_file.sql"}, o, &per);
+        check(!st.ok() && st.code == ErrorCode::IoError, "U36 缺文件返回 IoError");
+        check(!per.empty() && per[0].status.code == ErrorCode::IoError, "U36 perFile 记录 IoError");
+
+        const std::string base = (std::filesystem::temp_directory_path() /
+                                  "dbmw_script_test2").string();
+        std::error_code rec;
+        std::filesystem::remove_all(base, rec);
+        std::filesystem::create_directories(base, rec);
+        auto writef = [](const std::string &p, const std::string &c) {
+            std::ofstream(p) << c;
+        };
+        writef(base + "/ok.sql", "SELECT 1");
+        util::ScriptOptions no = o;
+        no.stopOnError = false;
+        std::vector<util::ScriptResult> per2;
+        const auto st2 = util::runScripts({base + "/ok.sql", "/no/such/dbmw_file.sql"}, no, &per2);
+        check(!st2.ok() && per2.size() == 2, "U36 不停止时两文件都记录");
+        std::filesystem::remove_all(base, rec);
+    }
+
+    std::cout << "== U37. 异步三形态 ==\n";
+    {
+        util::ScriptOptions o;
+        o.dataSource = "main";
+
+        const auto fr = async::util::runScriptText("SELECT 1; SELECT 2; SELECT 3", o).get();
+        check(fr.status.ok(), "U37 future 形态执行成功");
+
+        std::promise<async::ExecResult> pr;
+        auto fut = pr.get_future();
+        async::util::runScriptText("SELECT 1; SELECT 2",
+            [&pr](async::ExecResult &&r) { pr.set_value(std::move(r)); }, o);
+        check(fut.get().status.ok(), "U37 回调形态执行成功");
+
+        const std::string base = (std::filesystem::temp_directory_path() /
+                                  "dbmw_script_test3").string();
+        std::error_code rec;
+        std::filesystem::remove_all(base, rec);
+        std::filesystem::create_directories(base, rec);
+        std::ofstream(base + "/a.sql") << "SELECT 1; SELECT 2";
+        std::ofstream(base + "/b.sql") << "SELECT 3";
+        const auto dr = async::util::runScriptsInDir(base, o).get();
+        check(dr.status.ok(), "U37 runScriptsInDir future 成功");
+        std::filesystem::remove_all(base, rec);
+
+#if defined(DBMW_ENABLE_ASYNC_CORO)
+        std::promise<async::ExecResult> prc;
+        auto futc = prc.get_future();
+        async::run(coroScriptBody(std::move(prc)));
+        check(futc.get().status.ok(), "U37 协程形态执行成功");
+#endif
     }
 
     std::cout << "\npassed=" << g_passed << " failed=" << g_failed << "\n";

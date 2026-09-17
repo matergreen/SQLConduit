@@ -183,7 +183,8 @@ namespace dbmw::common {
         CursorError,
         Unknown,
         Overloaded,
-        MappingError
+        MappingError,
+        IoError
     };
 
     const char *errorCodeToString(ErrorCode c);

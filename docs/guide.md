@@ -1109,6 +1109,17 @@ util::call(proc, params, r, o);
 MySQL 的 `query` / `execute` 现在会消费完剩余结果集（否则连接会停在 `Commands out of sync`），
 被丢弃的结果集会写 WARN 日志并提示改用 `queryAll()`。
 
+### 脚本执行（目录 / 文件列表 / 内存）
+
+`util` 额外提供批量脚本执行：`runScriptsInDir`（递归 / 扁平收集 `.sql`）、`runScripts`（显式文件列表）、
+`runScriptText`（内存脚本）。语句拆分 `splitSqlScript` 三趟扫描——先屏蔽字符串字面量与行 / 块注释，
+再整段屏蔽 `BEGIN/CASE/IF/LOOP/WHILE/REPEAT … END` 复合块，最后在未屏蔽的 `;` 处切分并丢弃空白片段，
+因此 MySQL 存储过程体里的 `;` 不会误拆。
+
+- 治理：每条语句走 `detail::runDdl`，与 `createRoutine` / `createIndex` 同源（强制主库、清除 shadow、默认 `NonIdempotent`、失效缓存）。
+- 错误：`readSqlFile` 失败或目录不存在 → `ErrorCode::IoError`；`stopOnError=true`（默认）首错即停，`false` 跑完全部、最后一条错误胜出；逐文件 `ScriptResult`（`path` / `status` / `statements` / `executed`）。
+- 异步：`async::util` 同样提供回调 / future / 协程三形态，每条语句用 `ExecScope` 包治理走 `async::execute`。
+
 ### 治理行为（不变量）
 
 | # | 行为 |
@@ -1132,8 +1143,8 @@ PG 的 `$$ ... $$` 体本来就被字面量 mask，所以这个 bug 只在 MySQL
 
 ### 已知限制
 
-1. **多结果集**：MySQL / SQL Server 的 `CALL` 可能返回多个结果集，v0.5.1 只保证第一个。
-2. **OUT / INOUT 参数**：`Params` 是纯输入，本期不支持。
+1. **多结果集**：MySQL / SQL Server 的 `CALL` 已支持多结果集收集（见设计文档 §14）；其余驱动退化为单结果集。
+2. **OUT / INOUT 参数**：MySQL（需 `Session`）、postgres 函数已支持；postgres 存储过程 / SQL Server / 异步路径返回 `NotSupported`（见设计文档 §14）。
 3. **事务内 DDL**：MySQL 隐式提交、不可回滚；util 无法改变，DDL 默认不带事务执行。
 4. **例程体不做翻译**：跨库部署请维护 N 份方言脚本，由 util 统一管理与执行。
 

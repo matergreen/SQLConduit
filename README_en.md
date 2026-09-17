@@ -216,6 +216,28 @@ Governance: DDL is pinned to the primary (the `shadow` flag is cleared), default
 `NonIdempotent` (no retries), and invalidates that data source's query cache after a structural
 change. Dialect combinations that do not exist (`CREATE OR REPLACE`, `IF NOT EXISTS`, `CASCADE`,
 `CONCURRENTLY`, `USING`) return `NotSupported` instead of silently degrading.
+
+#### 5.x.1 Script execution (directory / file list / in-memory)
+
+`util` can also run SQL scripts in bulk: recursively collect `.sql` files under a directory, take an
+explicit file list, or run an in-memory script string. Every statement goes through the same
+governance as `createRoutine` / `createIndex` (pinned to primary, no retry, cache invalidated), and
+`;` correctly skips string literals, comments and `BEGIN..END` compound blocks.
+
+```cpp
+util::ScriptOptions o;
+o.dataSource = "main";
+
+util::runScriptsInDir("./migrations", o);     // recursively run every .sql under the directory
+util::runScripts({"./a.sql", "./b.sql"}, o);  // explicit file list
+util::runScriptText("CREATE TABLE t(id INT); INSERT INTO t VALUES (1);", o);  // in-memory script
+```
+
+On failure a missing file/directory yields `IoError`; a statement error stops at the first one when
+`stopOnError` (default) is true, or runs everything and lets the last error win when false. Per-file
+results land in `perFile`. Async: `async::util::runScriptText` / `runScripts` / `runScriptsInDir`
+(callback / future / coroutine).
+
 See the [util design document](docs/util-design-v0.5.1.md).
 
 ### 6. Run tests

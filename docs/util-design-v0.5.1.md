@@ -620,3 +620,61 @@ MySQL 驱动的改动（`queryAll` / `drainRemainingResults` / `query`+`execute`
 **未经本地编译验证**——`DBMW_ENABLE_MYSQL` 本地为 `OFF`，本机没有 libmysqlclient。
 CI 的 `drivers: 'ON'` 矩阵会打开它，因此这段改动会在 CI 上被编译验证；
 推 `dev` 后需要盯一下 Ubuntu 那几个 job 的结果。
+
+---
+
+## 15. 脚本执行（目录递归 / 文件列表 / 内存脚本）
+
+用户追加要求：util 需要支持"按目录递归收集 `.sql` 文件、或给定文件列表、或直接执行内存中的 SQL 脚本"
+来批量跑 DDL / SQL。
+
+### 15.1 接口
+
+| 位置 | 函数 | 说明 |
+|---|---|---|
+| `common::util`（同步） | `runScriptText(sql, opts, *executed)` | 执行内存中的脚本字符串 |
+| `common::util`（同步） | `runScripts(files, opts, *perFile)` | 执行显式文件列表 |
+| `common::util`（同步） | `runScriptsInDir(dir, opts, *perFile)` | 递归 / 扁平收集目录下 `.sql` 并执行 |
+| `common::util` | `splitSqlScript(sql, out)` | 纯函数：把脚本拆成单条语句 |
+| `common::util` | `readSqlFile(path, out)` / `endsWith(s, suffix)` | 文件读取 / 后缀判断工具 |
+| `async::util` | `runScriptText` / `runScripts` / `runScriptsInDir`（回调 / future 双形态） | 异步三形态中的回调与 future |
+| `async::util`（协程） | `runScriptTextAsync` / `runScriptsAsync` / `runScriptsInDirAsync` | `DBMW_ENABLE_ASYNC_CORO` 门控 |
+
+`ScriptOptions`（继承 `ExecOptions`）：`recursive`（默认 `true`）、`extension`（默认 `.sql`）、
+`stopOnError`（默认 `true`）。`ScriptResult`：`path` / `status` / `statements` / `executed`，逐文件返回。
+
+### 15.2 语句拆分规则
+
+`splitSqlScript` 三趟扫描：
+
+1. 标记字符串字面量（`'...'` / `"..."`，含转义 `''` / `""`）、行注释（`--` / `#`）、块注释（`/* ... */`）为"受保护"。
+2. 识别 `BEGIN` / `CASE` / `IF` / `LOOP` / `WHILE` / `REPEAT … END` 复合块，整段标记受保护
+   （MySQL 存储过程体里的大量 `;` 不会拆断）。
+3. 在未受保护的 `;` 处切分并 trim，丢弃纯空白片段。
+
+### 15.3 治理与错误处理
+
+- 每条语句都走 `detail::runDdl`（与 `createRoutine` / `createIndex` 同一治理链路）：强制主库、清除 `shadow`、
+  默认 `NonIdempotent`、结构变更失效缓存。
+- 异步路径每条语句用 `ExecScope` 包治理，走 `async::execute`。
+- 文件读不到 / 目录不存在 → `ErrorCode::IoError`；`stopOnError=true`（默认）时首错即停并返回，逐文件结果落在 `perFile`；
+  `stopOnError=false` 时跑完所有文件、最后一条错误胜出。
+- 文件名按排序后顺序执行（确定性）。
+
+### 15.4 测试
+
+`tests/dbmw_util_test.cpp` 新增 U30–U37：
+
+| 用例 | 覆盖 |
+|---|---|
+| U30 | `splitSqlScript`：普通、字符串内分号、行 / 块注释内分号、`BEGIN..END` 复合块、空语句丢弃 |
+| U31 | `runScriptText` 内存脚本 3 条全执行，`gMainExec == 3` |
+| U32 | `stopOnError=false` 首错后仍执行后续，`executed == 2` |
+| U33 | `runScripts` 显式文件列表 + `perFile` 逐文件 `statements` / `executed` |
+| U34 | `runScriptsInDir` 递归收集（过滤非 `.sql`）+ 非递归仅顶层 |
+| U35 | `runScriptsInDir` 目录不存在 → `IoError` |
+| U36 | `runScripts` 缺文件 → `IoError` + `perFile` 记录；`stopOnError=false` 两文件都记录 |
+| U37 | 异步三形态（future / 回调 / `runScriptsInDir` future / 协程）执行成功 |
+
+> 注：沙箱无 C++ 工具链，本机无法编译；用例数待本地 `ctest` 跑出后回填。
+> 设计上 coro=OFF 与 coro=ON 各多一条协程断言（U37 末段 `DBMW_ENABLE_ASYNC_CORO` 门控）。

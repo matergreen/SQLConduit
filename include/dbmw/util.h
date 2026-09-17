@@ -13,13 +13,17 @@
 #include "dbmw/async/task.h"
 #endif
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <iterator>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -599,6 +603,218 @@ namespace dbmw::common::util {
         return detail::runDdl(opts, sql);
     }
 
+    // ----------------------------------------------------------------------------
+    // Script execution
+    //
+    // Run *.sql files discovered in a directory (recursively) or an explicit list
+    // of file paths, or run a SQL script held in memory. Every file / text blob is
+    // split into individual statements on ';' (honouring string literals, line and
+    // block comments, and BEGIN..END / CASE..END / IF..END / LOOP..END blocks) and
+    // each statement is executed through the same governance path as the other util
+    // helpers: forcePrimary, shadow cleared, NonIdempotent, cache invalidated.
+    // ----------------------------------------------------------------------------
+
+    struct ScriptOptions : ExecOptions {
+        bool recursive = true;            // descend into sub-directories
+        std::string extension = ".sql";   // file name suffix filter
+        bool stopOnError = true;          // abort the whole run on first failure
+    };
+
+    struct ScriptResult {
+        std::string path;
+        Status status;
+        std::size_t statements = 0;       // statements found in the file
+        std::size_t executed = 0;         // statements run successfully
+    };
+
+    // Split a SQL script into individual statements. A ';' inside a string literal,
+    // a comment, or a compound block does not split. Whitespace-only fragments are
+    // dropped.
+    inline void splitSqlScript(const std::string &sql, std::vector<std::string> &out) {
+        const std::size_t n = sql.size();
+        std::vector<char> prot(n, 0);     // 1 => ';' here must not split
+
+        // Pass 1: string literals and comments.
+        bool inS = false, inD = false, inLine = false, inBlock = false;
+        for (std::size_t i = 0; i < n; ++i) {
+            const char c = sql[i];
+            if (inLine) { prot[i] = 1; if (c == '\n') inLine = false; continue; }
+            if (inBlock) {
+                prot[i] = 1;
+                if (c == '*' && i + 1 < n && sql[i + 1] == '/') { prot[i + 1] = 1; inBlock = false; ++i; }
+                continue;
+            }
+            if (inS) {
+                prot[i] = 1;
+                if (c == '\'') {
+                    if (i + 1 < n && sql[i + 1] == '\'') { prot[i + 1] = 1; ++i; }
+                    else inS = false;
+                }
+                continue;
+            }
+            if (inD) {
+                prot[i] = 1;
+                if (c == '"') {
+                    if (i + 1 < n && sql[i + 1] == '"') { prot[i + 1] = 1; ++i; }
+                    else inD = false;
+                }
+                continue;
+            }
+            if (c == '-' && i + 1 < n && sql[i + 1] == '-') { inLine = true; prot[i] = 1; prot[i + 1] = 1; ++i; continue; }
+            if (c == '#') { inLine = true; prot[i] = 1; continue; }
+            if (c == '/' && i + 1 < n && sql[i + 1] == '*') { inBlock = true; prot[i] = 1; prot[i + 1] = 1; ++i; continue; }
+            if (c == '\'') { inS = true; prot[i] = 1; continue; }
+            if (c == '"') { inD = true; prot[i] = 1; continue; }
+        }
+
+        // Pass 2: compound blocks (BEGIN/CASE/IF/LOOP/WHILE/REPEAT .. END).
+        enum Blk { B_BEGIN = 1, B_CASE, B_IF, B_LOOP, B_WHILE, B_REPEAT };
+        std::vector<std::pair<int, std::size_t> > stack; // (kind, maskFrom)
+        std::size_t i = 0;
+        auto isKw = [&](const std::size_t a, const std::size_t b, const char *kw) -> bool {
+            const std::size_t len = std::char_traits<char>::length(kw);
+            if (b - a != len) return false;
+            for (std::size_t k = 0; k < len; ++k)
+                if (std::tolower(static_cast<unsigned char>(sql[a + k])) != kw[k]) return false;
+            return true;
+        };
+        while (i < n) {
+            if (prot[i]) { ++i; continue; }
+            std::size_t j = i;
+            while (j < n && (std::isalnum(static_cast<unsigned char>(sql[j])) || sql[j] == '_')) ++j;
+            if (j == i) { ++i; continue; }
+            if (isKw(i, j, "begin")) stack.push_back({B_BEGIN, j});
+            else if (isKw(i, j, "case")) stack.push_back({B_CASE, j});
+            else if (isKw(i, j, "if")) stack.push_back({B_IF, j});
+            else if (isKw(i, j, "loop")) stack.push_back({B_LOOP, j});
+            else if (isKw(i, j, "while")) stack.push_back({B_WHILE, j});
+            else if (isKw(i, j, "repeat")) stack.push_back({B_REPEAT, j});
+            else if (isKw(i, j, "end")) {
+                if (!stack.empty()) {
+                    const std::size_t from = stack.back().second;
+                    for (std::size_t k = from; k <= j && k < n; ++k) prot[k] = 1;
+                    stack.pop_back();
+                }
+            }
+            i = j;
+        }
+
+        // Pass 3: split on un-protected ';'.
+        std::size_t start = 0;
+        for (std::size_t k = 0; k <= n; ++k) {
+            if (k == n || (sql[k] == ';' && !prot[k])) {
+                std::string stmt = sql.substr(start, k - start);
+                std::size_t a = 0, b = stmt.size();
+                while (a < b && std::isspace(static_cast<unsigned char>(stmt[a]))) ++a;
+                while (b > a && std::isspace(static_cast<unsigned char>(stmt[b - 1]))) --b;
+                if (a < b) out.push_back(stmt.substr(a, b - a));
+                start = k + 1;
+            }
+        }
+    }
+
+    inline bool readSqlFile(const std::string &path, std::string &out) {
+        std::ifstream f(path, std::ios::binary);
+        if (!f) return false;
+        std::ostringstream ss;
+        ss << f.rdbuf();
+        out = ss.str();
+        return true;
+    }
+
+    inline bool endsWith(const std::string &s, const std::string &suffix) {
+        if (suffix.size() > s.size()) return false;
+        return s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+    }
+
+    // Run a SQL script held in memory. Returns the last failure (if any); when
+    // stopOnError is false every statement is attempted and the last error wins.
+    inline Status runScriptText(const std::string &sql, const ScriptOptions &opts = {},
+                                std::size_t *executed = nullptr) {
+        std::vector<std::string> stmts;
+        splitSqlScript(sql, stmts);
+        std::size_t done = 0;
+        Status lastErr = Status::OK();
+        for (const auto &s: stmts) {
+            const auto st = detail::runDdl(opts, s);
+            if (!st.ok()) {
+                lastErr = st;
+                if (opts.stopOnError) { if (executed) *executed = done; return st; }
+            } else {
+                ++done;
+            }
+        }
+        if (executed) *executed = done;
+        return lastErr;
+    }
+
+    // Run an explicit list of SQL file paths.
+    inline Status runScripts(const std::vector<std::string> &files, const ScriptOptions &opts = {},
+                             std::vector<ScriptResult> *perFile = nullptr) {
+        Status lastErr = Status::OK();
+        bool anyFail = false;
+        for (const auto &f: files) {
+            ScriptResult r;
+            r.path = f;
+            std::string content;
+            if (!readSqlFile(f, content)) {
+                r.status = Status::error(ErrorCode::IoError,
+                                         "dbmw::util: cannot read file: " + f);
+                anyFail = true;
+                if (perFile) perFile->push_back(r);
+                if (opts.stopOnError) return r.status;
+                lastErr = r.status;
+                continue;
+            }
+            std::vector<std::string> stmts;
+            splitSqlScript(content, stmts);
+            r.statements = stmts.size();
+            r.status = runScriptText(content, opts, &r.executed);
+            if (!r.status.ok()) {
+                anyFail = true;
+                if (perFile) perFile->push_back(r);
+                if (opts.stopOnError) return r.status;
+                lastErr = r.status;
+                continue;
+            }
+            if (perFile) perFile->push_back(r);
+        }
+        return anyFail ? lastErr : Status::OK();
+    }
+
+    // Recursively (or flat) collect *.sql files under a directory and run them in
+    // sorted path order.
+    inline Status runScriptsInDir(const std::string &dir, const ScriptOptions &opts = {},
+                                  std::vector<ScriptResult> *perFile = nullptr) {
+        std::error_code ec;
+        if (!std::filesystem::exists(dir, ec))
+            return Status::error(ErrorCode::IoError, "dbmw::util: directory not found: " + dir);
+        std::vector<std::string> files;
+        const auto collect = [&](const std::string &p) {
+            std::string ext = opts.extension.empty() ? ".sql" : opts.extension;
+            if (endsWith(p, ext)) files.push_back(p);
+        };
+        if (opts.recursive) {
+            for (auto it = std::filesystem::recursive_directory_iterator(dir, ec);
+                 it != std::filesystem::recursive_directory_iterator(); ++it) {
+                if (ec) break;
+                std::error_code e2;
+                if (it->is_regular_file(e2)) collect(it->path().string());
+            }
+        } else {
+            for (auto it = std::filesystem::directory_iterator(dir, ec);
+                 it != std::filesystem::directory_iterator(); ++it) {
+                if (ec) break;
+                std::error_code e2;
+                if (it->is_regular_file(e2)) collect(it->path().string());
+            }
+        }
+        if (ec) return Status::error(ErrorCode::IoError,
+                                     "dbmw::util: failed to walk directory " + dir + ": " + ec.message());
+        std::sort(files.begin(), files.end());
+        return runScripts(files, opts, perFile);
+    }
+
     inline Status call(const std::string &sql, const Params &params,
                        std::int64_t &affected, const CallOptions &opts = {}) {
         affected = 0;
@@ -995,6 +1211,189 @@ namespace dbmw::async::util {
         dropIndex(table, name, [p](OpResult &&r) { p->set_value(std::move(r)); }, opts);
         return fut;
     }
+
+    // ----------------------------------------------------------------------------
+    // Script execution (async): run a script string, an explicit file list, or all
+    // *.sql files under a directory. Statements execute sequentially; the run
+    // completes with a single ExecResult (first failure wins, or OK).
+    // ----------------------------------------------------------------------------
+
+    namespace detail {
+        struct ScriptRunState {
+            std::vector<std::string> files;
+            common::util::ScriptOptions opts;
+            std::size_t fileIndex = 0;
+            std::vector<common::util::ScriptResult> results;
+            bool useText = false;
+            ExecCallback userCb;
+        };
+
+        inline void scriptRunStatement(std::shared_ptr<ScriptRunState> st,
+                                        std::string path,
+                                        std::vector<std::string> stmts,
+                                        std::size_t idx, std::size_t executed);
+
+        inline void scriptRunFile(std::shared_ptr<ScriptRunState> st);
+
+        inline void scriptRunStatement(std::shared_ptr<ScriptRunState> st,
+                                        std::string path,
+                                        std::vector<std::string> stmts,
+                                        std::size_t idx, std::size_t executed) {
+            if (idx >= stmts.size()) {
+                common::util::ScriptResult fr;
+                fr.path = std::move(path);
+                fr.statements = stmts.size();
+                fr.executed = executed;
+                fr.status = common::Status::OK();
+                st->results.push_back(std::move(fr));
+                if (st->useText) {
+                    ExecResult r;
+                    if (st->userCb) st->userCb(std::move(r));
+                } else {
+                    scriptRunFile(st);
+                }
+                return;
+            }
+            std::string s = stmts[idx];
+            const common::util::ScriptOptions opts = st->opts;
+            const std::string ds = opts.dataSource;
+            auto cb = [st, path, stmts, idx, executed](ExecResult &&r) mutable {
+                if (!r.status.ok()) {
+                    common::util::ScriptResult fr;
+                    fr.path = path;
+                    fr.statements = stmts.size();
+                    fr.executed = executed;
+                    fr.status = r.status;
+                    st->results.push_back(std::move(fr));
+                    if (st->opts.stopOnError) {
+                        ExecResult out;
+                        out.status = r.status;
+                        if (st->userCb) st->userCb(std::move(out));
+                        return;
+                    }
+                    scriptRunStatement(st, std::move(path), std::move(stmts), idx + 1, executed);
+                } else {
+                    scriptRunStatement(st, std::move(path), std::move(stmts), idx + 1, executed + 1);
+                }
+            };
+            const common::util::detail::ExecScope scope(opts);
+            if (ds.empty()) async::execute(std::move(s), common::Params{}, std::move(cb), async::Options{});
+            else async::execute(ds, std::move(s), common::Params{}, std::move(cb), async::Options{});
+        }
+
+        inline void scriptRunFile(std::shared_ptr<ScriptRunState> st) {
+            if (st->fileIndex >= st->files.size()) {
+                ExecResult r;
+                for (const auto &fr: st->results)
+                    if (!fr.status.ok()) { r.status = fr.status; break; }
+                if (st->userCb) st->userCb(std::move(r));
+                return;
+            }
+            const std::string path = st->files[st->fileIndex++];
+            std::string content;
+            if (!common::util::readSqlFile(path, content)) {
+                common::util::ScriptResult fr;
+                fr.path = path;
+                fr.status = common::Status::error(common::ErrorCode::IoError, "dbmw::util: cannot read file: " + path);
+                st->results.push_back(std::move(fr));
+                if (st->opts.stopOnError) {
+                    ExecResult out;
+                    out.status = fr.status;
+                    if (st->userCb) st->userCb(std::move(out));
+                    return;
+                }
+                scriptRunFile(st);
+                return;
+            }
+            std::vector<std::string> stmts;
+            common::util::splitSqlScript(content, stmts);
+            scriptRunStatement(st, path, std::move(stmts), 0, 0);
+        }
+    }
+
+    inline Handle runScriptText(std::string sql, ExecCallback cb, common::util::ScriptOptions opts = {}) {
+        auto st = std::make_shared<detail::ScriptRunState>();
+        st->useText = true;
+        st->opts = std::move(opts);
+        st->userCb = std::move(cb);
+        std::vector<std::string> stmts;
+        common::util::splitSqlScript(sql, stmts);
+        detail::scriptRunStatement(st, "<text>", std::move(stmts), 0, 0);
+        return Handle();
+    }
+
+    inline Handle runScripts(const std::vector<std::string> &files, ExecCallback cb,
+                             common::util::ScriptOptions opts = {}) {
+        auto st = std::make_shared<detail::ScriptRunState>();
+        st->files = files;
+        st->opts = std::move(opts);
+        st->userCb = std::move(cb);
+        detail::scriptRunFile(st);
+        return Handle();
+    }
+
+    inline Handle runScriptsInDir(const std::string &dir, ExecCallback cb,
+                                  common::util::ScriptOptions opts = {}) {
+        std::error_code ec;
+        if (!std::filesystem::exists(dir, ec)) {
+            ExecResult r;
+            r.status = common::Status::error(common::ErrorCode::IoError, "dbmw::util: directory not found: " + dir);
+            if (cb) cb(std::move(r));
+            return Handle();
+        }
+        std::vector<std::string> files;
+        const auto collect = [&](const std::string &p) {
+            const std::string ext = opts.extension.empty() ? ".sql" : opts.extension;
+            if (common::util::endsWith(p, ext)) files.push_back(p);
+        };
+        if (opts.recursive) {
+            for (auto it = std::filesystem::recursive_directory_iterator(dir, ec);
+                 it != std::filesystem::recursive_directory_iterator(); ++it) {
+                if (ec) break;
+                std::error_code e2;
+                if (it->is_regular_file(e2)) collect(it->path().string());
+            }
+        } else {
+            for (auto it = std::filesystem::directory_iterator(dir, ec);
+                 it != std::filesystem::directory_iterator(); ++it) {
+                if (ec) break;
+                std::error_code e2;
+                if (it->is_regular_file(e2)) collect(it->path().string());
+            }
+        }
+        if (ec) {
+            ExecResult r;
+            r.status = common::Status::error(common::ErrorCode::IoError,
+                                    "dbmw::util: failed to walk directory " + dir + ": " + ec.message());
+            if (cb) cb(std::move(r));
+            return Handle();
+        }
+        std::sort(files.begin(), files.end());
+        return runScripts(files, std::move(cb), opts);
+    }
+
+    inline std::future<ExecResult> runScriptText(std::string sql, common::util::ScriptOptions opts = {}) {
+        auto p = std::make_shared<std::promise<ExecResult> >();
+        auto fut = p->get_future();
+        runScriptText(std::move(sql), [p](ExecResult &&r) { p->set_value(std::move(r)); }, std::move(opts));
+        return fut;
+    }
+
+    inline std::future<ExecResult> runScripts(const std::vector<std::string> &files,
+                                              common::util::ScriptOptions opts = {}) {
+        auto p = std::make_shared<std::promise<ExecResult> >();
+        auto fut = p->get_future();
+        runScripts(files, [p](ExecResult &&r) { p->set_value(std::move(r)); }, std::move(opts));
+        return fut;
+    }
+
+    inline std::future<ExecResult> runScriptsInDir(const std::string &dir,
+                                                   common::util::ScriptOptions opts = {}) {
+        auto p = std::make_shared<std::promise<ExecResult> >();
+        auto fut = p->get_future();
+        runScriptsInDir(dir, [p](ExecResult &&r) { p->set_value(std::move(r)); }, std::move(opts));
+        return fut;
+    }
 }
 
 #if defined(DBMW_ENABLE_ASYNC_CORO)
@@ -1051,6 +1450,42 @@ namespace dbmw::async::util {
         co_return co_await Awaiter(
             [spec = std::move(spec), opts](typename Awaiter::Callback cb) mutable {
                 createIndex(spec, std::move(cb), opts);
+            });
+    }
+
+    inline Task<ExecResult> runScriptTextAsync(std::string sql, common::util::ScriptOptions opts = {}) {
+        using Awaiter = async::detail::OpAwaiter<ExecResult>;
+        const common::util::detail::ExecScope scope(opts);
+        std::vector<std::string> stmts;
+        common::util::splitSqlScript(sql, stmts);
+        ExecResult res;
+        for (const auto &s: stmts) {
+            ExecResult r = co_await Awaiter(
+                [s, opts](typename Awaiter::Callback cb) mutable {
+                    if (opts.dataSource.empty())
+                        async::execute(s, common::Params{}, std::move(cb), async::Options{});
+                    else
+                        async::execute(opts.dataSource, s, common::Params{}, std::move(cb), async::Options{});
+                });
+            if (!r.status.ok()) { res.status = r.status; if (opts.stopOnError) co_return res; }
+        }
+        co_return res;
+    }
+
+    inline Task<ExecResult> runScriptsAsync(std::vector<std::string> files,
+                                            common::util::ScriptOptions opts = {}) {
+        using Awaiter = async::detail::OpAwaiter<ExecResult>;
+        co_return co_await Awaiter(
+            [files = std::move(files), opts](typename Awaiter::Callback cb) mutable {
+                runScripts(files, std::move(cb), opts);
+            });
+    }
+
+    inline Task<ExecResult> runScriptsInDirAsync(std::string dir, common::util::ScriptOptions opts = {}) {
+        using Awaiter = async::detail::OpAwaiter<ExecResult>;
+        co_return co_await Awaiter(
+            [dir = std::move(dir), opts](typename Awaiter::Callback cb) mutable {
+                runScriptsInDir(dir, std::move(cb), opts);
             });
     }
 }

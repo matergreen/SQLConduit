@@ -1073,6 +1073,18 @@ collection; other drivers fall back to a single result set. MySQL's `query` / `e
 the remaining result sets (otherwise the connection is stuck in `Commands out of sync`); dropped
 sets are logged as WARN with a hint to use `queryAll()`.
 
+### Script execution (directory / file list / in-memory)
+
+`util` also offers bulk script execution: `runScriptsInDir` (recursive / flat `.sql` collection),
+`runScripts` (explicit file list) and `runScriptText` (in-memory script). Statement splitting via
+`splitSqlScript` runs three passes — first masking string literals and line/block comments, then the
+whole `BEGIN/CASE/IF/LOOP/WHILE/REPEAT … END` compound block, then splitting on unmasked `;` and
+dropping blank fragments — so semicolons inside a MySQL procedure body are never split by mistake.
+
+- Governance: each statement goes through `detail::runDdl`, the same path as `createRoutine` / `createIndex` (pinned to primary, `shadow` cleared, `NonIdempotent` by default, cache invalidated).
+- Errors: a `readSqlFile` failure or missing directory yields `ErrorCode::IoError`; with `stopOnError=true` (default) it stops at the first error, with `false` it runs everything and the last error wins; per-file `ScriptResult` carries `path/status/statements/executed`.
+- Async: `async::util` ships the same callback / future / coroutine forms; each statement is wrapped in `ExecScope` and runs through `async::execute`.
+
 ### Governance (invariants)
 
 | # | Behaviour |
@@ -1097,8 +1109,8 @@ while `CREATE PROCEDURE ... END; DROP TABLE t` is **still blocked**.
 
 ### Known limitations
 
-1. **Multiple result sets**: `CALL` on MySQL / SQL Server can return several; v0.5.1 guarantees the first only.
-2. **OUT / INOUT parameters**: `Params` is input-only, unsupported in this release.
+1. **Multiple result sets**: MySQL / SQL Server `CALL` now collects every result set (see design doc §14); other drivers fall back to one.
+2. **OUT / INOUT parameters**: supported for MySQL (needs `Session`) and postgres functions; postgres procedures, SQL Server and the async path return `NotSupported` (see design doc §14).
 3. **DDL inside a transaction**: MySQL commits implicitly and cannot roll back; util cannot change that, so DDL runs outside transactions by default.
 4. **No dialect translation for routine bodies**: keep one script per dialect and let util manage and run them.
 

@@ -683,12 +683,12 @@ namespace dbmw::common::util {
             std::size_t j = i;
             while (j < n && (std::isalnum(static_cast<unsigned char>(sql[j])) || sql[j] == '_')) ++j;
             if (j == i) { ++i; continue; }
-            if (isKw(i, j, "begin")) stack.push_back({B_BEGIN, j});
-            else if (isKw(i, j, "case")) stack.push_back({B_CASE, j});
-            else if (isKw(i, j, "if")) stack.push_back({B_IF, j});
-            else if (isKw(i, j, "loop")) stack.push_back({B_LOOP, j});
-            else if (isKw(i, j, "while")) stack.push_back({B_WHILE, j});
-            else if (isKw(i, j, "repeat")) stack.push_back({B_REPEAT, j});
+            if (isKw(i, j, "begin")) stack.emplace_back(B_BEGIN, j);
+            else if (isKw(i, j, "case")) stack.emplace_back(B_CASE, j);
+            else if (isKw(i, j, "if")) stack.emplace_back(B_IF, j);
+            else if (isKw(i, j, "loop")) stack.emplace_back(B_LOOP, j);
+            else if (isKw(i, j, "while")) stack.emplace_back(B_WHILE, j);
+            else if (isKw(i, j, "repeat")) stack.emplace_back(B_REPEAT, j);
             else if (isKw(i, j, "end")) {
                 if (!stack.empty()) {
                     const std::size_t from = stack.back().second;

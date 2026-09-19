@@ -37,7 +37,16 @@ namespace dbmw::core {
         clock::time_point last_;
     };
 
-    class RateLimiter {
+    class IRateLimiter {
+    public:
+        virtual ~IRateLimiter() = default;
+
+        virtual bool acquire(std::uint64_t fingerprint) = 0;
+
+        virtual bool usesFingerprint() const { return false; }
+    };
+
+    class RateLimiter : public IRateLimiter {
     public:
         RateLimiter(double globalQps, double perFpQps, int burst, std::string fpMode)
             : perFpQps_(perFpQps), fpMode_(std::move(fpMode)) {
@@ -47,11 +56,11 @@ namespace dbmw::core {
             }
         }
 
-        bool usesFingerprint() const {
+        bool usesFingerprint() const override {
             return fpMode_ != "off" && perFpQps_ > 0;
         }
 
-        bool acquire(std::uint64_t fp) {
+        bool acquire(std::uint64_t fp) override {
             if (!global_) return true;
             if (!global_->tryAcquire()) return false;
             if (fp != 0 && fpMode_ != "off" && perFpQps_ > 0) {

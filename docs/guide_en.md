@@ -482,6 +482,53 @@ Token-bucket rate limiting, failing fast rather than flooding the pool and then 
 - `burst`: burst capacity, 0 = equal to the corresponding qps.
 - `fingerprint_mode`: `off` (no fingerprint) / `template` (structured template) / `full` (template + params). Fingerprints are computed only when fingerprint limiting is enabled; a pure total-volume scenario pays no such cost.
 
+### Pluggable rate limiter (custom algorithm)
+
+The built-in `RateLimiter` is the default implementation of `core::IRateLimiter`
+(`acquire(fingerprint)` uses a token bucket). To swap the algorithm — sliding window,
+Redis-backed centralized limiting, per-tenant quota, constant allow, etc. — just implement
+this interface and mount it on the middleware; no call site changes are required:
+
+```cpp
+#include "dbmw/dbmw.h"
+#include "dbmw/core/rate_limiter.h"
+
+class SlidingWindowLimiter : public dbmw::core::IRateLimiter {
+public:
+    bool acquire(std::uint64_t fingerprint) override {
+        // return true=allow; false=throttled (middleware turns it into RateLimited, retryable=false)
+        return window_.allow(fingerprint);
+    }
+    // if you don't limit per fingerprint, keep the default usesFingerprint()==false
+};
+```
+
+Two ways to mount it:
+
+- **Global default**: `DBMW::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());`
+  Any data source that does not explicitly specify a limiter falls back to this default when
+  `rate_limit` is not enabled in config.
+- **Per-source override**: pass a `shared_ptr<IRateLimiter>` to `DataSourceOptions::rate_limiter`
+  (or `GroupOptions::rate_limiter`); that source uses your implementation, **taking priority over
+  the global default**.
+
+```cpp
+dbmw::DBMW::init("datasources.json");
+
+// global default: every source without an explicit limiter uses the sliding window
+dbmw::DBMW::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());
+
+// a specific source gets a high-throughput allow implementation (tests / allowlist)
+dbmw::core::DataSourceOptions opts;
+opts.rate_limiter = std::make_shared<dbmw::core::RateLimiter>(100000.0, 0.0, 100000, "off");
+mgr.addDataSource(cfg, opts);
+```
+
+Priority (high → low): `opts.rate_limiter` (per source) > config `rate_limit` (a `RateLimiter`
+built from `global_qps`) > `DBMW::setDefaultRateLimiter` (global default).
+The call sites `preGate` / `gateSession` only call `acquire`, so swapping the algorithm is
+completely transparent and non-intrusive to upper layers.
+
 ### SQL auditing & interception (sql_audit)
 
 Lightweight static analysis of SQL before execution (heuristic classification, not a full parser — may misjudge dynamic SQL / stored procedures). On a policy hit, `action` decides:
@@ -511,6 +558,48 @@ Lightweight static analysis of SQL before execution (heuristic classification, n
 - `blacklist_fingerprints`: hit = intercept; `whitelist_fingerprints`: when non-empty, "allow-list only" — everything else is intercepted (allow-list mode).
 
 Auditing runs at the `DataSource` entry point for single `query`/`execute` calls; `withSession`/`transaction` statements are assembled temporarily by the user callback and are not visible at the entry point, so they sink down to the `Session` for per-statement checks, and only run on a `Session` that explicitly enabled auditing (never double-audited).
+
+### Custom interceptors (mount and use)
+
+`ISqlInterceptor` is a globally pluggable SPI covering the full lifecycle of one SQL statement:
+
+- `onRoute(dataSource, sql, type, ctx)`: before/after routing decisions; can read/rewrite `SqlContext` (traceId, tenantId, shadow…).
+- `beforeExecution(view)`: the final gate before execution; returning a non-`ok()` `Status` intercepts directly (e.g. tenant quota, canary switch).
+- `afterExecution(view)`: post-execution callback (success or failure); record metrics, emit spans, redact.
+- `onRow(view, row)`: per-row callback (empty by default); handy for row-level redaction or sampling.
+- `onCompletion(view)`: end of the whole statement, fired regardless of success; concurrent top-level calls each trigger it independently once.
+
+Mounting takes one line and is globally effective — no call site changes:
+
+```cpp
+class TenantQuotaInterceptor : public dbmw::core::ISqlInterceptor {
+public:
+    void onRoute(const std::string &, const std::string &, common::OperationType,
+                 common::SqlContext &ctx) override {
+        // e.g. stamp a canary flag based on ctx.tenantId
+    }
+    common::Status beforeExecution(const dbmw::core::ExecutionView &view) override {
+        if (overQuota(view.ctx.tenantId))
+            return common::Status::error(common::ErrorCode::SqlBlocked, "tenant over quota");
+        return common::Status::OK();
+    }
+    void afterExecution(const dbmw::core::ExecutionView &view) override { /* metrics */ }
+    void onCompletion(const dbmw::core::ExecutionView &view) override { /* cleanup */ }
+};
+
+dbmw::DBMW::addInterceptor(std::make_shared<TenantQuotaInterceptor>());
+```
+
+- Global registry: `core::InterceptorRegistry::add / clear / snapshot / enabled / setEnabled`.
+  Operate the registry directly when you don't want the facade; `setEnabled(false)` turns the
+  whole interceptor chain off without deleting instances.
+- Robustness: exceptions thrown inside an interceptor are swallowed by the middleware (a SPI error
+  must not take down the business); the interceptor chain has a recursion-depth guard per thread
+  (cap 64) to avoid infinite recursion if `beforeExecution` triggers more SQL.
+- Gate-separation invariant (I1): interception runs only at the `DataSource` entry point (`preGate`)
+  and per-statement inside `Session`; group forwarding to leaves goes through the `*Ungated` internal
+  path and **does not re-trigger** interception or rate limiting, so a per-source limiter is never
+  charged twice.
 
 ### Query result cache (query_cache)
 

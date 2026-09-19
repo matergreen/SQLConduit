@@ -529,6 +529,47 @@ dbmw 不执行选主、租约或 fencing，因此自动写切换默认拒绝启�
 - `burst`：突发容量，0 = 等于对应 qps。
 - `fingerprint_mode`：`off`（不按指纹）/ `template`（结构化模板）/ `full`（模板+参数）。只有启用指纹限流时才计算指纹，纯总量场景不付这笔开销。
 
+### 可插拔限流器（自定义算法）
+
+内置的 `RateLimiter` 是 `core::IRateLimiter` 的默认实现（`acquire(fingerprint)` 走令牌桶）。
+要换算法——滑动窗口、Redis 集中式限流、按租户配额、恒定放行等——只需实现该接口并挂到中间件，无需改动任何调用点：
+
+```cpp
+#include "dbmw/dbmw.h"
+#include "dbmw/core/rate_limiter.h"
+
+class SlidingWindowLimiter : public dbmw::core::IRateLimiter {
+public:
+    bool acquire(std::uint64_t fingerprint) override {
+        // 返回 true=放行；false=限流（中间件转成 RateLimited，retryable=false）
+        return window_.allow(fingerprint);
+    }
+    // 不按指纹限流时保持默认 usesFingerprint()==false 即可
+};
+```
+
+两种挂载方式：
+
+- **全局默认**：`DBMW::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());`
+  之后任意未显式指定限流器的数据源，在配置未启用 `rate_limit` 时回退到这个默认实现。
+- **逐数据源覆盖**：`DataSourceOptions::rate_limiter`（或 `GroupOptions::rate_limiter`）传入
+  `shared_ptr<IRateLimiter>`，该数据源优先用你给的实现，**优先于全局默认**。
+
+```cpp
+dbmw::DBMW::init("datasources.json");
+
+// 全局默认：未显式指定的数据源都走滑动窗口
+dbmw::DBMW::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());
+
+// 某数据源单独挂一个高吞吐放行实现（测试 / 白名单）
+dbmw::core::DataSourceOptions opts;
+opts.rate_limiter = std::make_shared<dbmw::core::RateLimiter>(100000.0, 0.0, 100000, "off");
+mgr.addDataSource(cfg, opts);
+```
+
+优先级（高 → 低）：`opts.rate_limiter`（逐源） > 配置 `rate_limit`（按 global_qps 构造的 `RateLimiter`） > `DBMW::setDefaultRateLimiter`（全局默认）。
+调用点 `preGate` / `gateSession` 只调 `acquire`，因此替换算法对上层完全透明、零侵入。
+
 ### SQL 审计与拦截（sql_audit）
 
 执行前对 SQL 做轻量静态分析（启发式分类，非完整解析器，可能误判动态 SQL/存储过程）。命中策略时按 `action` 决定：
@@ -558,6 +599,43 @@ dbmw 不执行选主、租约或 fencing，因此自动写切换默认拒绝启�
 - `blacklist_fingerprints`：命中即拦截；`whitelist_fingerprints`：非空时"仅放行名单内"，其余一律拦截（允许列表模式）。
 
 审计在单条 `query`/`execute` 走 `DataSource` 入口时执行；`withSession`/`transaction` 的语句由用户回调临时拼出，入口处看不到，因此下沉到 `Session` 逐条把关，且只对会话显式启用审计的 `Session` 执行（不会重复审）。
+
+### 自定义拦截器（挂载即用）
+
+`ISqlInterceptor` 是全局可插拔的 SPI，覆盖一条 SQL 的完整生命周期：
+
+- `onRoute(dataSource, sql, type, ctx)`：路由决策前后，可改写/读取 `SqlContext`（traceId、tenantId、shadow…）。
+- `beforeExecution(view)`：执行前最后一道关，返回非 `ok()` 的 `Status` 直接拦截（如租户配额、灰度开关）。
+- `afterExecution(view)`：执行后（成功或失败）回调，可记指标、打点、脱敏。
+- `onRow(view, row)`：逐行回调（默认空实现），适合按行脱敏或采样。
+- `onCompletion(view)`：整条 SQL 收尾，无论成败都触发（并发顶层调用各自独立触发一次）。
+
+挂载只需一行，全局生效，无需改任何调用点：
+
+```cpp
+class TenantQuotaInterceptor : public dbmw::core::ISqlInterceptor {
+public:
+    void onRoute(const std::string &, const std::string &, common::OperationType,
+                 common::SqlContext &ctx) override {
+        // 例如按 ctx.tenantId 打灰度标记
+    }
+    common::Status beforeExecution(const dbmw::core::ExecutionView &view) override {
+        if (overQuota(view.ctx.tenantId))
+            return common::Status::error(common::ErrorCode::SqlBlocked, "tenant over quota");
+        return common::Status::OK();
+    }
+    void afterExecution(const dbmw::core::ExecutionView &view) override { /* 记指标 */ }
+    void onCompletion(const dbmw::core::ExecutionView &view) override { /* 收尾 */ }
+};
+
+dbmw::DBMW::addInterceptor(std::make_shared<TenantQuotaInterceptor>());
+```
+
+- 全局注册表：`core::InterceptorRegistry::add / clear / snapshot / enabled / setEnabled`。
+  不想经门面时可直接操作注册表；`setEnabled(false)` 可整体关闭拦截链而不删除实例。
+- 健壮性：拦截器内部抛异常会被中间件吞没（不让 SPI 错误拖垮业务）；同一线程内拦截链有递归深度守卫（上限 64 层），避免 `beforeExecution` 里再触发 SQL 造成无限递归。
+- 闸门分离不变量（I1）：拦截只在 `DataSource` 入口（`preGate`）与 `Session` 逐条语句处执行；
+  组转发叶子走 `*Ungated` 内部路径**不重复触发**拦截与限流，逐源挂载的限流器不会被重复扣令牌。
 
 ### 查询结果缓存（query_cache）
 

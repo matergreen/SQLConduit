@@ -193,12 +193,13 @@ namespace dbmw::core {
 
         constexpr std::chrono::milliseconds kUsePoolDefault{-1};
 
-        std::shared_ptr<RateLimiter> makeRateLimiter(const config::RateLimitConfig &cfg) {
-            if (!cfg.enabled || cfg.global_qps <= 0) return nullptr;
-            return std::make_shared<RateLimiter>(
-                static_cast<double>(cfg.global_qps),
-                static_cast<double>(cfg.per_fingerprint_qps),
-                cfg.burst, cfg.fingerprint_mode);
+        std::shared_ptr<IRateLimiter> makeRateLimiter(const config::RateLimitConfig &cfg) {
+            if (cfg.enabled && cfg.global_qps > 0)
+                return std::make_shared<RateLimiter>(
+                    static_cast<double>(cfg.global_qps),
+                    static_cast<double>(cfg.per_fingerprint_qps),
+                    cfg.burst, cfg.fingerprint_mode);
+            return DatabaseManager::defaultRateLimiter_;
         }
 
         std::string cacheKey(const std::string &sql, const common::Params &params) {
@@ -2152,7 +2153,7 @@ namespace dbmw::core {
         const config::RetryConfig &retry,
         const config::CircuitBreakerConfig &circuit,
         const config::CursorConfig &cursor,
-        std::shared_ptr<RateLimiter> rateLimiter,
+        std::shared_ptr<IRateLimiter> rateLimiter,
         const std::unordered_set<std::string> &replicaNames,
         bool,
         std::shared_ptr<ConnectionPool> &outPool,
@@ -2323,6 +2324,10 @@ namespace dbmw::core {
         return common::Status::OK();
     }
 
+    void DatabaseManager::setDefaultRateLimiter(std::shared_ptr<IRateLimiter> limiter) noexcept {
+        defaultRateLimiter_ = std::move(limiter);
+    }
+
     common::Status DatabaseManager::addDataSource(const config::DataSourceConfig &cfg,
                                                   const DataSourceOptions &opts) {
         if (cfg.name.empty()) {
@@ -2351,7 +2356,7 @@ namespace dbmw::core {
         config::RateLimitConfig defaultRate;
         std::shared_ptr<ConnectionPool> pool;
         std::shared_ptr<DataSource> source;
-        std::shared_ptr<RateLimiter> limiter = opts.rate_limiter;
+        std::shared_ptr<IRateLimiter> limiter = opts.rate_limiter;
         if (!limiter) limiter = makeRateLimiter(defaultRate);
         if (const auto st = buildSingleDataSource(
             cfg, runtimePool, opts.retry, opts.circuit_breaker, opts.cursor,

@@ -250,14 +250,14 @@ namespace dbmw {
     struct DataSourceOptions {
         config::RetryConfig retry = {};
         config::CircuitBreakerConfig circuit_breaker = {};
-        std::shared_ptr<RateLimiter> rate_limiter = nullptr;
+        std::shared_ptr<IRateLimiter> rate_limiter = nullptr;
         bool read_only = false;
         config::CursorConfig cursor = {};
         bool attach_heartbeat = true;
     };
 
     struct GroupOptions {
-        std::shared_ptr<RateLimiter> rate_limiter = nullptr;
+        std::shared_ptr<IRateLimiter> rate_limiter = nullptr;
         config::CursorConfig cursor = {};
         bool acknowledge_external_fencing = false;
         bool acknowledge_data_loss_and_duplicates = false;
@@ -268,7 +268,7 @@ namespace dbmw {
         DataSource(std::weak_ptr<ConnectionPool> pool, std::string name,
                    config::RetryConfig retry = {},
                    config::CircuitBreakerConfig circuitBreaker = {},
-                   std::shared_ptr<RateLimiter> rateLimiter = nullptr,
+                   std::shared_ptr<IRateLimiter> rateLimiter = nullptr,
                    bool readOnly = false, bool readReplica = false)
             : pool_(std::move(pool)), name_(std::move(name)), retry_(retry),
               circuitBreaker_(circuitBreaker), rateLimiter_(std::move(rateLimiter)),
@@ -278,7 +278,7 @@ namespace dbmw {
                    std::vector<std::shared_ptr<DataSource>> weightedReplicas,
                    std::chrono::milliseconds readAfterWrite,
                    bool fallbackToPrimary,
-                   std::shared_ptr<RateLimiter> rateLimiter = nullptr,
+                   std::shared_ptr<IRateLimiter> rateLimiter = nullptr,
                    bool readOnly = false,
                    std::vector<std::shared_ptr<DataSource>> failoverPrimaries = {},
                    bool requireHealthy = false,
@@ -466,7 +466,7 @@ namespace dbmw {
         std::chrono::milliseconds readAfterWrite_{0};
         bool fallbackToPrimary_ = true;
         mutable std::atomic<std::int64_t> lastWriteNs_{0};
-        std::shared_ptr<RateLimiter> rateLimiter_;
+        std::shared_ptr<IRateLimiter> rateLimiter_;
         bool readOnly_ = false;
         std::atomic<bool> readReplica_{false};
         std::vector<std::shared_ptr<DataSource>> failoverPrimaries_;
@@ -525,6 +525,10 @@ namespace dbmw {
 
         void shutdown(std::chrono::milliseconds grace = std::chrono::milliseconds(5000));
 
+        static void setDefaultRateLimiter(std::shared_ptr<IRateLimiter> limiter) noexcept;
+
+        inline static std::shared_ptr<IRateLimiter> defaultRateLimiter_;
+
         size_t dataSourceCount() const;
 
         std::vector<NamedPoolStats> allPoolStats() const;
@@ -545,7 +549,7 @@ namespace dbmw {
             const config::RetryConfig &retry,
             const config::CircuitBreakerConfig &circuit,
             const config::CursorConfig &cursor,
-            std::shared_ptr<RateLimiter> rateLimiter,
+            std::shared_ptr<IRateLimiter> rateLimiter,
             const std::unordered_set<std::string> &replicaNames,
             bool attachHeartbeat,
             std::shared_ptr<ConnectionPool> &outPool,

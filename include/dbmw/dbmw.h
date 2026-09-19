@@ -115,6 +115,8 @@ namespace dbmw
 
         static void clearInterceptors();
 
+        static void setDefaultRateLimiter(std::shared_ptr<core::IRateLimiter> limiter);
+
         static common::Status addDataSource(
             const config::DataSourceConfig &cfg,
             const core::DataSourceOptions &opts = core::DataSourceOptions{});

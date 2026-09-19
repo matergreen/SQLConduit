@@ -273,6 +273,10 @@ namespace dbmw {
         core::InterceptorRegistry::clear();
     }
 
+    void DBMW::setDefaultRateLimiter(std::shared_ptr<core::IRateLimiter> limiter) {
+        core::DatabaseManager::setDefaultRateLimiter(std::move(limiter));
+    }
+
     common::Status DBMW::addDataSource(
         const config::DataSourceConfig &cfg,
         const core::DataSourceOptions &opts) {

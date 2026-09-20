@@ -564,8 +564,8 @@ void testRoutinesAndCall(Fixture &f) {
 
     // 多结果集：PG 驱动未实现多结果集（supportsMultipleResultSets=false，回退为单结果集），
     // 故此处仅验证 queryAll 单结果集路径可用；专门的 multi-result-set 断言是 MySQL 专属。
-    std::vector<common::ResultSet> sets;
-    auto mSt = dbmw::DBMW::queryAll("SELECT 1 AS n; SELECT 2 AS n", {}, sets);
+    std::vector<ResultSet> sets;
+    auto mSt = dbmw::DBMW::queryAll("SELECT 1 AS n; SELECT 2 AS n", Params{}, sets);
     require(mSt.ok(), "queryAll failed on PG: " + mSt.message);
     require(!sets.empty(), "queryAll returned no result set on PG");
 

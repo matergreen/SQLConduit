@@ -12,24 +12,13 @@
 #include <stdexcept>
 #include <string>
 
-namespace {
-using dbmw::common::ErrorCode;
-using dbmw::common::Params;
-using dbmw::common::ResultSet;
-using dbmw::common::Status;
-using dbmw::common::Value;
-using dbmw::common::util::CallParam;
-using dbmw::common::util::CallParams;
-using dbmw::common::util::CallResult;
-using dbmw::common::util::Dialect;
-using dbmw::common::util::ParamDirection;
-using dbmw::common::util::RoutineKind;
-using dbmw::common::util::RoutineRef;
-
 // v0.5.0 实体映射层：OdbcItem 映射到 f.table（SQL Server 后端）。
 // 注意：dbmw::insertAs 不会自动追加 OUTPUT INSERTED.id（guide.md:271 明确不为 PG/ODBC
 // 自动补 RETURNING/OUTPUT），因此 insertAs 后 item.id 不被回填（与 PG 同性质缺囗，
 // 见 testEntityMapping 内注释）。其余列可正常读写映射。
+// 重要：实体与 RowMapper 特化必须放在匿名命名空间**之外**。若写进 `namespace {}` 内部，
+// `namespace dbmw::mapping {}` 会变成 `{anonymous}::dbmw::mapping`（而非特化 ::dbmw::mapping），
+// 且后续 dbmw::DBMW / dbmw::common 会被解析到这个新建的空嵌套命名空间而整片编译失败。
 struct OdbcItem {
     std::int64_t id = 0;
     std::string name;
@@ -49,6 +38,21 @@ namespace dbmw::mapping {
         }
     };
 }
+
+namespace {
+using dbmw::common::ErrorCode;
+using dbmw::common::Params;
+using dbmw::common::ResultSet;
+using dbmw::common::Status;
+using dbmw::common::Value;
+using dbmw::common::util::CallParam;
+using dbmw::common::util::CallParams;
+using dbmw::common::util::CallResult;
+using dbmw::common::util::Dialect;
+using dbmw::common::util::ParamDirection;
+using dbmw::common::util::RoutineKind;
+using dbmw::common::util::RoutineRef;
+
 int checks = 0;
 
 void require(bool condition, const std::string &message) {
@@ -328,8 +332,10 @@ void testRoutinesAndCall(Fixture &f) {
     // EXEC ... OUTPUT，dbmw 无法推断类型）。故 ODBC 不测试 INOUT，与 MySQL/PG 用例不同。
     // 多结果集：ODBC 驱动未实现多结果集（driver 限制，回退为单结果集），此处仅验证
     // queryAll 单结果集路径可用；专门的 multi-result-set 断言是 MySQL 专属。
+    // 注意：queryAll 有多个重载，第二参 {} 会在 Params / ParamBatch 之间产生歧义，
+    // 必须显式写 Params{}。
     std::vector<ResultSet> sets;
-    auto mSt = dbmw::DBMW::queryAll("SELECT 1 AS n; SELECT 2 AS n", {}, sets);
+    auto mSt = dbmw::DBMW::queryAll("SELECT 1 AS n; SELECT 2 AS n", Params{}, sets);
     require(mSt.ok(), "queryAll failed on ODBC: " + mSt.message);
     require(!sets.empty(), "queryAll returned no result set on ODBC");
 

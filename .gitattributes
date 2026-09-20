@@ -1,0 +1,4 @@
+# Shell scripts must keep LF line endings.
+# A CRLF shebang makes WSL/bash fail with "bad interpreter: /usr/bin/env bash^M",
+# so scripts/*.sh stay LF on every checkout (including Windows).
+*.sh text eol=lf

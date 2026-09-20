@@ -383,6 +383,8 @@ void testAsyncUtil(Fixture &f) {
     requireOk(dbmw::DBMW::execute("DROP FUNCTION IF EXISTS dbmw_it_aadd", d), "drop async function");
 }
 
+}
+
 int main() {
     Fixture fixture;
     try {

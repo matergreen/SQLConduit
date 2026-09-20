@@ -365,9 +365,13 @@ void testAsyncUtil(Fixture &f) {
     auto exec = dbmw::async::util::runScriptText(script).get();
     require(exec.status.ok(), "async runScriptText failed: " + exec.status.message);
 
+    // 注意：callAll 有 callback 重载（返回 async::Handle，无 .get()）与 future 重载
+    // （返回 future<MultiQueryResult>）两个版本。此处显式传 Options{}，使 callback 重载
+    // 因类型不匹配而失效，强制选中 future 重载，否则 {} 会被解析到 callback 重载导致 .get() 编不过。
+    dbmw::async::util::Options callAllOpts;
     auto mr = dbmw::async::util::callAll(
         "SELECT dbmw_it_aadd(?,?)",
-        dbmw::common::Params{std::int64_t(6), std::int64_t(7)}, {}).get();
+        dbmw::common::Params{std::int64_t(6), std::int64_t(7)}, callAllOpts).get();
     require(mr.status.ok(), "async callAll failed: " + mr.status.message);
     require(!mr.sets.empty() && !mr.sets.front().rows().empty(), "async callAll set missing");
     if (!mr.sets.empty() && !mr.sets.front().rows().empty()) {

@@ -1,5 +1,7 @@
 #include "dbmw/async/dbmw_async.h"
 #include "dbmw/dbmw.h"
+#include "dbmw/mapping.h"
+#include "dbmw/util.h"
 
 #include <chrono>
 #include <cstdio>
@@ -16,6 +18,37 @@ using dbmw::common::Params;
 using dbmw::common::ResultSet;
 using dbmw::common::Status;
 using dbmw::common::Value;
+using dbmw::common::util::CallParam;
+using dbmw::common::util::CallParams;
+using dbmw::common::util::CallResult;
+using dbmw::common::util::Dialect;
+using dbmw::common::util::ParamDirection;
+using dbmw::common::util::RoutineKind;
+using dbmw::common::util::RoutineRef;
+
+// v0.5.0 实体映射层：OdbcItem 映射到 f.table（SQL Server 后端）。
+// 注意：dbmw::insertAs 不会自动追加 OUTPUT INSERTED.id（guide.md:271 明确不为 PG/ODBC
+// 自动补 RETURNING/OUTPUT），因此 insertAs 后 item.id 不被回填（与 PG 同性质缺囗，
+// 见 testEntityMapping 内注释）。其余列可正常读写映射。
+struct OdbcItem {
+    std::int64_t id = 0;
+    std::string name;
+    std::int64_t qty = 0;
+    double amount = 0;
+    dbmw::common::Timestamp createdAt;
+};
+namespace dbmw::mapping {
+    template <> struct RowMapper<OdbcItem> {
+        static Mapping<OdbcItem> describe() {
+            return Mapping<OdbcItem>()
+                .field(&OdbcItem::id, "id", FieldFlags::PrimaryKey | FieldFlags::Generated)
+                .field(&OdbcItem::name, "name")
+                .field(&OdbcItem::qty, "qty")
+                .field(&OdbcItem::amount, "amount", FieldFlags::Lossy)
+                .field(&OdbcItem::createdAt, "created_at");
+        }
+    };
+}
 int checks = 0;
 
 void require(bool condition, const std::string &message) {
@@ -195,6 +228,160 @@ void testTransactionsPreparedBatchCursorAsync(Fixture &f) {
     require(dbmw::DBMW::poolStats(pool) && pool.borrowRequests > 0, "pool metrics empty");
     require(!dbmw::DBMW::slowSqlStats().empty(), "slow SQL metrics empty");
 }
+
+void testEntityMapping(Fixture &f) {
+    // 实体映射表复用 f.table 的裸名：ODBC f.table 无 schema 点号，quoteIdentifier 包双引号
+    // 在 SQL Server（QUOTED_IDENTIFIER ON）下可用，不会出现 PG 那样 schema.table 被当成
+    // 单标识符找不到关系的问题。
+    OdbcItem item;
+    item.name = "map_item_1";
+    item.qty = 11;
+    item.amount = 1.0;
+    item.createdAt = dbmw::common::Timestamp{std::chrono::system_clock::now()};
+    auto ins = dbmw::insertAs<OdbcItem>(f.table, item);
+    require(ins.status.ok(), "insertAs failed: " + ins.status.message);
+    require(ins.affected == 1, "insertAs affected mismatch");
+    // dbmw::insertAs 不会自动追加 OUTPUT INSERTED.id（guide.md:271 明确不为 PG/ODBC 自动补
+    // RETURNING/OUTPUT），因此 SQL Server 上 item.id 不被回填。此处硬断言暴露该缺囗；
+    // 修复方向：insertAs 对 SQL Server 自动补 OUTPUT INSERTED.<pk> 并在 applyGeneratedKeys 回填。
+    require(item.id > 0, "insertAs did not backfill generated id (SQL Server OUTPUT INSERTED gap?)");
+    const std::int64_t id = item.id;
+
+    auto got = dbmw::queryAs<OdbcItem>(
+        "SELECT id,name,qty,amount,created_at FROM " + f.table + " WHERE id=?",
+        Params{std::int64_t(id)});
+    require(got.status.ok(), "queryAs failed: " + got.status.message);
+    require(got.items.size() == 1, "queryAs wrong row count");
+    if (!got.items.empty()) {
+        require(got.items[0].name == "map_item_1", "mapped name mismatch");
+        require(got.items[0].qty == 11, "mapped qty mismatch");
+        require(got.items[0].amount == 1.0, "mapped amount mismatch");
+    }
+
+    item.qty = 99;
+    auto upd = dbmw::updateAs<OdbcItem>(f.table, item);
+    require(upd.status.ok() && upd.affected == 1, "updateAs failed");
+    auto got2 = dbmw::queryAs<OdbcItem>(
+        "SELECT id,name,qty,amount,created_at FROM " + f.table + " WHERE id=?",
+        Params{std::int64_t(id)});
+    require(got2.status.ok() && !got2.items.empty() && got2.items[0].qty == 99,
+            "updateAs did not persist");
+
+    OdbcItem b1; b1.name = "map_batch_1"; b1.qty = 1; b1.amount = 1.0;
+    b1.createdAt = dbmw::common::Timestamp{std::chrono::system_clock::now()};
+    OdbcItem b2; b2.name = "map_batch_2"; b2.qty = 2; b2.amount = 2.0;
+    b2.createdAt = dbmw::common::Timestamp{std::chrono::system_clock::now()};
+    auto batch = dbmw::insertBatchAs<OdbcItem>(f.table, {b1, b2});
+    require(batch.status.ok(), "insertBatchAs failed: " + batch.status.message);
+    require(batch.batch.totalAffected() == 2, "insertBatchAs affected mismatch");
+
+    std::uint64_t mappedRows = 0;
+    auto each = dbmw::queryEachAs<OdbcItem>(
+        "SELECT id,name,qty,amount,created_at FROM " + f.table +
+        " WHERE name LIKE 'map_%' ORDER BY id",
+        Params{}, [&](OdbcItem &&) { return true; }, mappedRows);
+    require(each.ok() && mappedRows >= 3, "queryEachAs mapped count mismatch");
+}
+
+void testScriptExecution(Fixture &f) {
+    const std::string script =
+        "INSERT INTO " + f.table + " (name, qty, amount, created_at) "
+        "VALUES ('script_a',1,1.0,GETDATE());\n"
+        "INSERT INTO " + f.table + " (name, qty, amount, created_at) "
+        "VALUES ('script_b',2,2.0,GETDATE());";
+    std::size_t executed = 0;
+    auto st = dbmw::common::util::runScriptText(script, {}, &executed);
+    require(st.ok(), "runScriptText failed: " + st.message);
+    require(executed == 2, "runScriptText executed count mismatch");
+
+    // 复合块里 BEGIN..END 内的 ';' 不得被拆分：splitSqlScript 第二趟屏蔽 BEGIN..END 整段。
+    const std::string proc = "CREATE PROCEDURE dbmw_it_script_proc AS SELECT 1 AS n";
+    auto procSt = dbmw::common::util::createRoutine(proc);
+    require(procSt.ok(), "createRoutine(procedure) failed: " + procSt.message);
+    std::int64_t dropped = 0;
+    requireOk(dbmw::DBMW::execute("DROP PROCEDURE dbmw_it_script_proc", dropped),
+              "drop script procedure");
+}
+
+void testRoutinesAndCall(Fixture &f) {
+    // 标量函数：SQL Server 用 {CALL fn(?)} 路径（Dialect::SqlServer 自动生成）。
+    require(dbmw::common::util::createRoutine(
+        "CREATE FUNCTION dbmw_it_add(@a INT, @b INT) RETURNS INT AS BEGIN RETURN @a + @b END").ok(),
+        "createRoutine(function) failed");
+    RoutineRef addRef{"dbmw_it_add", RoutineKind::Function};
+    CallParams addParams{CallParam(ParamDirection::In, std::int64_t(3)),
+                         CallParam(ParamDirection::In, std::int64_t(4))};
+    CallResult addRes;
+    dbmw::common::util::CallOptions addOpts;
+    addOpts.dialect = Dialect::SqlServer;
+    addOpts.returnsRows = true;
+    auto addSt = dbmw::common::util::call(addRef, addParams, addRes, addOpts);
+    require(addSt.ok(), "call(function) failed: " + addSt.message);
+    require(!addRes.sets.empty() && !addRes.sets.front().rows().empty(),
+            "function result set missing");
+    if (!addRes.sets.empty() && !addRes.sets.front().rows().empty()) {
+        const auto &v = addRes.sets.front().rows().front().data().begin()->second;
+        require(asInt(v) == 7, "function return mismatch");
+    }
+
+    // SQL Server 的 OUT/INOUT 参数被 makeCallPlan 显式拒绝（需 DECLARE @var <type> 后才能
+    // EXEC ... OUTPUT，dbmw 无法推断类型）。故 ODBC 不测试 INOUT，与 MySQL/PG 用例不同。
+    // 多结果集：ODBC 驱动未实现多结果集（driver 限制，回退为单结果集），此处仅验证
+    // queryAll 单结果集路径可用；专门的 multi-result-set 断言是 MySQL 专属。
+    std::vector<ResultSet> sets;
+    auto mSt = dbmw::DBMW::queryAll("SELECT 1 AS n; SELECT 2 AS n", {}, sets);
+    require(mSt.ok(), "queryAll failed on ODBC: " + mSt.message);
+    require(!sets.empty(), "queryAll returned no result set on ODBC");
+
+    // 返回结果集的存储过程：SQL Server 走 {CALL name()}（returnsRows=true）。
+    require(dbmw::common::util::createRoutine(
+        "CREATE PROCEDURE dbmw_it_rows AS SELECT 1 AS n").ok(),
+        "createRoutine(procedure) failed");
+    RoutineRef rowsRef{"dbmw_it_rows", RoutineKind::Procedure};
+    CallResult rowsRes;
+    dbmw::common::util::CallOptions rowsOpts;
+    rowsOpts.dialect = Dialect::SqlServer;
+    rowsOpts.returnsRows = true;
+    auto rowsSt = dbmw::common::util::call(rowsRef, CallParams{}, rowsRes, rowsOpts);
+    require(rowsSt.ok(), "call(procedure) failed: " + rowsSt.message);
+    require(!rowsRes.sets.empty() && !rowsRes.sets.front().rows().empty(),
+            "procedure result set missing");
+
+    std::int64_t d = 0;
+    requireOk(dbmw::DBMW::execute("DROP FUNCTION dbmw_it_add", d), "drop fn add");
+    requireOk(dbmw::DBMW::execute("DROP PROCEDURE dbmw_it_rows", d), "drop procedure rows");
+}
+
+void testAsyncUtil(Fixture &f) {
+    const std::string fn =
+        "CREATE FUNCTION dbmw_it_aadd(@a INT, @b INT) RETURNS INT AS BEGIN RETURN @a + @b END";
+    auto fr = dbmw::async::util::createRoutine(fn).get();
+    require(fr.status.ok(), "async createRoutine failed: " + fr.status.message);
+
+    const std::string script =
+        "INSERT INTO " + f.table + " (name, qty, amount, created_at) "
+        "VALUES ('async_script',1,1.0,GETDATE());";
+    auto exec = dbmw::async::util::runScriptText(script).get();
+    require(exec.status.ok(), "async runScriptText failed: " + exec.status.message);
+
+    // 注意：callAll 有 callback 重载（返回 async::Handle，无 .get()）与 future 重载
+    // （返回 future<MultiQueryResult>）两个版本。此处显式传 Options{}，使 callback 重载
+    // 因类型不匹配而失效，强制选中 future 重载，否则 {} 会被解析到 callback 重载导致 .get() 编不过。
+    dbmw::async::util::Options callAllOpts;
+    auto mr = dbmw::async::util::callAll(
+        "SELECT dbmw_it_aadd(?, ?)",
+        dbmw::common::Params{std::int64_t(6), std::int64_t(7)}, callAllOpts).get();
+    require(mr.status.ok(), "async callAll failed: " + mr.status.message);
+    require(!mr.sets.empty() && !mr.sets.front().rows().empty(), "async callAll set missing");
+    if (!mr.sets.empty() && !mr.sets.front().rows().empty()) {
+        const auto &val = mr.sets.front().rows().front().data().begin()->second;
+        require(asInt(val) == 13, "async function return mismatch");
+    }
+
+    std::int64_t d = 0;
+    requireOk(dbmw::DBMW::execute("DROP FUNCTION dbmw_it_aadd", d), "drop async function");
+}
+
 }
 
 int main() {
@@ -203,6 +390,10 @@ int main() {
         fixture.start();
         testTypesKeysAndErrors(fixture);
         testTransactionsPreparedBatchCursorAsync(fixture);
+        testEntityMapping(fixture);
+        testScriptExecution(fixture);
+        testRoutinesAndCall(fixture);
+        testAsyncUtil(fixture);
         std::cout << "ODBC SQL Server integration test passed (" << checks << " checks)\n";
         return 0;
     } catch (const std::exception &error) {

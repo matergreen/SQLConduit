@@ -140,6 +140,9 @@ namespace dbmw {
 
         [[nodiscard]] bool didWrite() const { return didWrite_.load(); }
 
+        // 会话所属数据源名，供上层按方言生成 SQL（如 mapping 层的标识符引号）。
+        [[nodiscard]] const std::string &dataSourceName() const { return dataSource_; }
+
     private:
         friend class DataSource;
 

@@ -6,6 +6,9 @@
 #include "dbmw/core/database_manager.h"
 #include "dbmw/dbmw.h"
 #include "dbmw/async/dbmw_async.h"
+// 标识符引号必须按方言生成（MySQL 用反引号，PG/SQL Server 用双引号），
+// 方言枚举与方言感知的 quoteIdent 定义在 util.h。
+#include "dbmw/util.h"
 
 #if defined(DBMW_ENABLE_ASYNC_CORO)
 #include "dbmw/async/task.h"
@@ -618,11 +621,27 @@ namespace dbmw::mapping {
         return out;
     }
 
-    inline std::string joinIdentifiers(const std::vector<std::string> &cols) {
+    // ---- 方言解析 ----------------------------------------------------------
+    // dialectOf(session)：按会话所属数据源的 driverType 判定方言，最可靠。
+    // defaultDialect()：无 session 的写入 API（走默认数据源）用它；未注册数据源时返回
+    // Dialect::Auto，引号退化为双引号，与 insertSql<T>(table) 的历史行为保持一致。
+    inline common::util::Dialect dialectOf(const core::Session &s) {
+        return common::util::detectDialect(s.dataSourceName());
+    }
+
+    inline common::util::Dialect defaultDialect() {
+        return common::util::detectDialect(std::string());
+    }
+
+    // 故意不在这里再包一层同名的 quoteIdent：Dialect 参数属于 dbmw::common::util，
+    // ADL 会把 util 的 quoteIdent 一起拉进候选集，导致调用二义。调用点一律写全限定。
+
+    inline std::string joinIdentifiers(const std::vector<std::string> &cols,
+                                       const common::util::Dialect d = common::util::Dialect::Auto) {
         std::string s;
         for (std::size_t i = 0; i < cols.size(); ++i) {
             if (i) s += ", ";
-            s += common::quoteIdentifier(cols[i]);
+            s += common::util::quoteIdent(cols[i], d);
         }
         return s;
     }
@@ -636,24 +655,29 @@ namespace dbmw::mapping {
         return s;
     }
 
-    inline std::string buildAssignList(const std::vector<std::string> &cols) {
+    inline std::string buildAssignList(const std::vector<std::string> &cols,
+                                       const common::util::Dialect d = common::util::Dialect::Auto) {
         std::string s;
         for (std::size_t i = 0; i < cols.size(); ++i) {
             if (i) s += ", ";
-            s += common::quoteIdentifier(cols[i]) + " = ?";
+            s += common::util::quoteIdent(cols[i], d) + " = ?";
         }
         return s;
     }
 
+    // 注意：不传 Dialect 时是「方言中立」构造器，用双引号（PG/SQL Server 风格）。
+    // MySQL 上请走 insertAs/updateAs（会按方言自动选反引号），或显式传 Dialect::MySQL。
     template<class T>
-    std::string insertSql(std::string table) {
+    std::string insertSql(std::string table,
+                          const common::util::Dialect d = common::util::Dialect::Auto) {
         const auto cols = mappingFor<T>().columnNames(WriteCols::Writable);
-        return "INSERT INTO " + common::quoteIdentifier(table) + " (" + joinIdentifiers(cols) +
+        return "INSERT INTO " + common::util::quoteIdent(table, d) + " (" + joinIdentifiers(cols, d) +
                ") VALUES (" + placeholders(cols.size()) + ")";
     }
 
     template<class T>
-    std::string updateSql(std::string table) {
+    std::string updateSql(std::string table,
+                          const common::util::Dialect d = common::util::Dialect::Auto) {
         const auto &m = mappingFor<T>();
         std::vector<std::string> setCols;
         std::vector<std::string> keyCols;
@@ -662,21 +686,22 @@ namespace dbmw::mapping {
             else if (Mapping<T>::writable(c)) setCols.push_back(c.name);
         }
         if (keyCols.empty() || setCols.empty()) return std::string();
-        return "UPDATE " + common::quoteIdentifier(table) + " SET " + buildAssignList(setCols) +
-               " WHERE " + buildAssignList(keyCols);
+        return "UPDATE " + common::util::quoteIdent(table, d) + " SET " + buildAssignList(setCols, d) +
+               " WHERE " + buildAssignList(keyCols, d);
     }
 
     template<class T>
     std::string updateSql(std::string table, const std::vector<std::string> &setCols,
-                          const std::vector<std::string> &whereCols) {
+                          const std::vector<std::string> &whereCols,
+                          const common::util::Dialect d = common::util::Dialect::Auto) {
         const auto &m = mappingFor<T>();
         if (setCols.empty() || whereCols.empty()) return std::string();
         for (const auto &n: setCols)
             if (!m.isDeclaredByName(n)) return std::string();
         for (const auto &n: whereCols)
             if (!m.isDeclaredByName(n)) return std::string();
-        return "UPDATE " + common::quoteIdentifier(table) + " SET " + buildAssignList(setCols) +
-               " WHERE " + buildAssignList(whereCols);
+        return "UPDATE " + common::util::quoteIdent(table, d) + " SET " + buildAssignList(setCols, d) +
+               " WHERE " + buildAssignList(whereCols, d);
     }
 
     template<class T>
@@ -885,9 +910,12 @@ namespace dbmw {
     template<class T>
     WriteResult<T> insertAs(std::string table, T &entity) {
         WriteResult<T> r;
-        const std::string sql = mapping::insertSql<T>(table);
         const common::Params p = mapping::paramsOf(entity);
-        r.status = DBMW::withSession([&](core::Session &s) { return s.execute(sql, p, r.affected, r.keys); });
+        // SQL 必须拿到 session 之后才能拼：标识符引号取决于该会话的方言。
+        r.status = DBMW::withSession([&](core::Session &s) {
+            return s.execute(mapping::insertSql<T>(table, mapping::dialectOf(s)), p, r.affected,
+                             r.keys);
+        });
         if (r.status.ok()) r.status = mapping::applyGeneratedKeys(r.keys, entity);
         return r;
     }
@@ -895,7 +923,7 @@ namespace dbmw {
     template<class T>
     WriteResult<T> insertAs(core::Session &s, std::string table, T &entity) {
         WriteResult<T> r;
-        const std::string sql = mapping::insertSql<T>(table);
+        const std::string sql = mapping::insertSql<T>(table, mapping::dialectOf(s));
         const common::Params p = mapping::paramsOf(entity);
         r.status = s.execute(sql, p, r.affected, r.keys);
         if (r.status.ok()) r.status = mapping::applyGeneratedKeys(r.keys, entity);
@@ -905,7 +933,7 @@ namespace dbmw {
     template<class T>
     WriteResult<T> updateAs(std::string table, const T &entity) {
         WriteResult<T> r;
-        const std::string sql = mapping::updateSql<T>(table);
+        const std::string sql = mapping::updateSql<T>(table, mapping::defaultDialect());
         if (sql.empty()) {
             r.status = mapping::mapError(
                 "updateAs: 实体未声明 PrimaryKey 列或没有可更新列，拒绝生成 UPDATE");
@@ -918,7 +946,7 @@ namespace dbmw {
     template<class T>
     WriteResult<T> updateAs(core::Session &s, std::string table, const T &entity) {
         WriteResult<T> r;
-        const std::string sql = mapping::updateSql<T>(table);
+        const std::string sql = mapping::updateSql<T>(table, mapping::dialectOf(s));
         if (sql.empty()) {
             r.status = mapping::mapError(
                 "updateAs: 实体未声明 PrimaryKey 列或没有可更新列，拒绝生成 UPDATE");
@@ -931,7 +959,7 @@ namespace dbmw {
     template<class T>
     BatchWriteResult<T> insertBatchAs(std::string table, const std::vector<T> &entities) {
         BatchWriteResult<T> r;
-        r.status = DBMW::executeBatch(mapping::insertSql<T>(table),
+        r.status = DBMW::executeBatch(mapping::insertSql<T>(table, mapping::defaultDialect()),
                                       mapping::batchOf(entities), r.batch);
         return r;
     }
@@ -940,7 +968,7 @@ namespace dbmw {
     BatchWriteResult<T> insertBatchAs(core::Session &s, std::string table,
                                       const std::vector<T> &entities) {
         BatchWriteResult<T> r;
-        r.status = s.executeBatch(mapping::insertSql<T>(table),
+        r.status = s.executeBatch(mapping::insertSql<T>(table, mapping::dialectOf(s)),
                                   mapping::batchOf(entities), r.batch);
         return r;
     }

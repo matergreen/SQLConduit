@@ -1062,13 +1062,22 @@ dbmw::queryEachAs<User>("SELECT * FROM users", [](User &&u) { use(u); return tru
 User u{0, "alice", "a@x.com", dbmw::common::Decimal{"12.50"}, now()};
 
 auto p = dbmw::paramsOf(u);                       // 实体 → Params（跳过 Generated/ReadOnly 列）
-auto ins = dbmw::insertSql<User>("users");        // "INSERT INTO `users` (...) VALUES (?, ...)"
-auto upd = dbmw::updateSql<User>("users");        // "UPDATE `users` SET ... WHERE `id` = ?"
+auto ins = dbmw::insertSql<User>("users");        // "INSERT INTO \"users\" (...) VALUES (?, ...)"
+auto insM = dbmw::insertSql<User>("users",
+                                  dbmw::common::util::Dialect::MySQL);
+                                                 // "INSERT INTO `users` (...) VALUES (?, ...)"
+auto upd = dbmw::updateSql<User>("users");        // "UPDATE \"users\" SET ... WHERE \"id\" = ?"
 
-auto k = dbmw::insertAs(u, "users");              // 执行 + 生成键回填到主键字段
-auto n = dbmw::updateAs(u, "users");              // 按 PrimaryKey 定位
-auto b = dbmw::insertBatchAs(std::vector<User>{...}, "users");
+auto k = dbmw::insertAs("users", u);              // 执行 + 生成键回填到主键字段
+auto n = dbmw::updateAs("users", u);              // 按 PrimaryKey 定位
+auto b = dbmw::insertBatchAs("users", std::vector<User>{...});
 ```
+
+**标识符引号按方言生成**：`insertSql<T>(table)` / `updateSql<T>(table)` 不传 `Dialect` 时是**方言中立**的
+构造器，统一用双引号（PG / SQL Server 风格）；要显式控制就传第二个参数
+（`Dialect::MySQL` → 反引号）。而 `insertAs` / `updateAs` / `insertBatchAs` 是**执行**接口，
+会自动按会话所属数据源（无会话时按默认数据源）的方言选引号，MySQL 下自动用反引号，
+无需手工指定——直接拿裸 `insertSql` 的 SQL 去 MySQL 执行会因双引号报语法错误。
 
 生成键回填走「列名匹配 + `lastInsertId()` 兜底」双路——MySQL 合成列名固定为 `insert_id`，PG/ODBC 的 `RETURNING` 按列名匹配。
 

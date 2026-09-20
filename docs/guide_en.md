@@ -1029,13 +1029,24 @@ Cursors and in-transaction use work the same way: `dbmw::fetchAs<T>(cursor)`, `d
 User u{0, "alice", "a@x.com", dbmw::common::Decimal{"12.50"}, now()};
 
 auto p = dbmw::paramsOf(u);                       // entity -> Params (skips Generated/ReadOnly columns)
-auto ins = dbmw::insertSql<User>("users");        // "INSERT INTO `users` (...) VALUES (?, ...)"
-auto upd = dbmw::updateSql<User>("users");        // "UPDATE `users` SET ... WHERE `id` = ?"
+auto ins = dbmw::insertSql<User>("users");        // "INSERT INTO \"users\" (...) VALUES (?, ...)"
+auto insM = dbmw::insertSql<User>("users",
+                                  dbmw::common::util::Dialect::MySQL);
+                                                 // "INSERT INTO `users` (...) VALUES (?, ...)"
+auto upd = dbmw::updateSql<User>("users");        // "UPDATE \"users\" SET ... WHERE \"id\" = ?"
 
-auto k = dbmw::insertAs(u, "users");              // executes + back-fills the generated key
-auto n = dbmw::updateAs(u, "users");              // located by PrimaryKey
-auto b = dbmw::insertBatchAs(std::vector<User>{...}, "users");
+auto k = dbmw::insertAs("users", u);              // executes + back-fills the generated key
+auto n = dbmw::updateAs("users", u);              // located by PrimaryKey
+auto b = dbmw::insertBatchAs("users", std::vector<User>{...});
 ```
+
+**Identifiers are quoted per dialect.** `insertSql<T>(table)` / `updateSql<T>(table)` without a
+`Dialect` argument are *dialect-neutral* builders and always use double quotes (PG / SQL Server
+style); pass `Dialect::MySQL` explicitly to get backticks. The *executing* helpers
+`insertAs` / `updateAs` / `insertBatchAs` resolve the dialect from the session's data source (or the
+default data source when no session is involved) and pick the right quote automatically — so MySQL
+gets backticks with no extra work. Running a bare `insertSql` string against MySQL fails with a
+syntax error, because MySQL treats `"x"` as a string literal, not an identifier.
 
 Generated-key back-fill takes two paths: column-name match plus a `lastInsertId()` fallback — MySQL synthesises the column name `insert_id`, while PG/ODBC `RETURNING` is matched by column name.
 

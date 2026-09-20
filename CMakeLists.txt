@@ -115,7 +115,15 @@ endif()
 if(DBMW_ENABLE_POSTGRES)
     target_compile_definitions(dbmw PRIVATE DBMW_ENABLE_POSTGRES)
     find_path(PQXX_INCLUDE_DIR NAMES pqxx/pqxx)
-    find_library(PQXX_LIBRARY   NAMES pqxx)
+    if(UNIX AND NOT APPLE)
+        # Linux 下优先静态链 libpqxx.a：pqxx 的 pqxx::internal::type_name 是 C++17
+        # inline 模板变量，若按共享库链接，可执行文件与 libpqxx.so 会各持一份实例、
+        # 各注册一次析构器，进程退出时双重释放（ASan/glibc 报 double free）。静态链入
+        # 后该 inline 静态合并为单一实例、单一析构。无 .a 时回退共享库。
+        find_library(PQXX_LIBRARY NAMES libpqxx.a pqxx)
+    else()
+        find_library(PQXX_LIBRARY NAMES pqxx)
+    endif()
     find_path(PQ_INCLUDE_DIR    NAMES postgresql/libpq-fe.h libpq-fe.h)
     find_library(PQ_LIBRARY     NAMES pq)
     if(NOT PQXX_INCLUDE_DIR OR NOT PQXX_LIBRARY OR NOT PQ_LIBRARY)

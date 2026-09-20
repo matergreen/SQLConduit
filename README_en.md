@@ -68,9 +68,10 @@ For PostgreSQL, create `config/datasources.json`:
 export APP_DB_PASSWORD='your-password'
 ```
 
-The complete template is at
-[config/datasources.json.example](config/datasources.json.example). Prefer `password_env` in
-production instead of storing a password in the file.
+Configuration files support both JSON (`.json`) and YAML (`.yaml` / `.yml`) with identical fields
+and validation. Complete templates are available for
+[JSON](config/datasources.json.example) and [YAML](config/datasource.yaml.example). Prefer
+`password_env` in production instead of storing a password in the file.
 
 ### 3. Query and execute
 
@@ -265,3 +266,4 @@ ctest --test-dir build --output-on-failure
 See the [dbmw detailed guide](docs/guide_en.md) for connection pooling, asynchronous APIs,
 entity mapping, routines and scripts, PostgreSQL types, cursors, failover, observability,
 configuration, and driver extensions.
+See the [changelog](CHANGELOG.md) for release highlights.

@@ -610,6 +610,60 @@ int main() {
               loaded.datasources.front().describe().find("from-env") == std::string::npos,
               "密码从环境变量解析且 describe() 不泄漏密码");
         std::remove(path.c_str());
+
+        const std::string yamlPath =
+                (std::filesystem::temp_directory_path() / "dbmw_config_loader_test.yaml").string();
+        {
+            std::ofstream file(yamlPath);
+            file << R"(---
+default_datasource: app
+pool:
+  min: 0
+  max: 3
+observability:
+  slow_sql:
+    enabled: true
+    histogram_buckets_ms: [10, 100, 1000]
+datasources:
+  - name: primary
+    type: postgres
+    host: '127.0.0.1' # inline comment
+    port: 5432
+    password_env: DBMW_TEST_PASSWORD
+  - name: replica
+    type: postgres
+groups:
+  - name: app
+    primary: primary
+    replicas:
+      - name: replica
+        weight: 2
+    read_after_write_ms: 1000
+    failover:
+      primaries: []
+...
+)";
+        }
+        config::GlobalConfig yamlLoaded;
+        error.clear();
+        const bool yamlOk = config::ConfigLoader::loadFromFile(yamlPath, yamlLoaded, error);
+        check(yamlOk && yamlLoaded.default_datasource == "app" &&
+              yamlLoaded.pool.max == 3 && yamlLoaded.datasources.size() == 2 &&
+              yamlLoaded.datasources.front().password == "from-env" &&
+              yamlLoaded.groups.size() == 1 && yamlLoaded.groups.front().replicas.size() == 1 &&
+              yamlLoaded.groups.front().replicas.front().weight == 2 &&
+              yamlLoaded.observability.slow_sql.histogram_buckets_ms.size() == 3,
+              "YAML 配置完整解析对象、列表、标量、注释与环境变量密码");
+        std::remove(yamlPath.c_str());
+
+        config::GlobalConfig yamlExample;
+        error.clear();
+        const bool yamlExampleOk = config::ConfigLoader::loadFromFile(
+                std::string(DBMW_SOURCE_DIR) + "/config/datasource.yaml.example",
+                yamlExample, error);
+        check(yamlExampleOk && yamlExample.datasources.size() == 5 &&
+              yamlExample.groups.size() == 2,
+              "仓库内完整 YAML 配置模板可直接加载（error=" + error + "）");
 #ifdef _WIN32
         (void) _putenv_s("DBMW_TEST_PASSWORD", "");
 #else

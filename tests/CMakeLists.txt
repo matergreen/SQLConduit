@@ -1,5 +1,6 @@
 add_executable(dbmw_core_test dbmw_core_test.cpp)
 target_link_libraries(dbmw_core_test PRIVATE dbmw)
+target_compile_definitions(dbmw_core_test PRIVATE DBMW_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 add_executable(dbmw_async_test dbmw_async_test.cpp)
 target_link_libraries(dbmw_async_test PRIVATE dbmw)

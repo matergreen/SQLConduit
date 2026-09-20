@@ -202,15 +202,15 @@ namespace dbmw::mapping {
     struct ValueConverter {
         static common::Status fromValue(const common::Value &, U &, FieldFlags) {
             static_assert(detail::AlwaysFalse<U>::value,
-                          "dbmw::mapping: 目标类型没有内置转换规则，"
-                          "请特化 dbmw::mapping::ValueConverter<T>");
+                          "dbmw::mapping: target type has no built-in conversion; "
+                          "specialize dbmw::mapping::ValueConverter<T>");
             return mapError("unsupported target type");
         }
 
         static common::Value toValue(const U &) {
             static_assert(detail::AlwaysFalse<U>::value,
-                          "dbmw::mapping: 目标类型没有内置转换规则，"
-                          "请特化 dbmw::mapping::ValueConverter<T>");
+                          "dbmw::mapping: target type has no built-in conversion; "
+                          "specialize dbmw::mapping::ValueConverter<T>");
             return common::Value(nullptr);
         }
     };
@@ -590,7 +590,7 @@ namespace dbmw::mapping {
 
     template<class U>
     struct ValueConverter<std::optional<U> > {
-        static_assert(!detail::IsOptional<U>::value, "不支持嵌套 std::optional");
+        static_assert(!detail::IsOptional<U>::value, "nested std::optional is not supported");
 
         static common::Status fromValue(const common::Value &v, std::optional<U> &out, const FieldFlags flags) {
             if (std::holds_alternative<std::nullptr_t>(v)) {
@@ -730,8 +730,8 @@ namespace dbmw::mapping {
     template<class T>
     const Mapping<T> &mappingFor() {
         static_assert(detail::HasDescribe<T>::value,
-                      "dbmw::mapping: 请为实体特化 dbmw::mapping::RowMapper<T> "
-                      "并提供 static Mapping<T> describe()");
+                      "dbmw::mapping: specialize dbmw::mapping::RowMapper<T> for the entity "
+                      "and provide static Mapping<T> describe()");
         static const Mapping<T> m = RowMapper<T>::describe();
         return m;
     }
@@ -1108,7 +1108,8 @@ namespace dbmw {
         const std::string sql = mapping::updateSql<T>(table, mapping::defaultDialect());
         if (sql.empty()) {
             r.status = mapping::mapError(
-                "updateAs: 实体未声明 PrimaryKey 列或没有可更新列，拒绝生成 UPDATE");
+                "updateAs: entity has no PrimaryKey field or no updatable fields; "
+                "refusing to generate UPDATE");
             return r;
         }
         r.status = DBMW::execute(sql, mapping::updateParamsOf(entity), r.affected);
@@ -1121,7 +1122,8 @@ namespace dbmw {
         const std::string sql = mapping::updateSql<T>(table, mapping::dialectOf(s));
         if (sql.empty()) {
             r.status = mapping::mapError(
-                "updateAs: 实体未声明 PrimaryKey 列或没有可更新列，拒绝生成 UPDATE");
+                "updateAs: entity has no PrimaryKey field or no updatable fields; "
+                "refusing to generate UPDATE");
             return r;
         }
         r.status = s.execute(sql, mapping::updateParamsOf(entity), r.affected);

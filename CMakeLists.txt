@@ -59,6 +59,7 @@ set(DBMW_SOURCES
     src/common/sql_analyze.cpp
     src/config/datasource_config.cpp
     src/config/config_loader.cpp
+    src/config/yaml_parser.cpp
     src/async/executor.cpp
     src/async/async_engine.cpp
     src/core/idatabase_connection.cpp
@@ -116,10 +117,10 @@ if(DBMW_ENABLE_POSTGRES)
     target_compile_definitions(dbmw PRIVATE DBMW_ENABLE_POSTGRES)
     find_path(PQXX_INCLUDE_DIR NAMES pqxx/pqxx)
     if(UNIX AND NOT APPLE)
-        # Linux 下优先静态链 libpqxx.a：pqxx 的 pqxx::internal::type_name 是 C++17
-        # inline 模板变量，若按共享库链接，可执行文件与 libpqxx.so 会各持一份实例、
-        # 各注册一次析构器，进程退出时双重释放（ASan/glibc 报 double free）。静态链入
-        # 后该 inline 静态合并为单一实例、单一析构。无 .a 时回退共享库。
+        # Prefer static libpqxx on Linux. pqxx::internal::type_name is a C++17 inline
+        # template variable; shared linking may create one instance in the executable and
+        # another in libpqxx.so, registering two destructors and causing a double free at
+        # process exit. Static linking coalesces it into one instance. Fall back if needed.
         find_library(PQXX_LIBRARY NAMES libpqxx.a pqxx)
     else()
         find_library(PQXX_LIBRARY NAMES pqxx)
@@ -135,18 +136,18 @@ if(DBMW_ENABLE_POSTGRES)
          REGEX "^#[ ]*define[ ]+PQXX_VERSION_MAJOR[ ]+[0-9]+")
     string(REGEX MATCH "([0-9]+)" _dbmw_pqxx_major "${_dbmw_pqxx_major_line}")
     if(NOT _dbmw_pqxx_major)
-        message(WARNING "dbmw: 无法从 ${PQXX_INCLUDE_DIR}/pqxx/version.hxx 中解析 "
-                        "PQXX_VERSION_MAJOR，按 C++17 构建。")
+        message(WARNING "dbmw: cannot parse PQXX_VERSION_MAJOR from "
+                        "${PQXX_INCLUDE_DIR}/pqxx/version.hxx; building as C++17.")
         set(_dbmw_pqxx_major 7)
     endif()
     if(_dbmw_pqxx_major LESS 7)
-        message(FATAL_ERROR "dbmw: 需要 libpqxx >= 7，当前主版本为 ${_dbmw_pqxx_major}。"
-            " 6.x 缺少 pqxx::zview / pqxx::params，请改用 Ubuntu 24.04+ 或 Homebrew 的"
-            " libpqxx，或关闭 -DDBMW_ENABLE_POSTGRES=OFF。")
+        message(FATAL_ERROR "dbmw requires libpqxx >= 7; detected major version "
+            "${_dbmw_pqxx_major}. Version 6.x lacks pqxx::zview / pqxx::params. Use "
+            "Ubuntu 24.04+, Homebrew libpqxx, or set -DDBMW_ENABLE_POSTGRES=OFF.")
     endif()
-    message(STATUS "dbmw: libpqxx 主版本 ${_dbmw_pqxx_major}")
+    message(STATUS "dbmw: libpqxx major version ${_dbmw_pqxx_major}")
     if(_dbmw_pqxx_major GREATER_EQUAL 8)
-        message(STATUS "dbmw: libpqxx >= 8 要求 C++20，dbmw 目标单独提标至 C++20")
+        message(STATUS "dbmw: libpqxx >= 8 requires C++20; raising only the dbmw target")
         set_target_properties(dbmw PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
     endif()
 

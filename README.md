@@ -65,8 +65,9 @@ Linux、macOS 的依赖安装方式见[详细构建说明](docs/guide.md#构建w
 export APP_DB_PASSWORD='your-password'
 ```
 
-完整配置模板位于 [config/datasources.json.example](config/datasources.json.example)。生产环境建议使用
-`password_env`，不要把密码写入配置文件。
+配置文件同时支持 JSON（`.json`）和 YAML（`.yaml` / `.yml`），字段与校验规则完全一致。
+完整模板见 [JSON](config/datasources.json.example) 和
+[YAML](config/datasource.yaml.example)。生产环境建议使用 `password_env`，不要把密码写入配置文件。
 
 ### 3. 查询和执行
 
@@ -244,3 +245,4 @@ ctest --test-dir build --output-on-failure
 
 连接池、异步 API、实体映射、例程与脚本、PostgreSQL 类型、故障转移、可观测性、
 错误码、配置项和驱动扩展等内容见 [dbmw 详细指南](docs/guide.md)。
+版本功能摘要见 [CHANGELOG](CHANGELOG.md)。

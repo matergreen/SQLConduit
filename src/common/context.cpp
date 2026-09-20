@@ -50,8 +50,8 @@ namespace dbmw::common {
         static std::atomic<bool> warned{false};
         if (!warned.exchange(true)) {
             std::fprintf(stderr,
-                         "dbmw: common::ContextScope 栈超过 %zu 层，"
-                         "后续构造不再压栈（疑似拦截器内递归调 SQL）。\n",
+                         "dbmw: common::ContextScope stack exceeded %zu levels; "
+                         "new scopes will not be pushed (possible recursive SQL in an interceptor).\n",
                          kMaxDepth);
         }
     }

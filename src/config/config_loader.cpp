@@ -1,11 +1,44 @@
 #include "dbmw/config/config_loader.h"
+#include "yaml_parser.h"
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <utility>
 
 namespace dbmw::config {
     using json = nlohmann::json;
+
+    namespace {
+        bool hasYamlExtension(const std::string &path) {
+            std::string lower = path;
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](const unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            return (lower.size() >= 5 &&
+                    lower.compare(lower.size() - 5, 5, ".yaml") == 0) ||
+                   (lower.size() >= 4 &&
+                    lower.compare(lower.size() - 4, 4, ".yml") == 0);
+        }
+
+        bool hasJsonExtension(const std::string &path) {
+            std::string lower = path;
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](const unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            return lower.size() >= 5 &&
+                   lower.compare(lower.size() - 5, 5, ".json") == 0;
+        }
+
+        bool looksLikeYaml(const std::string &content) {
+            const auto first = std::find_if_not(content.begin(), content.end(),
+                                                [](const unsigned char c) {
+                                                    return std::isspace(c) != 0;
+                                                });
+            return first != content.end() && *first != '{' && *first != '[';
+        }
+    }
 
     bool ConfigLoader::loadFromFile(const std::string &path, GlobalConfig &out, std::string &error) {
         out = GlobalConfig{};
@@ -16,12 +49,28 @@ namespace dbmw::config {
             return false;
         }
 
+        std::string content((std::istreambuf_iterator<char>(f)),
+                            std::istreambuf_iterator<char>());
+        if (content.size() >= 3 &&
+            static_cast<unsigned char>(content[0]) == 0xef &&
+            static_cast<unsigned char>(content[1]) == 0xbb &&
+            static_cast<unsigned char>(content[2]) == 0xbf) {
+            content.erase(0, 3);
+        }
         json j;
-        try {
-            f >> j;
-        } catch (const json::exception &e) {
-            error = std::string("json parse error: ") + e.what();
-            return false;
+        if (hasYamlExtension(path) || (!hasJsonExtension(path) && looksLikeYaml(content))) {
+            std::string parseError;
+            if (!detail::parseYaml(content, j, parseError)) {
+                error = "yaml parse error: " + parseError;
+                return false;
+            }
+        } else {
+            try {
+                j = json::parse(content);
+            } catch (const json::exception &e) {
+                error = std::string("json parse error: ") + e.what();
+                return false;
+            }
         }
 
         try {

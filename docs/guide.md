@@ -67,7 +67,7 @@ include/dbmw/
 src/         对应实现
 tests/       dbmw_core_test.cpp  dbmw_async_test.cpp  dbmw_coro_test.cpp(coro=ON)
              dbmw_mapping_test.cpp(实体映射)
-config/      datasources.json.example
+config/      datasources.json.example  datasource.yaml.example
 third_party/nlohmann/json.hpp  (vendored 单头，离线可用)
 scripts/     setup-wsl.sh
 ```
@@ -1650,7 +1650,10 @@ g++ main.cpp $(pkg-config --cflags --libs dbmw) -o my_app
 - **`cancel()` 从不允许抛异常逃逸**。它会被事务超时的监控线程跨线程调用，
   未捕获的异常会 `std::terminate` 掉整个进程。驱动内部请自行包好 `try/catch`。
 
-## 配置说明（datasources.json）
+## 配置说明（JSON / YAML）
+
+`ConfigLoader` 根据扩展名读取 `.json`、`.yaml` 或 `.yml`；两种格式进入同一套字段解析、
+默认值与安全校验逻辑。YAML 支持嵌套对象、对象/标量列表、流式列表、单双引号和行尾注释。
 
 | 字段 | 含义 |
 | --- | --- |
@@ -1679,7 +1682,7 @@ g++ main.cpp $(pkg-config --cflags --libs dbmw) -o my_app
 | `datasources[].extra` | 驱动自定义扩展参数 |
 | `groups[]` | 主库、副本权重、写后读窗口、主库回退、只读标志与故障转移；自动换主需 `acknowledge_external_fencing`，易失缓冲需 `acknowledge_data_loss_and_duplicates` |
 
-详见 `config/datasources.json.example`。
+完整模板见 `config/datasources.json.example` 和 `config/datasource.yaml.example`。
 
 ## 开源协议
 

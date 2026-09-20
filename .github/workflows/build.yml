@@ -45,19 +45,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装依赖 (Linux)
+      - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build
           sudo apt-get install -y default-libmysqlclient-dev libpqxx-dev libpq-dev unixodbc-dev
 
-      - name: 安装依赖 (macOS)
+      - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
           brew install ninja mysql-client libpqxx libpq unixodbc
 
-      - name: 组装 CMAKE_PREFIX_PATH (macOS)
+      - name: Configure CMAKE_PREFIX_PATH (macOS)
         if: runner.os == 'macOS'
         run: |
           p="$(brew --prefix)"
@@ -66,7 +66,7 @@ jobs:
           done
           echo "CMAKE_PREFIX_PATH=$p" >> "$GITHUB_ENV"
 
-      - name: 配置 (Linux / macOS)
+      - name: Configure (Linux / macOS)
         if: runner.os != 'Windows'
         env:
           CC: ${{ matrix.cc }}
@@ -80,7 +80,7 @@ jobs:
             -DDBMW_ENABLE_ASYNC_CORO=${{ matrix.coro }} \
             -DDBMW_BUILD_TESTS=ON
 
-      - name: 配置 (Windows)
+      - name: Configure (Windows)
         if: runner.os == 'Windows'
         run: |
           cmake -S . -B build -A x64 `
@@ -90,10 +90,10 @@ jobs:
             -DDBMW_ENABLE_ASYNC_CORO=${{ matrix.coro }} `
             -DDBMW_BUILD_TESTS=ON
 
-      - name: 编译
+      - name: Build
         run: cmake --build build --config Release -j
 
-      - name: 测试
+      - name: Test
         if: matrix.tests
         shell: bash
         run: |
@@ -103,11 +103,11 @@ jobs:
             ctest --test-dir build -C Release --output-on-failure
           fi
 
-      - name: 安装到 dist
+      - name: Install to dist
         if: github.ref != 'refs/heads/dev'
         run: cmake --install build --config Release --prefix dist
 
-      - name: 打包
+      - name: Package
         if: github.ref != 'refs/heads/dev'
         shell: bash
         run: |
@@ -116,7 +116,7 @@ jobs:
           if [ "$ver" = "$GITHUB_REF_NAME" ]; then ver="dev-${GITHUB_SHA::7}"; fi
           if [ "${{ runner.os }}" = "Windows" ]; then ext=zip; else ext=tar.gz; fi
           pkg="dbmw-${ver}-${{ matrix.pkg }}.${ext}"
-          cp LICENSE README.md dist/
+          cp LICENSE README.md CHANGELOG.md dist/
           if [ "$ext" = "zip" ]; then
             powershell -NoProfile -Command "Compress-Archive -Path 'dist/*' -DestinationPath '${pkg}'"
           else
@@ -125,7 +125,7 @@ jobs:
           ls -l "${pkg}"
           echo "PKG_FILE=${pkg}" >> "$GITHUB_ENV"
 
-      - name: 上传 artifact
+      - name: Upload artifact
         if: github.ref != 'refs/heads/dev'
         uses: actions/upload-artifact@v4
         with:
@@ -145,26 +145,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 收集各平台产物
+      - name: Prepare release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          awk -v heading="## [$version]" '
+            $0 == heading { found=1 }
+            found && /^## \[/ && $0 != heading { exit }
+            found { print }
+            END { if (!found) exit 2 }
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
+
+      - name: Download platform artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: dbmw-*
           merge-multiple: true
           path: artifacts
 
-      - name: 创建 Release 并上传资产
+      - name: Create release and upload assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
           ls -l artifacts
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "dbmw $TAG" \
+              --notes-file release-notes.md
             gh release upload "$TAG" artifacts/* --repo "$GITHUB_REPOSITORY" --clobber
           else
             gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --title "dbmw $TAG" \
               --verify-tag \
-              --generate-notes \
+              --notes-file release-notes.md \
               artifacts/*
           fi

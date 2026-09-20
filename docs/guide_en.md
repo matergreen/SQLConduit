@@ -64,7 +64,7 @@ include/dbmw/
 src/         corresponding implementations
 tests/       dbmw_core_test.cpp  dbmw_async_test.cpp  dbmw_coro_test.cpp(coro=ON)
              dbmw_mapping_test.cpp(entity mapping)
-config/      datasources.json.example
+config/      datasources.json.example  datasource.yaml.example
 third_party/nlohmann/json.hpp  (vendored single-header, works offline)
 scripts/     setup-wsl.sh
 ```
@@ -1547,7 +1547,11 @@ Two easy-to-trip contracts:
 - **A driver with transaction state must override `inTransaction()`.** The base default returns `false`, which would make `executeBatch`'s default implementation wrap another `begin` inside the caller's already-open transaction — on MySQL that equals an implicit `COMMIT` of the caller's first half.
 - **`cancel()` must never let an exception escape.** It is called cross-thread by the transaction-timeout watchdog; an uncaught exception would `std::terminate` the whole process. Wrap it in `try/catch` inside the driver.
 
-## Configuration reference (datasources.json)
+## Configuration reference (JSON / YAML)
+
+`ConfigLoader` selects JSON, `.yaml`, or `.yml` from the file extension. Both formats use the same
+field mapping, defaults, and safety validation. YAML supports nested mappings, object/scalar
+sequences, flow sequences, single/double quotes, and trailing comments.
 
 | Field | Meaning |
 | --- | --- |
@@ -1576,7 +1580,7 @@ Two easy-to-trip contracts:
 | `datasources[].extra` | Driver-specific extension parameters |
 | `groups[]` | Primary, replica weights, read-after-write window, fallback and failover; automatic promotion requires `acknowledge_external_fencing`, and volatile buffering requires `acknowledge_data_loss_and_duplicates` |
 
-See `config/datasources.json.example` for details.
+See `config/datasources.json.example` and `config/datasource.yaml.example` for complete templates.
 
 ## License
 

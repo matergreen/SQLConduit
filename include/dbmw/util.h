@@ -58,8 +58,6 @@ namespace dbmw::common::util {
     };
 
     struct CallOptions : ExecOptions {
-        // true  -> run through the query path and collect every result set
-        // false -> run through the execute path and report affected rows only
         bool returnsRows = true;
     };
 
@@ -96,8 +94,6 @@ namespace dbmw::common::util {
 
     using CallParams = std::vector<CallParam>;
 
-    // Everything a single routine call produced: every result set in order, the
-    // affected row count when the call produced none, and the OUT/INOUT values.
     struct CallResult {
         Status status;
         std::vector<ResultSet> sets;
@@ -118,13 +114,12 @@ namespace dbmw::common::util {
     };
 
     struct CallPlan {
-        std::string preSql; // MySQL: SET @inout = ? before the call
+        std::string preSql;
         Params preParams;
         std::string callSql;
         Params callParams;
-        std::string fetchSql; // MySQL: SELECT @out ...; non-empty => same connection
+        std::string fetchSql;
         std::vector<std::string> outColumns;
-        // postgres: OUT/INOUT arrive as the first N columns of the result row
         std::size_t outFromRowCount = 0;
         bool needsSameConnection = false;
     };
@@ -290,10 +285,6 @@ namespace dbmw::common::util {
         return unsupported("dbmw::util: unknown dialect");
     }
 
-    // Builds the statement(s) needed to invoke a routine, including OUT/INOUT
-    // plumbing. SQL Server is deliberately absent from the OUT matrix: T-SQL
-    // requires DECLARE @var <type> before it can be passed as OUTPUT, and dbmw
-    // cannot know the type, so any OUT/INOUT there is rejected up front.
     inline Status makeCallPlan(const RoutineRef &ref, const CallParams &params,
                                const Dialect d, const bool returnsRows, CallPlan &out) {
         out = CallPlan{};
@@ -388,7 +379,6 @@ namespace dbmw::common::util {
         return unsupported("dbmw::util: unknown dialect");
     }
 
-    // Reads OUT/INOUT values out of the SELECT that follows the call.
     inline Status readOutParams(const ResultSet &rs, const std::vector<std::string> &names,
                                 std::vector<Value> &out) {
         out.clear();
@@ -404,7 +394,6 @@ namespace dbmw::common::util {
                 continue;
             }
             if (i < row.data().size()) {
-                // Some drivers drop the alias; fall back to positional order.
                 auto it = row.data().begin();
                 std::advance(it, static_cast<std::ptrdiff_t>(i));
                 out.push_back(it->second);
@@ -416,7 +405,6 @@ namespace dbmw::common::util {
         return Status::OK();
     }
 
-    // postgres: OUT/INOUT values are the leading columns of the first result row.
     inline Status readOutParamsFromRow(const ResultSet &rs, const std::size_t count,
                                        std::vector<Value> &out) {
         out.clear();
@@ -603,38 +591,24 @@ namespace dbmw::common::util {
         return detail::runDdl(opts, sql);
     }
 
-    // ----------------------------------------------------------------------------
-    // Script execution
-    //
-    // Run *.sql files discovered in a directory (recursively) or an explicit list
-    // of file paths, or run a SQL script held in memory. Every file / text blob is
-    // split into individual statements on ';' (honouring string literals, line and
-    // block comments, and BEGIN..END / CASE..END / IF..END / LOOP..END blocks) and
-    // each statement is executed through the same governance path as the other util
-    // helpers: forcePrimary, shadow cleared, NonIdempotent, cache invalidated.
-    // ----------------------------------------------------------------------------
 
     struct ScriptOptions : ExecOptions {
-        bool recursive = true;            // descend into sub-directories
-        std::string extension = ".sql";   // file name suffix filter
-        bool stopOnError = true;          // abort the whole run on first failure
+        bool recursive = true;
+        std::string extension = ".sql";
+        bool stopOnError = true;
     };
 
     struct ScriptResult {
         std::string path;
         Status status;
-        std::size_t statements = 0;       // statements found in the file
-        std::size_t executed = 0;         // statements run successfully
+        std::size_t statements = 0;
+        std::size_t executed = 0;
     };
 
-    // Split a SQL script into individual statements. A ';' inside a string literal,
-    // a comment, or a compound block does not split. Whitespace-only fragments are
-    // dropped.
     inline void splitSqlScript(const std::string &sql, std::vector<std::string> &out) {
         const std::size_t n = sql.size();
-        std::vector<char> prot(n, 0);     // 1 => ';' here must not split
+        std::vector<char> prot(n, 0);
 
-        // Pass 1: string literals and comments.
         bool inS = false, inD = false, inLine = false, inBlock = false;
         for (std::size_t i = 0; i < n; ++i) {
             const char c = sql[i];
@@ -667,9 +641,8 @@ namespace dbmw::common::util {
             if (c == '"') { inD = true; prot[i] = 1; continue; }
         }
 
-        // Pass 2: compound blocks (BEGIN/CASE/IF/LOOP/WHILE/REPEAT .. END).
         enum Blk { B_BEGIN = 1, B_CASE, B_IF, B_LOOP, B_WHILE, B_REPEAT };
-        std::vector<std::pair<int, std::size_t> > stack; // (kind, maskFrom)
+        std::vector<std::pair<int, std::size_t> > stack;
         std::size_t i = 0;
         auto isKw = [&](const std::size_t a, const std::size_t b, const char *kw) -> bool {
             const std::size_t len = std::char_traits<char>::length(kw);
@@ -699,7 +672,6 @@ namespace dbmw::common::util {
             i = j;
         }
 
-        // Pass 3: split on un-protected ';'.
         std::size_t start = 0;
         for (std::size_t k = 0; k <= n; ++k) {
             if (k == n || (sql[k] == ';' && !prot[k])) {
@@ -727,8 +699,6 @@ namespace dbmw::common::util {
         return s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
     }
 
-    // Run a SQL script held in memory. Returns the last failure (if any); when
-    // stopOnError is false every statement is attempted and the last error wins.
     inline Status runScriptText(const std::string &sql, const ScriptOptions &opts = {},
                                 std::size_t *executed = nullptr) {
         std::vector<std::string> stmts;
@@ -748,7 +718,6 @@ namespace dbmw::common::util {
         return lastErr;
     }
 
-    // Run an explicit list of SQL file paths.
     inline Status runScripts(const std::vector<std::string> &files, const ScriptOptions &opts = {},
                              std::vector<ScriptResult> *perFile = nullptr) {
         Status lastErr = Status::OK();
@@ -782,8 +751,6 @@ namespace dbmw::common::util {
         return anyFail ? lastErr : Status::OK();
     }
 
-    // Recursively (or flat) collect *.sql files under a directory and run them in
-    // sorted path order.
     inline Status runScriptsInDir(const std::string &dir, const ScriptOptions &opts = {},
                                   std::vector<ScriptResult> *perFile = nullptr) {
         std::error_code ec;
@@ -852,8 +819,6 @@ namespace dbmw::common::util {
         return s.query(sql, params, out);
     }
 
-    // Structured call: build the statement from a RoutineRef + typed parameters and
-    // hand back every result set plus the OUT/INOUT values.
     inline Status call(const RoutineRef &ref, const CallParams &params, CallResult &out,
                        const CallOptions &opts = {}) {
         out = CallResult{};
@@ -1012,9 +977,6 @@ namespace dbmw::async::util {
                    : async::query(opts.dataSource, std::move(sql), params, std::move(cb), opts);
     }
 
-    // Every result set a routine produced, in order. OUT/INOUT is not available
-    // here: reading session variables back requires connection affinity that the
-    // async pool path does not provide.
     inline Handle callAll(std::string sql, const common::Params &params,
                           MultiQueryCallback cb, Options opts = {}) {
         const common::util::detail::ExecScope scope(detail::toExec(opts));
@@ -1212,11 +1174,6 @@ namespace dbmw::async::util {
         return fut;
     }
 
-    // ----------------------------------------------------------------------------
-    // Script execution (async): run a script string, an explicit file list, or all
-    // *.sql files under a directory. Statements execute sequentially; the run
-    // completes with a single ExecResult (first failure wins, or OK).
-    // ----------------------------------------------------------------------------
 
     namespace detail {
         struct ScriptRunState {

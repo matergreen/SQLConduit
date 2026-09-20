@@ -524,7 +524,6 @@ int main() {
 
     std::cout << "== M11b. 标识符引号按方言生成 ==\n";
     {
-        // MySQL 只认反引号，PG/SQL Server 只认双引号，写错就是语法错误。
         const std::string my = mapping::insertSql<User>("users", common::util::Dialect::MySQL);
         check(my.rfind("INSERT INTO `users` (", 0) == 0, "MySQL 方言：表名用反引号");
         check(my.find("`name`") != std::string::npos && my.find('"') == std::string::npos,
@@ -533,8 +532,6 @@ int main() {
         const std::string pg = mapping::insertSql<User>("users", common::util::Dialect::Postgres);
         check(pg.rfind("INSERT INTO \"users\" (", 0) == 0, "PG 方言：表名用双引号");
 
-        // 方言感知的 quoteIdent 按点号分段，schema 限定名在 PG 上能正确展开
-        // （旧的 quoteIdentifier 会把 "public.users" 当成单个标识符）。
         const std::string qual =
             mapping::insertSql<User>("public.users", common::util::Dialect::Postgres);
         check(qual.find("\"public\".\"users\"") != std::string::npos,

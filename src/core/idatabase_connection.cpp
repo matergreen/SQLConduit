@@ -55,8 +55,6 @@ namespace dbmw::core {
         common::ResultSet rs;
         const auto status = params.empty() ? query(sql, rs) : query(sql, params, rs);
         if (!status.ok()) return status;
-        // A statement that returns no columns still "succeeds"; report it as an
-        // empty set only when the driver actually produced a shape.
         if (!rs.fields().empty() || rs.rowCount() > 0) out.push_back(std::move(rs));
         return common::Status::OK();
     }
@@ -78,8 +76,6 @@ namespace dbmw::core {
         for (const auto &params: batch) {
             std::int64_t affected = 0;
             common::GeneratedKeys keys;
-            // 走带 keys 的重载：SQL 自带 RETURNING / OUTPUT 或驱动能合成 last insert id 时，
-            // 批量也能回填生成键（insertBatchAs 依赖它）。
             status = execute(sql, params, affected, keys);
             if (!status.ok()) break;
             out.affected.push_back(affected);

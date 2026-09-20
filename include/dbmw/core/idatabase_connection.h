@@ -64,9 +64,6 @@ namespace dbmw::core {
                                          const common::RowCallback &callback,
                                          std::uint64_t &rows);
 
-        // Multiple result sets: a single statement (typically CALL) may return
-        // several result sets before the terminating OK packet. Drivers that do
-        // not implement it fall back to the single result set of query().
         [[nodiscard]] virtual bool supportsMultipleResultSets() const { return false; }
 
         virtual common::Status queryAll(const std::string &sql,

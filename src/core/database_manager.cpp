@@ -365,9 +365,6 @@ namespace dbmw::core {
         return queryAll(sql, common::Params{}, out);
     }
 
-    // Collects every result set produced by a single statement (typically CALL).
-    // Interceptors are intentionally bypassed: their ExecutionView carries one
-    // ResultSet, so there is no well-defined way to hand them N sets.
     common::Status Session::queryAll(const std::string &sql, const common::Params &params,
                                      std::vector<common::ResultSet> &out) const {
         out.clear();
@@ -1185,8 +1182,6 @@ namespace dbmw::core {
         return status;
     }
 
-    // Multiple result sets are never cached: the cache stores a single ResultSet,
-    // so caching would silently drop every set after the first.
     common::Status DataSource::queryAll(const std::string &sql,
                                         std::vector<common::ResultSet> &out) const {
         return queryAll(sql, common::Params{}, out);

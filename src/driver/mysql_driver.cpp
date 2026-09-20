@@ -300,9 +300,6 @@ namespace dbmw::driver {
         }
 
         if (const auto st = fillResultSet(res.get(), cfg_, out); !st.ok()) return st;
-        // Anything after the first result set is dropped here; use queryAll() when
-        // the remaining sets matter. They must still be consumed or the connection
-        // is left unusable.
         return drainRemainingResults();
 #else
         (void) sql;
@@ -348,8 +345,6 @@ namespace dbmw::driver {
 #ifdef DBMW_ENABLE_MYSQL
         out.clear();
         if (params.empty()) return queryAll(sql, out);
-        // Multiple result sets need mysql_next_result(), which has no counterpart
-        // on the prepared-statement path, so build the statement text instead.
         std::string built;
         if (const auto st = buildSql(sql, params, built); !st.ok()) return st;
         return queryAll(built, out);
@@ -389,8 +384,6 @@ namespace dbmw::driver {
         if (mysql_real_query(m_, sql.data(), sql.size()) != 0)
             return lastError("mysql_real_query");
         affected = static_cast<std::int64_t>(mysql_affected_rows(m_));
-        // CALL can leave further result sets pending even when only the OK packet
-        // was asked for; leaving them unconsumed poisons the connection.
         return drainRemainingResults();
 #else
         (void) sql;

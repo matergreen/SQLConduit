@@ -6,8 +6,6 @@
 #include "dbmw/core/database_manager.h"
 #include "dbmw/dbmw.h"
 #include "dbmw/async/dbmw_async.h"
-// 标识符引号必须按方言生成（MySQL 用反引号，PG/SQL Server 用双引号），
-// 方言枚举与方言感知的 quoteIdent 定义在 util.h。
 #include "dbmw/util.h"
 
 #if defined(DBMW_ENABLE_ASYNC_CORO)
@@ -621,10 +619,6 @@ namespace dbmw::mapping {
         return out;
     }
 
-    // ---- 方言解析 ----------------------------------------------------------
-    // dialectOf(session)：按会话所属数据源的 driverType 判定方言，最可靠。
-    // defaultDialect()：无 session 的写入 API（走默认数据源）用它；未注册数据源时返回
-    // Dialect::Auto，引号退化为双引号，与 insertSql<T>(table) 的历史行为保持一致。
     inline common::util::Dialect dialectOf(const core::Session &s) {
         return common::util::detectDialect(s.dataSourceName());
     }
@@ -633,8 +627,6 @@ namespace dbmw::mapping {
         return common::util::detectDialect(std::string());
     }
 
-    // 故意不在这里再包一层同名的 quoteIdent：Dialect 参数属于 dbmw::common::util，
-    // ADL 会把 util 的 quoteIdent 一起拉进候选集，导致调用二义。调用点一律写全限定。
 
     inline std::string joinIdentifiers(const std::vector<std::string> &cols,
                                        const common::util::Dialect d = common::util::Dialect::Auto) {
@@ -665,8 +657,6 @@ namespace dbmw::mapping {
         return s;
     }
 
-    // 注意：不传 Dialect 时是「方言中立」构造器，用双引号（PG/SQL Server 风格）。
-    // MySQL 上请走 insertAs/updateAs（会按方言自动选反引号），或显式传 Dialect::MySQL。
     template<class T>
     std::string insertSql(std::string table,
                           const common::util::Dialect d = common::util::Dialect::Auto) {
@@ -704,13 +694,6 @@ namespace dbmw::mapping {
                " WHERE " + buildAssignList(whereCols, d);
     }
 
-    // 生成键回读版 INSERT：把 Generated 列拼进 RETURNING，让 execute 直接把新键带回 keys.rows。
-    // 只对 PG 生效：
-    //   - MySQL 不支持 RETURNING，走 mysql_insert_id 合成（applyGeneratedKeys 的 lastInsertId 兜底）；
-    //   - SQL Server 要写成 `INSERT ... OUTPUT INSERTED.<col> VALUES ...`（OUTPUT 在列列表之后、
-    //     VALUES 之前，位置与 RETURNING 不同），且表上一旦有 enabled trigger，不带 INTO 的 OUTPUT
-    //     会直接报错——无真机可验证，故暂不自动补，等有 SQL Server 环境验证过再开。
-    // 注意这只影响 dbmw 自己生成的 SQL；用户手写 SQL 走 execute() 时 dbmw 一个字都不改。
     template<class T>
     std::string insertSqlReturning(std::string table, const common::util::Dialect d) {
         const std::string base = insertSql<T>(table, d);
@@ -929,7 +912,6 @@ namespace dbmw {
     WriteResult<T> insertAs(std::string table, T &entity) {
         WriteResult<T> r;
         const common::Params p = mapping::paramsOf(entity);
-        // SQL 必须拿到 session 之后才能拼：标识符引号取决于该会话的方言。
         r.status = DBMW::withSession([&](core::Session &s) {
             return s.execute(mapping::insertSqlReturning<T>(table, mapping::dialectOf(s)), p,
                              r.affected, r.keys);
@@ -974,8 +956,6 @@ namespace dbmw {
         return r;
     }
 
-    // 批量插入：传 const vector 的重载不回填生成键（保持历史行为）；
-    // 传**具名非 const vector** 的重载会按批回填——需要改实体，所以必须是可写的 vector。
     template<class T>
     BatchWriteResult<T> insertBatchAs(std::string table, const std::vector<T> &entities) {
         BatchWriteResult<T> r;

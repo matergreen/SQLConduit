@@ -16,7 +16,6 @@ namespace dbmw::async {
         common::ResultSet rows;
     };
 
-    // Every result set a single statement produced, in order.
     struct MultiQueryResult {
         common::Status status;
         std::vector<common::ResultSet> sets;

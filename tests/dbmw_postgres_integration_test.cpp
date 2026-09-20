@@ -423,18 +423,8 @@ void testCacheAsyncAndObservability(Fixture &f) {
     require(!dbmw::DBMW::recentSlowSql(100).empty(), "recent slow SQL records are empty");
 }
 
-// ----------------------------------------------------------------------------
-// v0.5.x 集成覆盖：实体映射（v0.5.0）+ 脚本执行/存储过程/call/多结果集/异步 util（v0.5.1）
-// 这些功能此前只在单元测试里用合成 ResultSet 验证过，从未接真实驱动跑过。
-// 注意 PG 方言与 MySQL 的差异：
-//   - 实体表名不能带 schema 前缀传给 insertAs（quoteIdentifier 会把 schema.items 整体当单标识符），
-//     故实体映射用 public 下的裸表名。
-//   - PG 函数走 SELECT * FROM fn(...)；INOUT 从首行前 N 列回读，需 returnsRows=true。
-//   - PG 驱动未实现多结果集（supportsMultipleResultSets=false），多结果集断言为 MySQL 专属。
-// ----------------------------------------------------------------------------
 
 void testEntityMapping(Fixture &f) {
-    // 裸名，落在 public：避免 quoteIdentifier 把 schema.items 当作带点单标识符导致 INSERT 失败。
     const std::string ent = f.schema + "_entity";
     std::int64_t aff = 0;
     (void)dbmw::DBMW::execute("DROP TABLE IF EXISTS " + ent, aff);
@@ -453,8 +443,6 @@ void testEntityMapping(Fixture &f) {
     auto ins = dbmw::insertAs<PgItem>(ent, item);
     require(ins.status.ok(), "insertAs failed: " + ins.status.message);
     require(ins.affected == 1, "insertAs affected mismatch");
-    // PG 驱动对无 RETURNING 的 INSERT 不自动回填自增键（out.rows 为空 -> lastInsertId()==0）。
-    // 若此处失败，说明是 PG 驱动取键缺口，需给 PG 驱动补 RETURNING 自动追加，而非测试问题。
     require(item.id > 0, "insertAs did not backfill generated id (PG auto-key gap?)");
     const std::int64_t id = item.id;
 
@@ -487,7 +475,6 @@ void testEntityMapping(Fixture &f) {
     auto batch = dbmw::insertBatchAs<PgItem>(ent, bv);
     require(batch.status.ok(), "insertBatchAs failed: " + batch.status.message);
     require(batch.batch.totalAffected() == 2, "insertBatchAs affected mismatch");
-    // 具名非 const vector 走的重载会按批回填生成键（PG 靠 RETURNING）。
     require(bv[0].id > 0 && bv[1].id > 0, "insertBatchAs did not backfill generated ids");
     require(bv[0].id != bv[1].id, "insertBatchAs backfilled the same id twice");
 
@@ -513,7 +500,6 @@ void testScriptExecution(Fixture &f) {
     require(st.ok(), "runScriptText failed: " + st.message);
     require(executed == 2, "runScriptText executed count mismatch");
 
-    // 复合块里 BEGIN..END 内的 ';' 不得被拆分：splitSqlScript 第二趟屏蔽 BEGIN..END 整段。
     const std::string proc =
         "CREATE PROCEDURE dbmw_it_script_proc() AS $$ BEGIN PERFORM 1; END; $$ LANGUAGE plpgsql";
     auto procSt = dbmw::common::util::createRoutine(proc);
@@ -524,7 +510,6 @@ void testScriptExecution(Fixture &f) {
 }
 
 void testRoutinesAndCall(Fixture &f) {
-    // 标量函数：PG 用 SELECT * FROM fn(...) 路径（Dialect::Postgres 自动生成）。
     require(dbmw::common::util::createRoutine(
         "CREATE FUNCTION dbmw_it_add(a INT, b INT) RETURNS INT AS $$ SELECT a + b $$ "
         "LANGUAGE sql").ok(), "createRoutine(function) failed");
@@ -544,7 +529,6 @@ void testRoutinesAndCall(Fixture &f) {
         require(std::get<std::int64_t>(v) == 7, "function return mismatch");
     }
 
-    // INOUT 函数：PG 用 INOUT 参数 + RETURNS RECORD；OUT/INOUT 从首行前 N 列回读，需 returnsRows=true。
     require(dbmw::common::util::createRoutine(
         "CREATE FUNCTION dbmw_it_swap(INOUT a INT, INOUT b INT) RETURNS RECORD AS $$ "
         "BEGIN a := a + b; b := a - b; a := a - b; END; $$ LANGUAGE plpgsql").ok(),
@@ -566,8 +550,6 @@ void testRoutinesAndCall(Fixture &f) {
         require(asInt(ioRes.outParams[1]) == 5, "INOUT b after swap mismatch");
     }
 
-    // 多结果集：PG 驱动未实现多结果集（supportsMultipleResultSets=false，回退为单结果集），
-    // 故此处仅验证 queryAll 单结果集路径可用；专门的 multi-result-set 断言是 MySQL 专属。
     std::vector<ResultSet> sets;
     auto mSt = dbmw::DBMW::queryAll("SELECT 1 AS n; SELECT 2 AS n", Params{}, sets);
     require(mSt.ok(), "queryAll failed on PG: " + mSt.message);
@@ -590,9 +572,6 @@ void testAsyncUtil(Fixture &f) {
     auto exec = dbmw::async::util::runScriptText(script).get();
     require(exec.status.ok(), "async runScriptText failed: " + exec.status.message);
 
-    // 注意：callAll 有 callback 重载（返回 async::Handle，无 .get()）与 future 重载
-    // （返回 future<MultiQueryResult>）两个版本。此处显式传 Options{}，使 callback 重载
-    // 因类型不匹配而失效，强制选中 future 重载，否则 {} 会被解析到 callback 重载导致 .get() 编不过。
     dbmw::async::util::Options callAllOpts;
     auto mr = dbmw::async::util::callAll(
         "SELECT dbmw_it_aadd(?, ?)",

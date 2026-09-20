@@ -12,13 +12,6 @@
 #include <stdexcept>
 #include <string>
 
-// v0.5.0 实体映射层：OdbcItem 映射到 f.table（SQL Server 后端）。
-// 注意：dbmw::insertAs 不会自动追加 OUTPUT INSERTED.id（guide.md:271 明确不为 PG/ODBC
-// 自动补 RETURNING/OUTPUT），因此 insertAs 后 item.id 不被回填（与 PG 同性质缺囗，
-// 见 testEntityMapping 内注释）。其余列可正常读写映射。
-// 重要：实体与 RowMapper 特化必须放在匿名命名空间**之外**。若写进 `namespace {}` 内部，
-// `namespace dbmw::mapping {}` 会变成 `{anonymous}::dbmw::mapping`（而非特化 ::dbmw::mapping），
-// 且后续 dbmw::DBMW / dbmw::common 会被解析到这个新建的空嵌套命名空间而整片编译失败。
 struct OdbcItem {
     std::int64_t id = 0;
     std::string name;
@@ -234,9 +227,6 @@ void testTransactionsPreparedBatchCursorAsync(Fixture &f) {
 }
 
 void testEntityMapping(Fixture &f) {
-    // 实体映射表复用 f.table 的裸名：ODBC f.table 无 schema 点号，quoteIdentifier 包双引号
-    // 在 SQL Server（QUOTED_IDENTIFIER ON）下可用，不会出现 PG 那样 schema.table 被当成
-    // 单标识符找不到关系的问题。
     OdbcItem item;
     item.name = "map_item_1";
     item.qty = 11;
@@ -245,9 +235,6 @@ void testEntityMapping(Fixture &f) {
     auto ins = dbmw::insertAs<OdbcItem>(f.table, item);
     require(ins.status.ok(), "insertAs failed: " + ins.status.message);
     require(ins.affected == 1, "insertAs affected mismatch");
-    // dbmw::insertAs 不会自动追加 OUTPUT INSERTED.id（guide.md:271 明确不为 PG/ODBC 自动补
-    // RETURNING/OUTPUT），因此 SQL Server 上 item.id 不被回填。此处硬断言暴露该缺囗；
-    // 修复方向：insertAs 对 SQL Server 自动补 OUTPUT INSERTED.<pk> 并在 applyGeneratedKeys 回填。
     require(item.id > 0, "insertAs did not backfill generated id (SQL Server OUTPUT INSERTED gap?)");
     const std::int64_t id = item.id;
 
@@ -298,7 +285,6 @@ void testScriptExecution(Fixture &f) {
     require(st.ok(), "runScriptText failed: " + st.message);
     require(executed == 2, "runScriptText executed count mismatch");
 
-    // 复合块里 BEGIN..END 内的 ';' 不得被拆分：splitSqlScript 第二趟屏蔽 BEGIN..END 整段。
     const std::string proc = "CREATE PROCEDURE dbmw_it_script_proc AS SELECT 1 AS n";
     auto procSt = dbmw::common::util::createRoutine(proc);
     require(procSt.ok(), "createRoutine(procedure) failed: " + procSt.message);
@@ -308,7 +294,6 @@ void testScriptExecution(Fixture &f) {
 }
 
 void testRoutinesAndCall(Fixture &f) {
-    // 标量函数：SQL Server 用 {CALL fn(?)} 路径（Dialect::SqlServer 自动生成）。
     require(dbmw::common::util::createRoutine(
         "CREATE FUNCTION dbmw_it_add(@a INT, @b INT) RETURNS INT AS BEGIN RETURN @a + @b END").ok(),
         "createRoutine(function) failed");
@@ -328,18 +313,11 @@ void testRoutinesAndCall(Fixture &f) {
         require(asInt(v) == 7, "function return mismatch");
     }
 
-    // SQL Server 的 OUT/INOUT 参数被 makeCallPlan 显式拒绝（需 DECLARE @var <type> 后才能
-    // EXEC ... OUTPUT，dbmw 无法推断类型）。故 ODBC 不测试 INOUT，与 MySQL/PG 用例不同。
-    // 多结果集：ODBC 驱动未实现多结果集（driver 限制，回退为单结果集），此处仅验证
-    // queryAll 单结果集路径可用；专门的 multi-result-set 断言是 MySQL 专属。
-    // 注意：queryAll 有多个重载，第二参 {} 会在 Params / ParamBatch 之间产生歧义，
-    // 必须显式写 Params{}。
     std::vector<ResultSet> sets;
     auto mSt = dbmw::DBMW::queryAll("SELECT 1 AS n; SELECT 2 AS n", Params{}, sets);
     require(mSt.ok(), "queryAll failed on ODBC: " + mSt.message);
     require(!sets.empty(), "queryAll returned no result set on ODBC");
 
-    // 返回结果集的存储过程：SQL Server 走 {CALL name()}（returnsRows=true）。
     require(dbmw::common::util::createRoutine(
         "CREATE PROCEDURE dbmw_it_rows AS SELECT 1 AS n").ok(),
         "createRoutine(procedure) failed");
@@ -370,9 +348,6 @@ void testAsyncUtil(Fixture &f) {
     auto exec = dbmw::async::util::runScriptText(script).get();
     require(exec.status.ok(), "async runScriptText failed: " + exec.status.message);
 
-    // 注意：callAll 有 callback 重载（返回 async::Handle，无 .get()）与 future 重载
-    // （返回 future<MultiQueryResult>）两个版本。此处显式传 Options{}，使 callback 重载
-    // 因类型不匹配而失效，强制选中 future 重载，否则 {} 会被解析到 callback 重载导致 .get() 编不过。
     dbmw::async::util::Options callAllOpts;
     auto mr = dbmw::async::util::callAll(
         "SELECT dbmw_it_aadd(?, ?)",

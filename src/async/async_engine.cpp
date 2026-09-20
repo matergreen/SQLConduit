@@ -877,7 +877,7 @@ namespace dbmw::async {
         detail::StatementPolicy policy;
         policy.isWrite = false;
         policy.retry = detail::RetryMode::ReadRetries;
-        policy.cacheable = false; // the cache stores one ResultSet, not N
+        policy.cacheable = false;
         return detail::AsyncEngine::submitStatement<MultiQueryResult>(
             resolve(dataSource), sql, params, common::OperationType::Query, policy,
             [sql, params](const core::Session &s, MultiQueryResult &r) {

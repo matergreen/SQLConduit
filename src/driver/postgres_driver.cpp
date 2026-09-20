@@ -647,7 +647,6 @@ namespace dbmw::driver {
                     appendParams(bound, params);
                     const pqxx::result r = execParams(transaction, pgSql, bound);
                     out.affected.push_back(static_cast<std::int64_t>(r.affected_rows()));
-                    // SQL 带 RETURNING 时结果集就是生成键，按批逐条收集（insertBatchAs 依赖）。
                     common::GeneratedKeys keys;
                     fillResultSet(r, keys.rows, 0);
                     out.keys.push_back(std::move(keys));

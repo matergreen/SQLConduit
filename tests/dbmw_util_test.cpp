@@ -44,7 +44,6 @@ static void check(const bool cond, const std::string &name) {
 using RowData = std::vector<std::pair<std::string, common::Value> >;
 
 static std::vector<RowData> gRows;
-// result sets handed out by queryAll(); each entry is one result set
 static std::vector<std::vector<RowData> > gSets;
 static std::atomic<int> gMainExec{0};
 static std::atomic<int> gMainQuery{0};

@@ -106,9 +106,6 @@ namespace dbmw::common {
 
     struct BatchResult {
         std::vector<std::int64_t> affected;
-        // 与 affected 一一对应的每批生成键。只有驱动/基类批量实现能拿到才填
-        // （PG 靠 SQL 自带 RETURNING，MySQL 靠 mysql_insert_id 合成）；
-        // 拿不到时保持为空，调用方按“该批无生成键”处理。
         std::vector<GeneratedKeys> keys;
 
         [[nodiscard]] std::int64_t totalAffected() const {

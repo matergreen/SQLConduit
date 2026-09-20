@@ -227,10 +227,6 @@ void testTransactionsBatchCursorAndAsync(Fixture &f) {
     require(!dbmw::DBMW::slowSqlStats().empty(), "slow SQL metrics empty");
 }
 
-// ----------------------------------------------------------------------------
-// v0.5.x 集成覆盖：实体映射（v0.5.0）+ 脚本执行/存储过程/call/多结果集/异步 util（v0.5.1）
-// 这些功能此前只在单元测试里用合成 ResultSet 验证过，从未接真实驱动跑过。
-// ----------------------------------------------------------------------------
 
 void testEntityMapping(Fixture &f) {
     MapItem item;
@@ -268,7 +264,6 @@ void testEntityMapping(Fixture &f) {
     auto batch = dbmw::insertBatchAs<MapItem>(f.table, bv);
     require(batch.status.ok(), "insertBatchAs failed: " + batch.status.message);
     require(batch.batch.totalAffected() == 2, "insertBatchAs affected mismatch");
-    // MySQL 批量走 mysql_insert_id 合成，具名 vector 的重载同样会回填。
     require(bv[0].id > 0 && bv[1].id > 0, "insertBatchAs did not backfill generated ids");
     require(bv[0].id != bv[1].id, "insertBatchAs backfilled the same id twice");
 
@@ -291,7 +286,6 @@ void testScriptExecution(Fixture &f) {
     require(st.ok(), "runScriptText failed: " + st.message);
     require(executed == 2, "runScriptText executed count mismatch");
 
-    // 复合块里 BEGIN..END 内的 ';' 不得被拆分：整段作为单条语句下发到真实库。
     const std::string proc =
         "CREATE PROCEDURE dbmw_it_script_proc() BEGIN SELECT 1; SELECT 2; END";
     auto procSt = dbmw::common::util::createRoutine(proc);
@@ -306,8 +300,6 @@ void testRoutinesAndCall(Fixture &f) {
         "CREATE FUNCTION dbmw_it_add(a INT, b INT) RETURNS INT DETERMINISTIC RETURN a + b";
     require(dbmw::common::util::createRoutine(addFn).ok(), "createRoutine(function) failed");
 
-    // MySQL 函数必须用 SELECT 路径调用（dbmw 对 MySQL RoutineRef 统一生成 CALL，
-    // 而 CALL 仅适用于存储过程），故标量函数走 callQuery。
     ResultSet rs;
     auto st = dbmw::common::util::callQuery(
         "SELECT dbmw_it_add(?,?)",
@@ -317,7 +309,6 @@ void testRoutinesAndCall(Fixture &f) {
     if (rs.rowCount() == 1)
         require(asInt(rs.rows().front().data().begin()->second) == 7, "function return mismatch");
 
-    // INOUT 存储过程：需同连接，走 core::Session 重载（preSql SET + CALL + fetchSql）。
     const std::string swapProc =
         "CREATE PROCEDURE dbmw_it_swap(INOUT a INT, INOUT b INT) "
         "BEGIN SET a = a + b; SET b = a - b; SET a = a - b; END";
@@ -338,7 +329,6 @@ void testRoutinesAndCall(Fixture &f) {
         require(asInt(ioRes.outParams[1]) == 5, "INOUT b after swap mismatch");
     }
 
-    // 多结果集：存储过程内多条 SELECT，驱动 queryAll 逐集 drain。
     const std::string multiProc =
         "CREATE PROCEDURE dbmw_it_multi() BEGIN SELECT 1 AS n; SELECT 2 AS n; END";
     require(dbmw::common::util::createRoutine(multiProc).ok(),
@@ -369,9 +359,6 @@ void testAsyncUtil(Fixture &f) {
     auto exec = dbmw::async::util::runScriptText(script).get();
     require(exec.status.ok(), "async runScriptText failed: " + exec.status.message);
 
-    // 注意：callAll 有 callback 重载（返回 async::Handle，无 .get()）与 future 重载
-    // （返回 future<MultiQueryResult>）两个版本。此处显式传 Options{}，使 callback 重载
-    // 因类型不匹配而失效，强制选中 future 重载，否则 {} 会被解析到 callback 重载导致 .get() 编不过。
     dbmw::async::util::Options callAllOpts;
     auto mr = dbmw::async::util::callAll(
         "SELECT dbmw_it_aadd(?,?)",

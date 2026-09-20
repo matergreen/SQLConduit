@@ -117,9 +117,6 @@ namespace dbmw::driver {
     private:
         common::Status lastError(const char *where);
 
-        // Consumes (and discards) every result set after the first. MySQL leaves
-        // the connection in "Commands out of sync" until they are all read; CALL
-        // routinely emits more than one.
         common::Status drainRemainingResults();
 
         friend class MyCursor;

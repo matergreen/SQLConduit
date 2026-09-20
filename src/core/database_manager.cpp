@@ -193,13 +193,15 @@ namespace dbmw::core {
 
         constexpr std::chrono::milliseconds kUsePoolDefault{-1};
 
-        std::shared_ptr<IRateLimiter> makeRateLimiter(const config::RateLimitConfig &cfg) {
-            if (cfg.enabled && cfg.global_qps > 0)
+        std::shared_ptr<IRateLimiter> makeRateLimiter(
+            const config::RateLimitConfig &cfg,
+            const std::shared_ptr<IRateLimiter> &defaultLimiter) {
+            if (cfg.enabled && (cfg.global_qps > 0 || cfg.per_fingerprint_qps > 0))
                 return std::make_shared<RateLimiter>(
                     static_cast<double>(cfg.global_qps),
                     static_cast<double>(cfg.per_fingerprint_qps),
                     cfg.burst, cfg.fingerprint_mode);
-            return DatabaseManager::defaultRateLimiter_;
+            return defaultLimiter;
         }
 
         void appendValueKey(const common::Value &v, std::string &key);
@@ -895,11 +897,11 @@ namespace dbmw::core {
     common::Status DataSource::preGate(const std::string &sql,
                                        const common::OperationType type) const {
         if (const auto s = SqlAuditor::check(sql, type, readOnly_); !s.ok()) return s;
-        if (rateLimiter_) {
-            const std::uint64_t fp = rateLimiter_->usesFingerprint()
+        if (const auto limiter = std::atomic_load(&rateLimiter_)) {
+            const std::uint64_t fp = limiter->usesFingerprint()
                                          ? common::sql::fingerprintTemplate(sql)
                                          : 0;
-            if (!rateLimiter_->acquire(fp)) {
+            if (!limiter->acquire(fp)) {
                 auto status = common::Status::error(common::ErrorCode::RateLimited,
                                                     "datasource '" + name_ + "' rate limited");
                 status.retryable = false;
@@ -910,8 +912,9 @@ namespace dbmw::core {
     }
 
     common::Status DataSource::gateSession() const {
-        if (!rateLimiter_) return common::Status::OK();
-        if (!rateLimiter_->acquire(0)) {
+        const auto limiter = std::atomic_load(&rateLimiter_);
+        if (!limiter) return common::Status::OK();
+        if (!limiter->acquire(0)) {
             auto status = common::Status::error(common::ErrorCode::RateLimited,
                                                 "datasource '" + name_ + "' rate limited");
             status.retryable = false;
@@ -1980,6 +1983,13 @@ namespace dbmw::core {
         std::vector<std::shared_ptr<WriteBuffer> > newWriteBuffers;
         auto newHeartbeat = std::make_unique<HeartbeatManager>(
             std::chrono::milliseconds(cfg.heartbeat_interval_ms));
+        std::shared_ptr<IRateLimiter> defaultLimiter;
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            defaultLimiter = defaultRateLimiter_;
+        }
+        const bool configuredRateLimiter = cfg.rate_limit.enabled &&
+            (cfg.rate_limit.global_qps > 0 || cfg.rate_limit.per_fingerprint_qps > 0);
         const std::chrono::milliseconds borrowTimeout(cfg.pool.borrow_timeout_ms);
         const std::chrono::milliseconds idleTimeout(cfg.pool.idle_timeout_ms);
         const std::chrono::milliseconds maxLifetime(cfg.pool.max_lifetime_ms);
@@ -1999,10 +2009,11 @@ namespace dbmw::core {
             std::shared_ptr<DataSource> source;
             if (const auto st = buildSingleDataSource(
                 dsc, cfg.pool, cfg.retry, cfg.circuit_breaker, cfg.cursor,
-                makeRateLimiter(cfg.rate_limit), replicaNames,
+                makeRateLimiter(cfg.rate_limit, defaultLimiter), replicaNames,
                 false, pool, source); !st.ok()) {
                 return st;
             }
+            source->inheritsDefaultRateLimiter_ = !configuredRateLimiter;
             newPools[dsc.name] = std::move(pool);
             newSources[dsc.name] = std::move(source);
             newHeartbeat->addPool(newPools[dsc.name]);
@@ -2033,10 +2044,13 @@ namespace dbmw::core {
                 return st;
 
             std::shared_ptr<DataSource> source;
+            GroupOptions groupOptions;
+            groupOptions.rate_limiter = makeRateLimiter(cfg.rate_limit, defaultLimiter);
             if (const auto st = buildSingleDataSourceGroup(
-                group, cfg.pool, {}, newSources, replicaNames,
+                group, cfg.pool, groupOptions, newSources, replicaNames,
                 newWriteBuffers, source); !st.ok())
                 return st;
+            source->inheritsDefaultRateLimiter_ = !configuredRateLimiter;
             newSources[group.name] = std::move(source);
         }
 
@@ -2059,6 +2073,10 @@ namespace dbmw::core {
         for (const auto &buffer: newWriteBuffers) buffer->start();
         {
             std::lock_guard<std::mutex> lk(mtx_);
+            for (const auto &entry: newSources) {
+                if (entry.second && entry.second->inheritsDefaultRateLimiter_)
+                    std::atomic_store(&entry.second->rateLimiter_, defaultRateLimiter_);
+            }
             oldHeartbeat = std::move(heartbeat_);
             oldPools = std::move(pools_);
             oldSources = std::move(datasources_);
@@ -2345,7 +2363,12 @@ namespace dbmw::core {
     }
 
     void DatabaseManager::setDefaultRateLimiter(std::shared_ptr<IRateLimiter> limiter) noexcept {
+        std::lock_guard<std::mutex> lk(mtx_);
         defaultRateLimiter_ = std::move(limiter);
+        for (const auto &entry: datasources_) {
+            if (entry.second && entry.second->inheritsDefaultRateLimiter_)
+                std::atomic_store(&entry.second->rateLimiter_, defaultRateLimiter_);
+        }
     }
 
     common::Status DatabaseManager::addDataSource(const config::DataSourceConfig &cfg,
@@ -2373,16 +2396,19 @@ namespace dbmw::core {
         runtimePool.enabled = true;
 
         const std::unordered_set<std::string> emptyReplicaNames;
-        config::RateLimitConfig defaultRate;
         std::shared_ptr<ConnectionPool> pool;
         std::shared_ptr<DataSource> source;
         std::shared_ptr<IRateLimiter> limiter = opts.rate_limiter;
-        if (!limiter) limiter = makeRateLimiter(defaultRate);
+        if (!limiter) {
+            std::lock_guard<std::mutex> lk(mtx_);
+            limiter = defaultRateLimiter_;
+        }
         if (const auto st = buildSingleDataSource(
             cfg, runtimePool, opts.retry, opts.circuit_breaker, opts.cursor,
             std::move(limiter),
             emptyReplicaNames, opts.attach_heartbeat, pool, source); !st.ok())
             return st;
+        source->inheritsDefaultRateLimiter_ = !opts.rate_limiter;
         source->readOnly_ = opts.read_only;
         {
             std::lock_guard<std::mutex> lk(mtx_);
@@ -2470,6 +2496,8 @@ namespace dbmw::core {
         std::shared_ptr<DataSource> source;
         {
             std::lock_guard<std::mutex> lk(mtx_);
+            GroupOptions effectiveOpts = opts;
+            if (!effectiveOpts.rate_limiter) effectiveOpts.rate_limiter = defaultRateLimiter_;
             if (pools_.find(cfg.name) != pools_.end() ||
                 datasources_.find(cfg.name) != datasources_.end()) {
                 return common::Status::error(common::ErrorCode::ConfigError,
@@ -2492,9 +2520,10 @@ namespace dbmw::core {
             if (const auto st = validateGroupRefs(cfg, pools_, {}); !st.ok())
                 return st;
             if (const auto st = buildSingleDataSourceGroup(
-                cfg, {}, opts, datasources_, {},
+                cfg, {}, effectiveOpts, datasources_, {},
                 stagedBuffers, source); !st.ok())
                 return st;
+            source->inheritsDefaultRateLimiter_ = !opts.rate_limiter;
             for (const auto &replica: cfg.replicas) {
                 const auto it = datasources_.find(replica.name);
                 if (it != datasources_.end() && it->second)

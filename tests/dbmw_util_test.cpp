@@ -57,6 +57,7 @@ static std::atomic<int> gBegin{0};
 static std::atomic<int> gCommit{0};
 static std::atomic<int> gRollback{0};
 static std::atomic<int> gFailRemaining{0};
+static std::atomic<int> gExecDelayMs{0};
 static std::int64_t gAffected = 1;
 static std::string gLastSql;
 
@@ -106,6 +107,8 @@ public:
     Status execute(const std::string &sql, std::int64_t &affected) override {
         gLastSql = sql;
         if (exec_) ++(*exec_);
+        if (gExecDelayMs.load() > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(gExecDelayMs.load()));
         if (gFailRemaining.load() > 0) {
             gFailRemaining.fetch_sub(1);
             Status st = Status::error(ErrorCode::QueryError, "mock injected failure");
@@ -206,6 +209,7 @@ static void resetCounters() {
     gCommit = 0;
     gRollback = 0;
     gFailRemaining = 0;
+    gExecDelayMs = 0;
     gAffected = 1;
     gLastSql.clear();
     gSets.clear();
@@ -1145,9 +1149,40 @@ int main() {
 
         std::promise<async::ExecResult> pr;
         auto fut = pr.get_future();
-        async::util::runScriptText("SELECT 1; SELECT 2",
-                                   [&pr](async::ExecResult &&r) { pr.set_value(std::move(r)); }, o);
+        const auto handle = async::util::runScriptText(
+            "SELECT 1; SELECT 2",
+            [&pr](async::ExecResult &&r) { pr.set_value(std::move(r)); }, o);
+        check(handle.valid(), "U37 回调形态返回可跟踪句柄");
         check(fut.get().status.ok(), "U37 回调形态执行成功");
+
+        resetCounters();
+        gFailRemaining = 1;
+        util::ScriptOptions continueOnError = o;
+        continueOnError.stopOnError = false;
+        const auto failed = async::util::runScriptText(
+            "SELECT 1; SELECT 2; SELECT 3", continueOnError).get();
+        check(!failed.status.ok() && failed.status.code == ErrorCode::QueryError,
+              "U37 stopOnError=false 继续执行后仍返回错误");
+        check(gMainExec.load() == 3, "U37 异步脚本严格按顺序尝试全部语句");
+        resetCounters();
+        gFailRemaining = 0;
+
+        std::promise<async::ExecResult> cancelledPromise;
+        auto cancelledFuture = cancelledPromise.get_future();
+        gExecDelayMs = 100;
+        const auto cancellable = async::util::runScriptText(
+            "SELECT 1; SELECT 2; SELECT 3",
+            [&cancelledPromise](async::ExecResult &&r) {
+                cancelledPromise.set_value(std::move(r));
+            }, o);
+        for (int i = 0; i < 100 && gMainExec.load() == 0; ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        cancellable.cancel();
+        const auto cancelled = cancelledFuture.get();
+        check(cancelled.status.code == ErrorCode::Cancelled,
+              "U37 取消脚本后以 Cancelled 完成");
+        check(gMainExec.load() == 1, "U37 取消后不再调度后续语句");
+        resetCounters();
 
         const std::string base = (std::filesystem::temp_directory_path() /
                                   "dbmw_script_test3").string();

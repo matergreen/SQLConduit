@@ -67,7 +67,6 @@ include/dbmw/
 src/         对应实现
 tests/       dbmw_core_test.cpp  dbmw_async_test.cpp  dbmw_coro_test.cpp(coro=ON)
              dbmw_mapping_test.cpp(实体映射)
-examples/    basic_usage.cpp  async_example.cpp
 config/      datasources.json.example
 third_party/nlohmann/json.hpp  (vendored 单头，离线可用)
 scripts/     setup-wsl.sh
@@ -92,8 +91,6 @@ cmake ..                                   # 仅核心层
 # cmake .. -DDBMW_ENABLE_ASYNC_CORO=ON
 cmake --build .
 
-# 3) 运行示例（演示加载配置与查询；默认驱动未启用会得到 DriverDisabled 提示）
-./examples/dbmw_example_basic ../config/datasources.json.example
 ```
 
 运行测试（可选，不需要真实数据库，用 mock 驱动验证核心语义）：
@@ -128,8 +125,6 @@ cmake .. \
   -DDBMW_ENABLE_MYSQL=ON -DDBMW_ENABLE_POSTGRES=ON -DDBMW_ENABLE_ODBC=ON
 cmake --build . -j"$(sysctl -n hw.ncpu)"
 
-# 4) 运行示例
-./examples/dbmw_example_basic ../config/datasources.json.example
 ```
 
 > 只启用部分驱动时，删掉对应 `-DDBMW_ENABLE_*` 并去掉 `CMAKE_PREFIX_PATH` 里未安装的包（未安装的 `brew --prefix <pkg>` 会报错）；核心层不需要任何客户端库，可直接 `cmake ..` 构建。
@@ -556,6 +551,7 @@ public:
 
 - **全局默认**：`DBMW::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());`
   之后任意未显式指定限流器的数据源，在配置未启用 `rate_limit` 时回退到这个默认实现。
+  可在 `DBMW::init()` 之前或之后调用；后调用时会立即更新所有继承默认值的已有数据源和组。
 - **逐数据源覆盖**：`DataSourceOptions::rate_limiter`（或 `GroupOptions::rate_limiter`）传入
   `shared_ptr<IRateLimiter>`，该数据源优先用你给的实现，**优先于全局默认**。
 
@@ -571,7 +567,7 @@ opts.rate_limiter = std::make_shared<dbmw::core::RateLimiter>(100000.0, 0.0, 100
 mgr.addDataSource(cfg, opts);
 ```
 
-优先级（高 → 低）：`opts.rate_limiter`（逐源） > 配置 `rate_limit`（按 global_qps 构造的 `RateLimiter`） > `DBMW::setDefaultRateLimiter`（全局默认）。
+优先级（高 → 低）：`opts.rate_limiter`（逐源） > 配置 `rate_limit`（`global_qps` 或 `per_fingerprint_qps` 任一启用即构造 `RateLimiter`） > `DBMW::setDefaultRateLimiter`（全局默认）。
 调用点 `preGate` / `gateSession` 只调 `acquire`，因此替换算法对上层完全透明、零侵入。
 
 ### SQL 审计与拦截（sql_audit）
@@ -1004,7 +1000,7 @@ dbmw::async::Task<void> demo() {
 dbmw::async::run(demo());   // 受控 fire-and-forget：跑完自毁，不悬垂
 ```
 
-**自定义执行器（asio 接入）**：`dbmw::async::setExecutor(...)` 注入 `IExecutor` 适配器后，完成回调与协程恢复发生在你自己的事件循环线程上（适配器形状见 `examples/async_example.cpp` 第 5 段）。
+**自定义执行器（asio 接入）**：实现 `IExecutor::post(std::function<void()>)`，再通过 `dbmw::async::setExecutor(...)` 注入适配器；完成回调与协程恢复会发生在自定义事件循环线程上。
 
 约束与注意：
 
@@ -1012,11 +1008,10 @@ dbmw::async::run(demo());   // 受控 fire-and-forget：跑完自毁，不悬垂
 - `run()` 启动的顶层协程内未捕获异常会 `terminate`（不静默吞掉）；异常应协程内处理，或经 `co_await` 链传给有 `try/catch` 的外层。
 - 协程体不要用捕获局部引用的 lambda——闭包临时对象先于异步完成销毁，捕获会悬垂；用具名函数返回 `Task`。
 - GCC 13 已知缺陷：`co_await` 实参中直接写非平凡花括号临时（如 `{Value(1)}`）会触发编译器 ICE（PR109227 系）；参数先具名构造再传入即可规避，GCC 14+ / Clang / MSVC 不受影响。
-- 完整设计（含排水顺序、超时判定与一致性测试矩阵）见 `docs/async-design-v0.2.0.md`。
 
 ## 实体映射（v0.5.0：Row ↔ 业务实体，读写双向）
 
-`include/dbmw/mapping.h` 是 **header-only** 的适配层：把 `ResultSet` 的行按**业务手写的字段声明**搬进/搬出业务结构体。它不是 ORM——SQL 仍由业务书写、没有脏跟踪与延迟加载、`dbmw.h` 与引擎核心**零改动**。与 v0.4.0 非目标的关系见 `docs/roadmap-design-v0.4.0.md` §1.2 的 v0.5.0 修订说明。
+`include/dbmw/mapping.h` 是 **header-only** 的适配层：把 `ResultSet` 的行按**业务手写的字段声明**搬进/搬出业务结构体。它不是 ORM——SQL 仍由业务书写、没有脏跟踪与延迟加载、`dbmw.h` 与引擎核心**零改动**。
 
 ### 一次声明
 
@@ -1122,8 +1117,6 @@ MySQL 走基类批量循环里的 `mysql_insert_id`。
 - **查询缓存**：只缓存原始 `ResultSet`，命中后再映射——实体从不进缓存。
 - **脱敏**：映射发生在 `afterExecution` 之后，业务实体拿到的是脱敏后的值。
 - **异步**：`dbmw::async::queryAs<T>` 提供回调 / future / 协程三形态，映射跑在**完成投递线程**（默认 worker；注入 asio 时是 `io_context` 线程），因此映射逻辑必须轻量——大结果集走 `queryEachAs` 流式分流。
-
-完整设计（转换矩阵、不变量、M1–M23 测试矩阵）见 `docs/mapping-design-v0.5.0.md`。
 
 ## PostgreSQL 数组 / 复合 / 几何类型
 
@@ -1304,7 +1297,7 @@ MySQL 的 `query` / `execute` 现在会消费完剩余结果集（否则连接�
 
 - 治理：每条语句走 `detail::runDdl`，与 `createRoutine` / `createIndex` 同源（强制主库、清除 shadow、默认 `NonIdempotent`、失效缓存）。
 - 错误：`readSqlFile` 失败或目录不存在 → `ErrorCode::IoError`；`stopOnError=true`（默认）首错即停，`false` 跑完全部、最后一条错误胜出；逐文件 `ScriptResult`（`path` / `status` / `statements` / `executed`）。
-- 异步：`async::util` 同样提供回调 / future / 协程三形态，每条语句用 `ExecScope` 包治理走 `async::execute`。
+- 异步：`async::util` 同样提供回调 / future / 协程三形态；语句严格串行，前一条完成后才调度下一条。回调形态返回聚合 `Handle`，`state()` 跟踪当前语句，`cancel()` 会取消当前操作并阻止后续语句调度；即使 `stopOnError=false`，最终状态仍保留最后一次错误。每条语句用 `ExecScope` 包治理走 `async::execute`。
 
 ### 治理行为（不变量）
 
@@ -1329,12 +1322,10 @@ PG 的 `$$ ... $$` 体本来就被字面量 mask，所以这个 bug 只在 MySQL
 
 ### 已知限制
 
-1. **多结果集**：MySQL / SQL Server 的 `CALL` 已支持多结果集收集（见设计文档 §14）；其余驱动退化为单结果集。
-2. **OUT / INOUT 参数**：MySQL（需 `Session`）、postgres 函数已支持；postgres 存储过程 / SQL Server / 异步路径返回 `NotSupported`（见设计文档 §14）。
+1. **多结果集**：MySQL / SQL Server 的 `CALL` 已支持多结果集收集；其余驱动退化为单结果集。
+2. **OUT / INOUT 参数**：MySQL（需 `Session`）、postgres 函数已支持；postgres 存储过程 / SQL Server / 异步路径返回 `NotSupported`。
 3. **事务内 DDL**：MySQL 隐式提交、不可回滚；util 无法改变，DDL 默认不带事务执行。
 4. **例程体不做翻译**：跨库部署请维护 N 份方言脚本，由 util 统一管理与执行。
-
-完整设计（跨驱动差异矩阵、冲突分析、U1–U20 测试矩阵）见 `docs/util-design-v0.5.1.md`。
 
 ## 可观测性
 

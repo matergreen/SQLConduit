@@ -22,8 +22,7 @@ dbmw 为 C++ 应用提供统一的数据库访问层。应用通过同一套 API
 
 ```bash
 cmake -S . -B build \
-  -DDBMW_ENABLE_POSTGRES=ON \
-  -DDBMW_BUILD_EXAMPLES=ON
+  -DDBMW_ENABLE_POSTGRES=ON
 cmake --build build -j
 ```
 
@@ -139,10 +138,9 @@ struct User {
 template <> struct dbmw::mapping::RowMapper<User> {
     static auto describe() {
         return dbmw::mapping::Mapping<User>()
-            .field(&User::id,    "id")
+            .field(&User::id,    "id", dbmw::mapping::FieldFlags::PrimaryKey)
             .field(&User::name,  "name")
-            .field(&User::email, "email",
-                   dbmw::mapping::FieldFlags::PrimaryKey);
+            .field(&User::email, "email");
     }
 };
 
@@ -200,8 +198,6 @@ postgres 存储过程与 SQL Server 返回 `NotSupported`，异步路径同样�
 治理行为：DDL 强制走主库（清除 shadow 标记）、默认 `NonIdempotent`（不重试）、
 结构变更后失效该数据源查询缓存；方言不支持的组合（`CREATE OR REPLACE`、
 `IF NOT EXISTS`、`CASCADE`、`CONCURRENTLY`、`USING`）一律返回 `NotSupported`，不静默降级。
-详见 [util 设计文档](docs/util-design-v0.5.1.md)。
-
 #### 5.x.1 脚本执行（目录 / 文件列表 / 内存）
 
 `util` 还能批量跑 SQL 脚本：按目录递归收集 `.sql`、给定文件列表、或直接执行内存里的脚本字符串。
@@ -219,7 +215,8 @@ util::runScriptText("CREATE TABLE t(id INT); INSERT INTO t VALUES (1);", o); // 
 
 失败时：文件 / 目录问题返回 `IoError`；语句错误按 `stopOnError`（默认 `true`）首错即停，
 `stopOnError=false` 跑完全部、最后一条错误胜出。逐文件结果落在 `perFile`。
-异步见 `async::util::runScriptText` / `runScripts` / `runScriptsInDir`（回调 / future / 协程）。
+异步见 `async::util::runScriptText` / `runScripts` / `runScriptsInDir`（回调 / future / 协程）；
+语句严格串行调度，回调形态返回的 `Handle` 可查询状态或取消剩余脚本。
 
 ### 6. 运行测试
 
@@ -245,8 +242,5 @@ ctest --test-dir build --output-on-failure
 
 ## 详细文档
 
-连接池、异步 API、游标、故障转移、可观测性、错误码、配置项和驱动扩展等内容见
-[dbmw 详细指南](docs/guide.md)。异步实现设计见
-[异步设计文档](docs/async-design-v0.2.0.md)，实体映射设计见
-[映射设计文档](docs/mapping-design-v0.5.0.md)，例程与索引设计见
-[util 设计文档](docs/util-design-v0.5.1.md)。
+连接池、异步 API、实体映射、例程与脚本、PostgreSQL 类型、故障转移、可观测性、
+错误码、配置项和驱动扩展等内容见 [dbmw 详细指南](docs/guide.md)。

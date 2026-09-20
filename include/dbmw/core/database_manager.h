@@ -489,6 +489,7 @@ namespace dbmw {
             bool fallbackToPrimary_ = true;
             mutable std::atomic<std::int64_t> lastWriteNs_{0};
             std::shared_ptr<IRateLimiter> rateLimiter_;
+            bool inheritsDefaultRateLimiter_ = false;
             bool readOnly_ = false;
             std::atomic<bool> readReplica_{false};
             std::vector<std::shared_ptr<DataSource> > failoverPrimaries_;
@@ -549,9 +550,7 @@ namespace dbmw {
 
             void shutdown(std::chrono::milliseconds grace = std::chrono::milliseconds(5000));
 
-            static void setDefaultRateLimiter(std::shared_ptr<IRateLimiter> limiter) noexcept;
-
-            inline static std::shared_ptr<IRateLimiter> defaultRateLimiter_;
+            void setDefaultRateLimiter(std::shared_ptr<IRateLimiter> limiter) noexcept;
 
             size_t dataSourceCount() const;
 
@@ -595,6 +594,7 @@ namespace dbmw {
             std::unique_ptr<HeartbeatManager> heartbeat_;
             std::vector<std::shared_ptr<WriteBuffer> > writeBuffers_;
             std::string defaultName_;
+            std::shared_ptr<IRateLimiter> defaultRateLimiter_;
             std::unique_ptr<StatsReporter> statsReporter_;
             std::shared_ptr<PoolCollectorLease> poolCollectorLease_;
         };

@@ -78,7 +78,6 @@ jobs:
             -DDBMW_ENABLE_POSTGRES=${{ matrix.drivers }} \
             -DDBMW_ENABLE_ODBC=${{ matrix.drivers }} \
             -DDBMW_ENABLE_ASYNC_CORO=${{ matrix.coro }} \
-            -DDBMW_BUILD_EXAMPLES=ON \
             -DDBMW_BUILD_TESTS=ON
 
       - name: 配置 (Windows)
@@ -89,7 +88,6 @@ jobs:
             -DDBMW_ENABLE_POSTGRES=${{ matrix.drivers }} `
             -DDBMW_ENABLE_ODBC=${{ matrix.drivers }} `
             -DDBMW_ENABLE_ASYNC_CORO=${{ matrix.coro }} `
-            -DDBMW_BUILD_EXAMPLES=ON `
             -DDBMW_BUILD_TESTS=ON
 
       - name: 编译

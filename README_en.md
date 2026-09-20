@@ -25,8 +25,7 @@ the required driver:
 
 ```bash
 cmake -S . -B build \
-  -DDBMW_ENABLE_POSTGRES=ON \
-  -DDBMW_BUILD_EXAMPLES=ON
+  -DDBMW_ENABLE_POSTGRES=ON
 cmake --build build -j
 ```
 
@@ -146,10 +145,9 @@ struct User {
 template <> struct dbmw::mapping::RowMapper<User> {
     static auto describe() {
         return dbmw::mapping::Mapping<User>()
-            .field(&User::id,    "id")
+            .field(&User::id,    "id", dbmw::mapping::FieldFlags::PrimaryKey)
             .field(&User::name,  "name")
-            .field(&User::email, "email",
-                   dbmw::mapping::FieldFlags::PrimaryKey);
+            .field(&User::email, "email");
     }
 };
 
@@ -236,9 +234,8 @@ util::runScriptText("CREATE TABLE t(id INT); INSERT INTO t VALUES (1);", o);  //
 On failure a missing file/directory yields `IoError`; a statement error stops at the first one when
 `stopOnError` (default) is true, or runs everything and lets the last error win when false. Per-file
 results land in `perFile`. Async: `async::util::runScriptText` / `runScripts` / `runScriptsInDir`
-(callback / future / coroutine).
-
-See the [util design document](docs/util-design-v0.5.1.md).
+(callback / future / coroutine). Statements are scheduled strictly in sequence; callback forms
+return a `Handle` that can report state or cancel the remaining script.
 
 ### 6. Run tests
 
@@ -266,7 +263,5 @@ ctest --test-dir build --output-on-failure
 ## Detailed documentation
 
 See the [dbmw detailed guide](docs/guide_en.md) for connection pooling, asynchronous APIs,
-cursors, failover, observability, error codes, configuration, and driver extensions. See the
-[asynchronous design document](docs/async-design-v0.2.0.md) for implementation details, and the
-[mapping design document](docs/mapping-design-v0.5.0.md) for entity mapping, and the
-[util design document](docs/util-design-v0.5.1.md) for routine/index management.
+entity mapping, routines and scripts, PostgreSQL types, cursors, failover, observability,
+configuration, and driver extensions.

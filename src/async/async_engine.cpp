@@ -806,11 +806,13 @@ namespace dbmw::async {
     }
 
     Handle::State Handle::state() const {
+        if (control_ && control_->state) return control_->state();
         if (!s_) return State::Done;
         return s_->state.load(std::memory_order_acquire);
     }
 
     common::Status Handle::cancel() const {
+        if (control_ && control_->cancel) return control_->cancel();
         if (!s_) {
             return common::Status::error(common::ErrorCode::ConfigError,
                                          "invalid handle (default-constructed or moved-from)");

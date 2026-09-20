@@ -73,9 +73,18 @@ namespace dbmw::async {
     public:
         Handle() = default;
 
-        [[nodiscard]] bool valid() const { return s_ != nullptr; }
+        [[nodiscard]] bool valid() const { return s_ != nullptr || control_ != nullptr; }
 
         enum class State { Queued, Running, Done };
+
+        static Handle controlled(std::function<State()> state,
+                                 std::function<common::Status()> cancel) {
+            Handle h;
+            h.control_ = std::make_shared<Control>();
+            h.control_->state = std::move(state);
+            h.control_->cancel = std::move(cancel);
+            return h;
+        }
 
         [[nodiscard]] State state() const;
 
@@ -87,7 +96,13 @@ namespace dbmw::async {
         explicit Handle(std::shared_ptr<detail::OpState> s) : s_(std::move(s)) {
         }
 
+        struct Control {
+            std::function<State()> state;
+            std::function<common::Status()> cancel;
+        };
+
         std::shared_ptr<detail::OpState> s_;
+        std::shared_ptr<Control> control_;
     };
 }
 

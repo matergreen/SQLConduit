@@ -50,7 +50,7 @@ namespace dbmw::core {
     class RateLimiter : public IRateLimiter {
     public:
         RateLimiter(double globalQps, double perFpQps, int burst, std::string fpMode)
-            : perFpQps_(perFpQps), fpMode_(std::move(fpMode)) {
+            : perFpQps_(perFpQps), burst_(burst), fpMode_(std::move(fpMode)) {
             if (globalQps > 0) {
                 const double b = burst > 0 ? static_cast<double>(burst) : globalQps;
                 global_ = std::make_shared<TokenBucket>(globalQps, b);
@@ -62,8 +62,7 @@ namespace dbmw::core {
         }
 
         bool acquire(std::uint64_t fp) override {
-            if (!global_) return true;
-            if (!global_->tryAcquire()) return false;
+            if (global_ && !global_->tryAcquire()) return false;
             if (fp != 0 && fpMode_ != "off" && perFpQps_ > 0) {
                 std::shared_ptr<TokenBucket> bucket;
                 {
@@ -71,7 +70,8 @@ namespace dbmw::core {
                     auto it = fpBuckets_.find(fp);
                     if (it == fpBuckets_.end()) {
                         if (fpBuckets_.size() >= kFpCap) return true;
-                        bucket = std::make_shared<TokenBucket>(perFpQps_, perFpQps_);
+                        const double b = burst_ > 0 ? static_cast<double>(burst_) : perFpQps_;
+                        bucket = std::make_shared<TokenBucket>(perFpQps_, b);
                         fpBuckets_[fp] = bucket;
                     } else {
                         bucket = it->second;
@@ -86,6 +86,7 @@ namespace dbmw::core {
         static constexpr std::size_t kFpCap = 1024;
         std::shared_ptr<TokenBucket> global_;
         double perFpQps_;
+        int burst_;
         std::string fpMode_;
         std::mutex mapMtx_;
         std::unordered_map<std::uint64_t, std::shared_ptr<TokenBucket> > fpBuckets_;

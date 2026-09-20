@@ -22,6 +22,7 @@
 #include <fstream>
 #include <future>
 #include <iterator>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -1236,29 +1237,94 @@ namespace dbmw::async::util {
             std::vector<common::util::ScriptResult> results;
             bool useText = false;
             ExecCallback userCb;
+            std::mutex mutex;
+            Handle current;
+            common::Status lastError;
+            bool cancelRequested = false;
+            bool done = false;
+            bool callbackDelivered = false;
+            std::uint64_t generation = 0;
         };
+
+        inline void scriptFinish(const std::shared_ptr<ScriptRunState> &st,
+                                 common::Status status) {
+            ExecCallback cb;
+            {
+                std::lock_guard<std::mutex> lk(st->mutex);
+                if (st->callbackDelivered) return;
+                st->done = true;
+                st->callbackDelivered = true;
+                cb = st->userCb;
+            }
+            ExecResult out;
+            out.status = std::move(status);
+            if (cb) cb(std::move(out));
+        }
+
+        inline Handle scriptHandle(const std::shared_ptr<ScriptRunState> &st) {
+            const std::weak_ptr<ScriptRunState> weak = st;
+            return Handle::controlled(
+                [weak] {
+                    const auto state = weak.lock();
+                    if (!state) return Handle::State::Done;
+                    Handle current;
+                    {
+                        std::lock_guard<std::mutex> lk(state->mutex);
+                        if (state->done) return Handle::State::Done;
+                        current = state->current;
+                    }
+                    return current.valid() ? current.state() : Handle::State::Queued;
+                },
+                [weak] {
+                    const auto state = weak.lock();
+                    if (!state)
+                        return common::Status::error(common::ErrorCode::QueryError,
+                                                     "script operation already finished");
+                    Handle current;
+                    {
+                        std::lock_guard<std::mutex> lk(state->mutex);
+                        if (state->done)
+                            return common::Status::error(common::ErrorCode::QueryError,
+                                                         "script operation already finished");
+                        state->cancelRequested = true;
+                        current = state->current;
+                    }
+                    return current.valid() ? current.cancel() : common::Status::OK();
+                });
+        }
 
         inline void scriptRunStatement(std::shared_ptr<ScriptRunState> st,
                                        std::string path,
                                        std::vector<std::string> stmts,
-                                       std::size_t idx, std::size_t executed);
+                                       std::size_t idx, std::size_t executed,
+                                       common::Status fileStatus = common::Status::OK());
 
         inline void scriptRunFile(std::shared_ptr<ScriptRunState> st);
 
         inline void scriptRunStatement(std::shared_ptr<ScriptRunState> st,
                                        std::string path,
                                        std::vector<std::string> stmts,
-                                       std::size_t idx, std::size_t executed) {
+                                       std::size_t idx, std::size_t executed,
+                                       common::Status fileStatus) {
+            bool cancelled = false;
+            {
+                std::lock_guard<std::mutex> lk(st->mutex);
+                cancelled = st->cancelRequested;
+            }
+            if (cancelled) {
+                scriptFinish(st, common::Status::error(common::ErrorCode::Cancelled,
+                                                       "script execution cancelled"));
+                return;
+            }
             if (idx >= stmts.size()) {
                 common::util::ScriptResult fr;
                 fr.path = std::move(path);
                 fr.statements = stmts.size();
                 fr.executed = executed;
-                fr.status = common::Status::OK();
+                fr.status = fileStatus;
                 st->results.push_back(std::move(fr));
                 if (st->useText) {
-                    ExecResult r;
-                    if (st->userCb) st->userCb(std::move(r));
+                    scriptFinish(st, st->lastError);
                 } else {
                     scriptRunFile(st);
                 }
@@ -1267,39 +1333,74 @@ namespace dbmw::async::util {
             std::string s = stmts[idx];
             const common::util::ScriptOptions opts = st->opts;
             const std::string ds = opts.dataSource;
-            auto cb = [st, path, stmts, idx, executed](ExecResult &&r) mutable {
+            std::uint64_t generation = 0;
+            {
+                std::lock_guard<std::mutex> lk(st->mutex);
+                generation = ++st->generation;
+            }
+            auto cb = [st, path, stmts, idx, executed, fileStatus](ExecResult &&r) mutable {
+                bool cancelled = false;
+                {
+                    std::lock_guard<std::mutex> lk(st->mutex);
+                    if (st->cancelRequested || r.status.code == common::ErrorCode::Cancelled) {
+                        st->cancelRequested = true;
+                        cancelled = true;
+                    }
+                }
+                if (cancelled) {
+                    scriptFinish(st, common::Status::error(common::ErrorCode::Cancelled,
+                                                           "script execution cancelled"));
+                    return;
+                }
                 if (!r.status.ok()) {
-                    common::util::ScriptResult fr;
-                    fr.path = path;
-                    fr.statements = stmts.size();
-                    fr.executed = executed;
-                    fr.status = r.status;
-                    st->results.push_back(std::move(fr));
+                    st->lastError = r.status;
+                    fileStatus = r.status;
                     if (st->opts.stopOnError) {
-                        ExecResult out;
-                        out.status = r.status;
-                        if (st->userCb) st->userCb(std::move(out));
+                        common::util::ScriptResult fr;
+                        fr.path = path;
+                        fr.statements = stmts.size();
+                        fr.executed = executed;
+                        fr.status = r.status;
+                        st->results.push_back(std::move(fr));
+                        scriptFinish(st, r.status);
                         return;
                     }
-                    scriptRunStatement(st, std::move(path), std::move(stmts), idx + 1, executed);
+                    scriptRunStatement(st, std::move(path), std::move(stmts), idx + 1,
+                                       executed, fileStatus);
                 } else {
-                    scriptRunStatement(st, std::move(path), std::move(stmts), idx + 1, executed + 1);
+                    scriptRunStatement(st, std::move(path), std::move(stmts), idx + 1,
+                                       executed + 1, fileStatus);
                 }
             };
             const common::util::detail::ExecScope scope(opts);
-            if (ds.empty()) async::execute(std::move(s), common::Params{}, std::move(cb), async::Options{});
-            else async::execute(ds, std::move(s), common::Params{}, std::move(cb), async::Options{});
+            Handle current;
+            if (ds.empty())
+                current = async::execute(std::move(s), common::Params{}, std::move(cb), async::Options{});
+            else
+                current = async::execute(ds, std::move(s), common::Params{}, std::move(cb), async::Options{});
+            bool cancel = false;
+            {
+                std::lock_guard<std::mutex> lk(st->mutex);
+                if (st->generation == generation && !st->done)
+                    st->current = current;
+                cancel = st->cancelRequested;
+            }
+            if (cancel && current.valid()) current.cancel();
         }
 
         inline void scriptRunFile(std::shared_ptr<ScriptRunState> st) {
+            bool cancelled = false;
+            {
+                std::lock_guard<std::mutex> lk(st->mutex);
+                cancelled = st->cancelRequested;
+            }
+            if (cancelled) {
+                scriptFinish(st, common::Status::error(common::ErrorCode::Cancelled,
+                                                       "script execution cancelled"));
+                return;
+            }
             if (st->fileIndex >= st->files.size()) {
-                ExecResult r;
-                for (const auto &fr: st->results)
-                    if (!fr.status.ok()) {
-                        r.status = fr.status;
-                        break;
-                    }
-                if (st->userCb) st->userCb(std::move(r));
+                scriptFinish(st, st->lastError);
                 return;
             }
             const std::string path = st->files[st->fileIndex++];
@@ -1308,11 +1409,10 @@ namespace dbmw::async::util {
                 common::util::ScriptResult fr;
                 fr.path = path;
                 fr.status = common::Status::error(common::ErrorCode::IoError, "dbmw::util: cannot read file: " + path);
+                st->lastError = fr.status;
                 st->results.push_back(std::move(fr));
                 if (st->opts.stopOnError) {
-                    ExecResult out;
-                    out.status = fr.status;
-                    if (st->userCb) st->userCb(std::move(out));
+                    scriptFinish(st, st->lastError);
                     return;
                 }
                 scriptRunFile(st);
@@ -1331,8 +1431,9 @@ namespace dbmw::async::util {
         st->userCb = std::move(cb);
         std::vector<std::string> stmts;
         common::util::splitSqlScript(sql, stmts);
+        const Handle handle = detail::scriptHandle(st);
         detail::scriptRunStatement(st, "<text>", std::move(stmts), 0, 0);
-        return Handle();
+        return handle;
     }
 
     inline Handle runScripts(const std::vector<std::string> &files, ExecCallback cb,
@@ -1341,8 +1442,9 @@ namespace dbmw::async::util {
         st->files = files;
         st->opts = std::move(opts);
         st->userCb = std::move(cb);
+        const Handle handle = detail::scriptHandle(st);
         detail::scriptRunFile(st);
-        return Handle();
+        return handle;
     }
 
     inline Handle runScriptsInDir(const std::string &dir, ExecCallback cb,

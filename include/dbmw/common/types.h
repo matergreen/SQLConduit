@@ -53,6 +53,11 @@ namespace dbmw::common {
         [[nodiscard]] const Value *find(const std::string &name) const;
     };
 
+    bool operator==(const Array &a, const Array &b);
+    bool operator!=(const Array &a, const Array &b);
+    bool operator==(const Composite &a, const Composite &b);
+    bool operator!=(const Composite &a, const Composite &b);
+
     using ValueBase = std::variant<std::nullptr_t, bool, std::int64_t, std::uint64_t, double,
         Decimal, std::string, Date, Time, Timestamp, Uuid, Json, Blob, Array, Composite>;
 

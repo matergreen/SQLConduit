@@ -14,7 +14,6 @@ endif()
 option(DBMW_ENABLE_MYSQL    "Build MySQL driver (needs libmysqlclient)"      OFF)
 option(DBMW_ENABLE_POSTGRES "Build PostgreSQL driver (needs libpqxx + libpq)" OFF)
 option(DBMW_ENABLE_ODBC     "Build ODBC driver for SQL Server/Oracle"         OFF)
-option(DBMW_BUILD_EXAMPLES  "Build example programs"                          OFF)
 option(DBMW_BUILD_TESTS     "Build core behaviour tests (no external deps)"   OFF)
 option(DBMW_BUILD_INTEGRATION_TESTS
        "Build integration tests that require live database services"          OFF)
@@ -165,10 +164,6 @@ if(DBMW_ENABLE_ODBC)
     endif()
     target_include_directories(dbmw PRIVATE ${ODBC_INCLUDE_DIR})
     target_link_libraries(dbmw PRIVATE ${ODBC_LIBRARY})
-endif()
-
-if(DBMW_BUILD_EXAMPLES)
-    add_subdirectory(examples)
 endif()
 
 if(DBMW_BUILD_TESTS)

@@ -64,7 +64,6 @@ include/dbmw/
 src/         corresponding implementations
 tests/       dbmw_core_test.cpp  dbmw_async_test.cpp  dbmw_coro_test.cpp(coro=ON)
              dbmw_mapping_test.cpp(entity mapping)
-examples/    basic_usage.cpp  async_example.cpp
 config/      datasources.json.example
 third_party/nlohmann/json.hpp  (vendored single-header, works offline)
 scripts/     setup-wsl.sh
@@ -89,8 +88,6 @@ cmake ..                                   # core layer only
 # cmake .. -DDBMW_ENABLE_ASYNC_CORO=ON
 cmake --build .
 
-# 3) Run the example (loads config and queries; with drivers disabled you get a DriverDisabled message)
-./examples/dbmw_example_basic ../config/datasources.json.example
 ```
 
 Run the tests (optional, no real database needed — uses a mock driver to validate core semantics):
@@ -126,8 +123,6 @@ cmake .. \
   -DDBMW_ENABLE_MYSQL=ON -DDBMW_ENABLE_POSTGRES=ON -DDBMW_ENABLE_ODBC=ON
 cmake --build . -j"$(sysctl -n hw.ncpu)"
 
-# 4) Run the example
-./examples/dbmw_example_basic ../config/datasources.json.example
 ```
 
 > When enabling only some drivers, drop the corresponding `-DDBMW_ENABLE_*` and remove any uninstalled package from `CMAKE_PREFIX_PATH` (an uninstalled `brew --prefix <pkg>` errors out); the core layer needs no client library and builds with a plain `cmake ..`.
@@ -512,6 +507,8 @@ Two ways to mount it:
 - **Global default**: `DBMW::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());`
   Any data source that does not explicitly specify a limiter falls back to this default when
   `rate_limit` is not enabled in config.
+  It may be called before or after `DBMW::init()`; a later call immediately updates every existing
+  source and group that inherits the default.
 - **Per-source override**: pass a `shared_ptr<IRateLimiter>` to `DataSourceOptions::rate_limiter`
   (or `GroupOptions::rate_limiter`); that source uses your implementation, **taking priority over
   the global default**.
@@ -529,7 +526,8 @@ mgr.addDataSource(cfg, opts);
 ```
 
 Priority (high → low): `opts.rate_limiter` (per source) > config `rate_limit` (a `RateLimiter`
-built from `global_qps`) > `DBMW::setDefaultRateLimiter` (global default).
+created when either `global_qps` or `per_fingerprint_qps` is enabled) >
+`DBMW::setDefaultRateLimiter` (global default).
 The call sites `preGate` / `gateSession` only call `acquire`, so swapping the algorithm is
 completely transparent and non-intrusive to upper layers.
 
@@ -971,7 +969,7 @@ dbmw::async::Task<void> demo() {
 dbmw::async::run(demo());   // controlled fire-and-forget: the frame destroys itself on completion
 ```
 
-**Custom executor (asio integration)**: inject an `IExecutor` adapter via `dbmw::async::setExecutor(...)`; completion callbacks and coroutine resumes then happen on your own event-loop threads (adapter sketch in segment 5 of `examples/async_example.cpp`).
+**Custom executor (asio integration)**: implement `IExecutor::post(std::function<void()>)`, then inject the adapter through `dbmw::async::setExecutor(...)`; completion callbacks and coroutine resumes then run on your event-loop threads.
 
 Constraints and caveats:
 
@@ -979,11 +977,10 @@ Constraints and caveats:
 - An uncaught exception inside a top-level coroutine started by `run()` terminates the process (never silently swallowed); handle exceptions inside the coroutine or propagate them via `co_await` to an enclosing `try/catch`.
 - Do not write coroutine bodies as lambdas capturing locals — the closure temporary dies before the async operation completes and the captures dangle; use named functions returning `Task`.
 - Known GCC 13 defect: non-trivial braced temporaries directly inside `co_await` arguments (e.g. `{Value(1)}`) trigger an internal compiler error (PR109227 family); hoist parameters into a named local first. GCC 14+ / Clang / MSVC are unaffected.
-- Full design (drain order, timeout semantics, consistency test matrix): `docs/async-design-v0.2.0.md`.
 
 ## Entity mapping (v0.5.0: row <-> business entity, read and write)
 
-`include/dbmw/mapping.h` is a **header-only** adapter layer: it moves `ResultSet` rows into/out of business structs following a **field declaration the business writes by hand**. This is not an ORM — SQL stays in business code, there is no dirty tracking or lazy loading, and `dbmw.h` plus the engine core stay **untouched**. See the v0.5.0 revision note in `docs/roadmap-design-v0.4.0.md` §1.2 for how this relates to the earlier non-goal.
+`include/dbmw/mapping.h` is a **header-only** adapter layer: it moves `ResultSet` rows into/out of business structs following a **field declaration the business writes by hand**. This is not an ORM — SQL stays in business code, there is no dirty tracking or lazy loading, and `dbmw.h` plus the engine core stay **untouched**.
 
 ### Declare once
 
@@ -1095,8 +1092,6 @@ A type mismatch or NULL landing in a non-`optional` member is an **error** (`Err
 - **Redaction**: mapping happens after `afterExecution`, so entities see redacted values.
 - **Async**: `dbmw::async::queryAs<T>` ships in callback / future / coroutine form; mapping runs on the **completion-delivery thread** (a worker by default, the `io_context` thread when asio is injected), so mapping must stay cheap — use streaming `queryEachAs` for large result sets.
 
-Full design (conversion matrix, invariants, M1–M23 test matrix) lives in `docs/mapping-design-v0.5.0.md`.
-
 ## Routines and indexes (v0.5.1: lifecycle and call protocol for functions / procedures / indexes)
 
 `dbmw/util.h` provides `dbmw::common::util`. It owns the **call protocol** and the **lifecycle**;
@@ -1205,7 +1200,7 @@ dropping blank fragments — so semicolons inside a MySQL procedure body are nev
 
 - Governance: each statement goes through `detail::runDdl`, the same path as `createRoutine` / `createIndex` (pinned to primary, `shadow` cleared, `NonIdempotent` by default, cache invalidated).
 - Errors: a `readSqlFile` failure or missing directory yields `ErrorCode::IoError`; with `stopOnError=true` (default) it stops at the first error, with `false` it runs everything and the last error wins; per-file `ScriptResult` carries `path/status/statements/executed`.
-- Async: `async::util` ships the same callback / future / coroutine forms; each statement is wrapped in `ExecScope` and runs through `async::execute`.
+- Async: `async::util` ships the same callback / future / coroutine forms. Statements are strictly sequential—the next one is submitted only after the previous callback completes. Callback forms return an aggregate `Handle`: `state()` follows the current statement, while `cancel()` cancels it and prevents later statements from being submitted. Even with `stopOnError=false`, the final status retains the last error. Each statement is wrapped in `ExecScope` and runs through `async::execute`.
 
 ### Governance (invariants)
 
@@ -1231,12 +1226,10 @@ while `CREATE PROCEDURE ... END; DROP TABLE t` is **still blocked**.
 
 ### Known limitations
 
-1. **Multiple result sets**: MySQL / SQL Server `CALL` now collects every result set (see design doc §14); other drivers fall back to one.
-2. **OUT / INOUT parameters**: supported for MySQL (needs `Session`) and postgres functions; postgres procedures, SQL Server and the async path return `NotSupported` (see design doc §14).
+1. **Multiple result sets**: MySQL / SQL Server `CALL` now collects every result set; other drivers fall back to one.
+2. **OUT / INOUT parameters**: supported for MySQL (needs `Session`) and postgres functions; postgres procedures, SQL Server and the async path return `NotSupported`.
 3. **DDL inside a transaction**: MySQL commits implicitly and cannot roll back; util cannot change that, so DDL runs outside transactions by default.
 4. **No dialect translation for routine bodies**: keep one script per dialect and let util manage and run them.
-
-Full design (cross-driver matrix, conflict analysis, U1–U20 test matrix) lives in `docs/util-design-v0.5.1.md`.
 
 ## Observability
 

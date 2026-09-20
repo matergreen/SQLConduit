@@ -43,5 +43,4 @@ cmake -S "$ROOT" -B "$BUILD" \
 echo "==> 编译"
 cmake --build "$BUILD" -j"$(nproc)"
 
-echo "==> 完成。运行示例："
-echo "    $BUILD/examples/dbmw_example_basic $ROOT/config/datasources.json.example"
+echo "==> 完成。构建产物位于：$BUILD"

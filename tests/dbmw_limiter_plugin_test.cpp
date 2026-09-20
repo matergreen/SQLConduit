@@ -213,7 +213,7 @@ int main() {
     {
         core::DatabaseManager mgr;
         auto counting = std::make_shared<CountingLimiter>();
-        core::DatabaseManager::setDefaultRateLimiter(counting);
+        mgr.setDefaultRateLimiter(counting);
         check(mgr.addDataSource(mockLeafCfg("p1"), core::DataSourceOptions{}).ok(), "addDataSource(p1)");
         auto ds = mgr.getDataSource("p1");
         common::ResultSet rs;
@@ -221,7 +221,7 @@ int main() {
         check(rs.rowCount() == 1, "返回 1 行");
         check(counting->acquires.load() > 0, "自定义限流器被 preGate/gateSession 调用");
         mgr.shutdown(std::chrono::milliseconds(0));
-        core::DatabaseManager::setDefaultRateLimiter(nullptr);
+        mgr.setDefaultRateLimiter(nullptr);
     }
 
     std::cout << "== P2 按数据源挂载的拒绝型限流器使 query 返回 RateLimited 且不可重试 ==\n";
@@ -253,15 +253,75 @@ int main() {
     {
         core::DatabaseManager mgr;
         auto deny = std::make_shared<DenyLimiter>();
-        core::DatabaseManager::setDefaultRateLimiter(deny);
+        mgr.setDefaultRateLimiter(deny);
         core::DataSourceOptions opts;
         opts.rate_limiter = std::make_shared<core::RateLimiter>(100000.0, 0.0, 100000, "off");
         check(mgr.addDataSource(mockLeafCfg("p4"), opts).ok(), "addDataSource(p4)");
         auto ds = mgr.getDataSource("p4");
         common::ResultSet rs;
         check(ds->query("select 1", rs).ok(), "显式数据源限流器优先生效（全局 deny 不触发）");
+        mgr.setDefaultRateLimiter(std::make_shared<DenyLimiter>());
+        check(ds->query("select 2", rs).ok(), "更新全局默认不会覆盖数据源显式限流器");
         mgr.shutdown(std::chrono::milliseconds(0));
-        core::DatabaseManager::setDefaultRateLimiter(nullptr);
+        mgr.setDefaultRateLimiter(nullptr);
+    }
+
+    std::cout << "== P5 仅配置按指纹限流时仍然生效 ==\n";
+    {
+        core::RateLimiter limiter(0.0, 1.0, 1, "template");
+        check(limiter.acquire(101), "第一个指纹首次请求通过");
+        check(!limiter.acquire(101), "同一指纹第二次请求被限流");
+        check(limiter.acquire(202), "不同指纹使用独立令牌桶");
+    }
+
+    std::cout << "== P6 后设置的默认限流器按调用顺序更新已有数据源与组 ==\n";
+    {
+        core::DatabaseManager mgr;
+        check(mgr.addDataSource(mockLeafCfg("p6_leaf")).ok(), "先添加叶子数据源");
+        config::DataSourceGroupConfig group;
+        group.name = "p6_group";
+        group.primary = "p6_leaf";
+        check(mgr.addGroup(group).ok(), "再添加数据源组");
+
+        auto counting = std::make_shared<CountingLimiter>();
+        mgr.setDefaultRateLimiter(counting);
+        auto ds = mgr.getDataSource("p6_group");
+        common::ResultSet rs;
+        check(ds->query("select 1", rs).ok(), "最后设置默认限流器后组查询成功");
+        auto leaf = mgr.getDataSource("p6_leaf");
+        check(leaf->query("select 1", rs).ok(), "最后设置默认限流器后叶子查询成功");
+        check(counting->acquires.load() >= 2, "组和叶子数据源均按顺序继承新默认限流器");
+
+        mgr.setDefaultRateLimiter(std::make_shared<DenyLimiter>());
+        check(ds->query("select 2", rs).code == common::ErrorCode::RateLimited,
+              "再次更新默认限流器会立即作用于已有组");
+        mgr.shutdown(std::chrono::milliseconds(0));
+    }
+
+    std::cout << "== P7 配置仅启用按指纹限流时数据源组仍创建限流器 ==\n";
+    {
+        core::DatabaseManager mgr;
+        config::GlobalConfig cfg;
+        cfg.default_datasource = "p7_group";
+        cfg.pool.min = 0;
+        cfg.pool.max = 1;
+        cfg.datasources.push_back(mockLeafCfg("p7_leaf"));
+        config::DataSourceGroupConfig group;
+        group.name = "p7_group";
+        group.primary = "p7_leaf";
+        cfg.groups.push_back(group);
+        cfg.rate_limit.enabled = true;
+        cfg.rate_limit.global_qps = 0;
+        cfg.rate_limit.per_fingerprint_qps = 1;
+        cfg.rate_limit.burst = 1;
+        cfg.rate_limit.fingerprint_mode = "template";
+        check(mgr.init(cfg).ok(), "仅 per_fingerprint_qps 配置可初始化");
+        auto ds = mgr.getDefault();
+        common::ResultSet rs;
+        check(ds && ds->query("select 1", rs).ok(), "组内同一 SQL 首次请求通过");
+        check(ds && ds->query("select 1", rs).code == common::ErrorCode::RateLimited,
+              "组内同一 SQL 第二次请求被按指纹限流");
+        mgr.shutdown(std::chrono::milliseconds(0));
     }
 
     std::cout << (g_failed == 0 ? "ALL PASSED\n" : "SOME FAILED\n");

@@ -259,7 +259,11 @@ ds->execute("INSERT INTO t(name) VALUES('x') RETURNING id", n, keys);
 if (!keys.empty()) id = keys.rows[0].asInt64(0);  // take the first column of the RETURNING row
 ```
 
-Unified model: `GeneratedKeys` is always "a result set of the generated columns" — MySQL synthesizes one row / one column via `mysql_insert_id`, while PG/ODBC emit directly via `RETURNING`/`OUTPUT`. **dbmw never appends `RETURNING` to your SQL automatically** (that would change semantics and couple to a dialect), so for PG/ODBC to get the auto-increment id, write `RETURNING id` in your SQL yourself. When there is no `RETURNING` and it is not a MySQL auto-increment, `keys.empty()` is true (not an error). Call `keys.clear()` before reusing the same `GeneratedKeys` object, so a retried statement doesn't mistake stale old rows for this run's generated keys.
+Unified model: `GeneratedKeys` is always "a result set of the generated columns" — MySQL synthesizes one row / one column via `mysql_insert_id`, while PG/ODBC emit directly via `RETURNING`/`OUTPUT`. **dbmw never appends `RETURNING` to the SQL *you* pass in** (that would change semantics and couple to a dialect), so for PG/ODBC to get the auto-increment id, write `RETURNING id` in your SQL yourself. When there is no `RETURNING` and it is not a MySQL auto-increment, `keys.empty()` is true (not an error). Call `keys.clear()` before reusing the same `GeneratedKeys` object, so a retried statement doesn't mistake stale old rows for this run's generated keys.
+
+> That constraint applies only to **caller-supplied SQL**. When dbmw generates the SQL itself
+> (the entity-mapping helpers `insertAs` / `insertBatchAs`), dbmw does complete it per dialect —
+> see the "Write" section. The dividing line: whoever writes the SQL owns it.
 
 ### Large-parameter streaming (StreamSource)
 
@@ -1049,6 +1053,24 @@ gets backticks with no extra work. Running a bare `insertSql` string against MyS
 syntax error, because MySQL treats `"x"` as a string literal, not an identifier.
 
 Generated-key back-fill takes two paths: column-name match plus a `lastInsertId()` fallback — MySQL synthesises the column name `insert_id`, while PG/ODBC `RETURNING` is matched by column name.
+
+**Back-fill is handled per dialect** in `insertAs` / `insertBatchAs`:
+
+| Dialect | Approach | Back-filled |
+|---|---|---|
+| MySQL | nothing appended | ✅ `mysql_insert_id` synthesises `insert_id`, matched via the `lastInsertId()` fallback |
+| PostgreSQL | `RETURNING <generated columns>` appended to the INSERT | ✅ matched by column name |
+| SQL Server | `OUTPUT INSERTED.*` is **not** appended yet | ❌ `item.id` stays unset |
+
+SQL Server is deliberately left out for two reasons: `OUTPUT` sits in a different position than
+`RETURNING` (after the column list, before `VALUES`), and on a table with an enabled trigger a
+bare `OUTPUT` (without `INTO`) fails outright with error 334 — there is no graceful fallback.
+It will be enabled once verified against a real SQL Server instance.
+
+Batched inserts: `insertBatchAs` back-fills only when you pass a **named non-const
+`std::vector<T>`** (the entities must be mutable); a temporary or const vector selects the
+non-back-filling overload. Under the hood PostgreSQL collects one `RETURNING` result set per row,
+while MySQL relies on `mysql_insert_id` inside the base-class batch loop.
 
 ### Lenient / strict (missing columns configurable; type mismatch and NULL always error)
 

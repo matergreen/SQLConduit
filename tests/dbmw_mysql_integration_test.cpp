@@ -264,9 +264,13 @@ void testEntityMapping(Fixture &f) {
 
     MapItem b1; b1.name = "map_batch_1"; b1.qty = 1; b1.unsignedValue = 1;
     MapItem b2; b2.name = "map_batch_2"; b2.qty = 2; b2.unsignedValue = 2;
-    auto batch = dbmw::insertBatchAs<MapItem>(f.table, {b1, b2});
+    std::vector<MapItem> bv{b1, b2};
+    auto batch = dbmw::insertBatchAs<MapItem>(f.table, bv);
     require(batch.status.ok(), "insertBatchAs failed: " + batch.status.message);
     require(batch.batch.totalAffected() == 2, "insertBatchAs affected mismatch");
+    // MySQL 批量走 mysql_insert_id 合成，具名 vector 的重载同样会回填。
+    require(bv[0].id > 0 && bv[1].id > 0, "insertBatchAs did not backfill generated ids");
+    require(bv[0].id != bv[1].id, "insertBatchAs backfilled the same id twice");
 
     std::uint64_t mappedRows = 0;
     auto each = dbmw::queryEachAs<MapItem>(

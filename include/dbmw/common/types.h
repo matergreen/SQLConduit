@@ -94,16 +94,6 @@ namespace dbmw::common {
         std::size_t maxSqlLength = 8192;
     };
 
-    struct BatchResult {
-        std::vector<std::int64_t> affected;
-        [[nodiscard]] std::int64_t totalAffected() const {
-            std::int64_t total = 0;
-            for (const auto rows: affected) total += rows;
-            return total;
-        }
-        void clear() { affected.clear(); }
-    };
-
     struct GeneratedKeys {
         ResultSet rows;
 
@@ -112,6 +102,21 @@ namespace dbmw::common {
         void clear() { rows.clear(); }
 
         [[nodiscard]] std::int64_t lastInsertId() const;
+    };
+
+    struct BatchResult {
+        std::vector<std::int64_t> affected;
+        // 与 affected 一一对应的每批生成键。只有驱动/基类批量实现能拿到才填
+        // （PG 靠 SQL 自带 RETURNING，MySQL 靠 mysql_insert_id 合成）；
+        // 拿不到时保持为空，调用方按“该批无生成键”处理。
+        std::vector<GeneratedKeys> keys;
+
+        [[nodiscard]] std::int64_t totalAffected() const {
+            std::int64_t total = 0;
+            for (const auto rows: affected) total += rows;
+            return total;
+        }
+        void clear() { affected.clear(); keys.clear(); }
     };
 
     class StreamSource {

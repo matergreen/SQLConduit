@@ -241,9 +241,9 @@ namespace dbmw::common::util {
         std::string s = "(";
         for (std::size_t i = 0; i < n; ++i) {
             if (i) s += ", ";
-            s += "?";
+            s += '?';
         }
-        s += ")";
+        s += ')';
         return s;
     }
 
@@ -251,7 +251,7 @@ namespace dbmw::common::util {
         std::string s;
         for (std::size_t i = 0; i < n; ++i) {
             if (i) s += ", ";
-            s += "?";
+            s += '?';
         }
         return s;
     }
@@ -356,7 +356,7 @@ namespace dbmw::common::util {
                 if (i) out.callSql += ", ";
                 out.callSql += args[i];
             }
-            out.callSql += ")";
+            out.callSql += ')';
             if (!setParts.empty()) out.preSql = "SET " + setParts;
             if (!out.outColumns.empty()) {
                 out.fetchSql = "SELECT ";
@@ -450,7 +450,7 @@ namespace dbmw::common::util {
         std::string s = "DROP ";
         s += kindWord;
         if (o.ifExists) s += " IF EXISTS";
-        s += " ";
+        s += ' ';
         s += quoteIdent(ref.name, d);
         if (o.cascade) s += " CASCADE";
         out = std::move(s);
@@ -1055,7 +1055,7 @@ namespace dbmw::async::util {
     inline Handle createRoutine(std::string sql, OpCallback cb, Options opts = {}) {
         if (sql.empty()) {
             detail::failOp(cb, common::util::badSpec("dbmw::util: createRoutine sql is empty"));
-            return Handle();
+            return {};
         }
         const auto d = opts.dialect != common::util::Dialect::Auto
                            ? opts.dialect
@@ -1064,7 +1064,7 @@ namespace dbmw::async::util {
                                                                       opts.ifNotExists, d);
             !s.ok()) {
             detail::failOp(cb, s);
-            return Handle();
+            return {};
         }
         if (opts.stripDelimiter) {
             if (const std::size_t n = common::util::stripDelimiterDirectives(sql); n > 0)

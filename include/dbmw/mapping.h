@@ -704,6 +704,24 @@ namespace dbmw::mapping {
                " WHERE " + buildAssignList(whereCols, d);
     }
 
+    // 生成键回读版 INSERT：把 Generated 列拼进 RETURNING，让 execute 直接把新键带回 keys.rows。
+    // 只对 PG 生效：
+    //   - MySQL 不支持 RETURNING，走 mysql_insert_id 合成（applyGeneratedKeys 的 lastInsertId 兜底）；
+    //   - SQL Server 要写成 `INSERT ... OUTPUT INSERTED.<col> VALUES ...`（OUTPUT 在列列表之后、
+    //     VALUES 之前，位置与 RETURNING 不同），且表上一旦有 enabled trigger，不带 INTO 的 OUTPUT
+    //     会直接报错——无真机可验证，故暂不自动补，等有 SQL Server 环境验证过再开。
+    // 注意这只影响 dbmw 自己生成的 SQL；用户手写 SQL 走 execute() 时 dbmw 一个字都不改。
+    template<class T>
+    std::string insertSqlReturning(std::string table, const common::util::Dialect d) {
+        const std::string base = insertSql<T>(table, d);
+        if (d != common::util::Dialect::Postgres) return base;
+        std::vector<std::string> gen;
+        for (const auto &c: mappingFor<T>().columns())
+            if (hasFlag(c.flags, FieldFlags::Generated)) gen.push_back(c.name);
+        if (gen.empty()) return base;
+        return base + " RETURNING " + joinIdentifiers(gen, d);
+    }
+
     template<class T>
     common::Status applyGeneratedKeys(const common::GeneratedKeys &keys, T &entity) {
         if (keys.empty()) return common::Status::OK();
@@ -913,8 +931,8 @@ namespace dbmw {
         const common::Params p = mapping::paramsOf(entity);
         // SQL 必须拿到 session 之后才能拼：标识符引号取决于该会话的方言。
         r.status = DBMW::withSession([&](core::Session &s) {
-            return s.execute(mapping::insertSql<T>(table, mapping::dialectOf(s)), p, r.affected,
-                             r.keys);
+            return s.execute(mapping::insertSqlReturning<T>(table, mapping::dialectOf(s)), p,
+                             r.affected, r.keys);
         });
         if (r.status.ok()) r.status = mapping::applyGeneratedKeys(r.keys, entity);
         return r;
@@ -923,7 +941,7 @@ namespace dbmw {
     template<class T>
     WriteResult<T> insertAs(core::Session &s, std::string table, T &entity) {
         WriteResult<T> r;
-        const std::string sql = mapping::insertSql<T>(table, mapping::dialectOf(s));
+        const std::string sql = mapping::insertSqlReturning<T>(table, mapping::dialectOf(s));
         const common::Params p = mapping::paramsOf(entity);
         r.status = s.execute(sql, p, r.affected, r.keys);
         if (r.status.ok()) r.status = mapping::applyGeneratedKeys(r.keys, entity);
@@ -956,6 +974,8 @@ namespace dbmw {
         return r;
     }
 
+    // 批量插入：传 const vector 的重载不回填生成键（保持历史行为）；
+    // 传**具名非 const vector** 的重载会按批回填——需要改实体，所以必须是可写的 vector。
     template<class T>
     BatchWriteResult<T> insertBatchAs(std::string table, const std::vector<T> &entities) {
         BatchWriteResult<T> r;
@@ -970,6 +990,40 @@ namespace dbmw {
         BatchWriteResult<T> r;
         r.status = s.executeBatch(mapping::insertSql<T>(table, mapping::dialectOf(s)),
                                   mapping::batchOf(entities), r.batch);
+        return r;
+    }
+
+    namespace detail {
+        template<class T>
+        common::Status applyBatchKeys(const common::BatchResult &batch, std::vector<T> &entities) {
+            if (batch.keys.empty()) return common::Status::OK();
+            const std::size_t n = batch.keys.size() < entities.size() ? batch.keys.size()
+                                                                     : entities.size();
+            for (std::size_t i = 0; i < n; ++i) {
+                if (const auto s = mapping::applyGeneratedKeys(batch.keys[i], entities[i]); !s.ok())
+                    return s;
+            }
+            return common::Status::OK();
+        }
+    }
+
+    template<class T>
+    BatchWriteResult<T> insertBatchAs(std::string table, std::vector<T> &entities) {
+        BatchWriteResult<T> r;
+        r.status = DBMW::executeBatch(
+            mapping::insertSqlReturning<T>(table, mapping::defaultDialect()),
+            mapping::batchOf(entities), r.batch);
+        if (r.status.ok()) r.status = detail::applyBatchKeys<T>(r.batch, entities);
+        return r;
+    }
+
+    template<class T>
+    BatchWriteResult<T> insertBatchAs(core::Session &s, std::string table,
+                                      std::vector<T> &entities) {
+        BatchWriteResult<T> r;
+        r.status = s.executeBatch(mapping::insertSqlReturning<T>(table, mapping::dialectOf(s)),
+                                  mapping::batchOf(entities), r.batch);
+        if (r.status.ok()) r.status = detail::applyBatchKeys<T>(r.batch, entities);
         return r;
     }
 }

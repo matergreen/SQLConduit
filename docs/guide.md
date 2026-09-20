@@ -268,9 +268,13 @@ if (!keys.empty()) id = keys.rows[0].asInt64(0);  // 取 RETURNING 出来的第�
 ```
 
 统一模型：`GeneratedKeys` 始终是"生成列的结果集"——MySQL 用 `mysql_insert_id` 合成一行一列，
-PG/ODBC 用 `RETURNING`/`OUTPUT` 直出。**dbmw 不会给 SQL 自动追加 `RETURNING`**（那会改写语义并耦合方言），
+PG/ODBC 用 `RETURNING`/`OUTPUT` 直出。**dbmw 不会给你自己写的 SQL 自动追加 `RETURNING`**（那会改写语义并耦合方言），
 因此 PG/ODBC 想拿自增 id 就在 SQL 里自己写 `RETURNING id`。无 `RETURNING` 且非 MySQL 自增时 `keys.empty()` 为真（不报错）。
 复用同一 `GeneratedKeys` 对象前调用 `keys.clear()`，避免重试着法残留旧行被当成这次生成的键。
+
+> 这条约束只针对**调用方传入的 SQL**。SQL 由 dbmw 自己生成的场景（实体映射层的
+> `insertAs` / `insertBatchAs`）不在此列：那里 dbmw 会按方言补全，见「写」一节。
+> 区界线：谁写的 SQL 谁负责，dbmw 只对自己生成的那部分负责。
 
 ### 大参数流式（StreamSource）
 
@@ -1080,6 +1084,22 @@ auto b = dbmw::insertBatchAs("users", std::vector<User>{...});
 无需手工指定——直接拿裸 `insertSql` 的 SQL 去 MySQL 执行会因双引号报语法错误。
 
 生成键回填走「列名匹配 + `lastInsertId()` 兜底」双路——MySQL 合成列名固定为 `insert_id`，PG/ODBC 的 `RETURNING` 按列名匹配。
+
+**生成键回填按方言处理**（`insertAs` / `insertBatchAs`）：
+
+| 方言 | 做法 | 回填 |
+|---|---|---|
+| MySQL | 不追加任何子句 | ✅ `mysql_insert_id` 合成 `insert_id`，走 `lastInsertId()` 兜底 |
+| PostgreSQL | 自动在 INSERT 尾部追加 `RETURNING <Generated 列>` | ✅ 按列名匹配回填 |
+| SQL Server | **暂不自动补** `OUTPUT INSERTED.*` | ❌ `item.id` 不会被回填 |
+
+SQL Server 不补的原因有两个，都不是偷懒：`OUTPUT` 的位置与 `RETURNING` 不同（在列列表之后、
+`VALUES` 之前），且表上一旦有 enabled trigger，不带 `INTO` 的 `OUTPUT` 会直接报错 334，
+没有优雅降级。等有 SQL Server 真机验证过再开。
+
+批量插入：`insertBatchAs` 传**具名非 const `std::vector<T>`** 才会回填（要改实体，必须可写）；
+传临时量 / const vector 走的是不回填的重载。驱动侧 PostgreSQL 逐条收集 `RETURNING` 结果集，
+MySQL 走基类批量循环里的 `mysql_insert_id`。
 
 ### 宽松 / 严格（缺列可配，类型不符与 NULL 始终报错）
 

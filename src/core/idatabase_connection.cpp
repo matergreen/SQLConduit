@@ -66,6 +66,7 @@ namespace dbmw::core {
         common::BatchResult &out) {
         out.clear();
         out.affected.reserve(batch.size());
+        out.keys.reserve(batch.size());
         if (batch.empty()) return common::Status::OK();
 
         const bool ownTx = !inTransaction();
@@ -76,9 +77,13 @@ namespace dbmw::core {
         common::Status status = common::Status::OK();
         for (const auto &params: batch) {
             std::int64_t affected = 0;
-            status = execute(sql, params, affected);
+            common::GeneratedKeys keys;
+            // 走带 keys 的重载：SQL 自带 RETURNING / OUTPUT 或驱动能合成 last insert id 时，
+            // 批量也能回填生成键（insertBatchAs 依赖它）。
+            status = execute(sql, params, affected, keys);
             if (!status.ok()) break;
             out.affected.push_back(affected);
+            out.keys.push_back(std::move(keys));
         }
 
         if (!ownTx) return status;

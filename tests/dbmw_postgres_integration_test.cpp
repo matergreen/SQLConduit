@@ -483,9 +483,13 @@ void testEntityMapping(Fixture &f) {
     b1.createdAt = dbmw::common::Timestamp{std::chrono::system_clock::now()};
     PgItem b2; b2.name = "map_batch_2"; b2.qty = 2; b2.price = 2.0; b2.active = false;
     b2.createdAt = dbmw::common::Timestamp{std::chrono::system_clock::now()};
-    auto batch = dbmw::insertBatchAs<PgItem>(ent, {b1, b2});
+    std::vector<PgItem> bv{b1, b2};
+    auto batch = dbmw::insertBatchAs<PgItem>(ent, bv);
     require(batch.status.ok(), "insertBatchAs failed: " + batch.status.message);
     require(batch.batch.totalAffected() == 2, "insertBatchAs affected mismatch");
+    // 具名非 const vector 走的重载会按批回填生成键（PG 靠 RETURNING）。
+    require(bv[0].id > 0 && bv[1].id > 0, "insertBatchAs did not backfill generated ids");
+    require(bv[0].id != bv[1].id, "insertBatchAs backfilled the same id twice");
 
     std::uint64_t mappedRows = 0;
     auto each = dbmw::queryEachAs<PgItem>(

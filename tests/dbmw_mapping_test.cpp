@@ -545,6 +545,30 @@ int main() {
         check(upd.find("`id` = ?") != std::string::npos, "MySQL 方言：WHERE 主键用反引号");
     }
 
+    std::cout << "== M11c. insertSqlReturning（生成键回读）==\n";
+    {
+        const std::string pg =
+            mapping::insertSqlReturning<User>("users", common::util::Dialect::Postgres);
+        check(pg.rfind("INSERT INTO \"users\"", 0) == 0, "PG：仍是标准 INSERT 开头");
+        check(pg.find(" RETURNING \"id\"") != std::string::npos,
+              "PG：尾部追加 RETURNING（只列 Generated 列）");
+        check(pg.find("\"name\"") != std::string::npos, "PG：RETURNING 不影响原有列清单");
+
+        const std::string my =
+            mapping::insertSqlReturning<User>("users", common::util::Dialect::MySQL);
+        check(my.find("RETURNING") == std::string::npos,
+              "MySQL：不支持 RETURNING，原样返回（走 mysql_insert_id）");
+
+        const std::string ms =
+            mapping::insertSqlReturning<User>("users", common::util::Dialect::SqlServer);
+        check(ms.find("OUTPUT") == std::string::npos,
+              "SQL Server：暂不自动补 OUTPUT（trigger 会报错，待真机验证）");
+
+        const std::string au =
+            mapping::insertSqlReturning<User>("users", common::util::Dialect::Auto);
+        check(au.find("RETURNING") == std::string::npos, "Dialect::Auto：探测不出方言时不补");
+    }
+
     std::cout << "== M12. insertAs 生成键回填 ==\n";
     {
         gKeyRow.clear();

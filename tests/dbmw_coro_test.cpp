@@ -6,7 +6,6 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -26,8 +25,13 @@ static int g_failed = 0;
 static int g_passed = 0;
 
 static void check(bool cond, const std::string &name) {
-    if (cond) { ++g_passed; std::cout << "  [PASS] " << name << "\n"; }
-    else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
+    if (cond) {
+        ++g_passed;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        ++g_failed;
+        std::cout << "  [FAIL] " << name << "\n";
+    }
 }
 
 class CoroMockConnection : public core::IDatabaseConnection {
@@ -60,8 +64,9 @@ public:
     }
 
     Status ping() override {
-        return open_ ? Status::OK()
-                     : Status::error(common::ErrorCode::PingFailed, "closed");
+        return open_
+                   ? Status::OK()
+                   : Status::error(common::ErrorCode::PingFailed, "closed");
     }
 
     Status query(const std::string &sql, common::ResultSet &out) override {
@@ -159,8 +164,8 @@ struct CfgFlags {
 
 static std::string buildConfig(const CfgFlags &f) {
     std::string audit = f.auditBlock
-        ? R"("sql_audit": { "enabled": true, "action": "block", "block_no_where_dml": true, "enforce_read_only": true },)"
-        : R"("sql_audit": { "enabled": false },)";
+                            ? R"("sql_audit": { "enabled": true, "action": "block", "block_no_where_dml": true, "enforce_read_only": true },)"
+                            : R"("sql_audit": { "enabled": false },)";
     return R"({
   "default_datasource": "main",
   "heartbeat_interval_ms": 5000,
@@ -195,7 +200,7 @@ static bool waitUntil(const std::function<bool()> &pred, int timeoutMs = 5000) {
     return pred();
 }
 
-template <class R>
+template<class R>
 static bool awaitFuture(std::future<R> &f, R &out, int timeoutMs = 5000) {
     if (f.wait_for(std::chrono::milliseconds(timeoutMs)) == std::future_status::ready) {
         out = f.get();
@@ -204,7 +209,7 @@ static bool awaitFuture(std::future<R> &f, R &out, int timeoutMs = 5000) {
     return false;
 }
 
-static async::Task<void> pipelineBody(std::promise<std::vector<std::string>> pr) {
+static async::Task<void> pipelineBody(std::promise<std::vector<std::string> > pr) {
     std::vector<std::string> trace;
     int frameMarker = 42;
 
@@ -303,7 +308,7 @@ int main() {
 
     std::cout << "== C1. 基础链路：run + co_await，恢复线程 = 完成调度器线程 ==\n";
     {
-        std::promise<std::vector<std::string>> pr;
+        std::promise<std::vector<std::string> > pr;
         auto fut = pr.get_future();
         const auto callerTid = std::this_thread::get_id();
         CoroMockConnection::queryCalls = 0;
@@ -324,7 +329,7 @@ int main() {
         check(CoroMockConnection::queryCalls == 1 && CoroMockConnection::executeCalls == 3,
               "驱动调用次数 = 1 query + 1 execute + 2 batch（execute 复用）");
 
-        std::promise<std::vector<std::string>> pr2;
+        std::promise<std::vector<std::string> > pr2;
         auto fut2 = pr2.get_future();
         async::run(pipelineBody(std::move(pr2)));
         std::vector<std::string> trace2;

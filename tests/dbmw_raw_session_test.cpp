@@ -1,4 +1,3 @@
-
 #include "dbmw/async/dbmw_async.h"
 #include "dbmw/common/context.h"
 #include "dbmw/config/config_loader.h"
@@ -9,9 +8,7 @@
 #include "dbmw/dbmw.h"
 #include "dbmw/driver/driver_registry.h"
 
-#include <atomic>
 #include <cstdio>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -30,8 +27,13 @@ static int g_passed = 0;
 static std::string g_scenario;
 
 static void check(bool cond, const std::string &name) {
-    if (cond) { ++g_passed; std::cout << "  [PASS] " << name << "\n"; }
-    else      { ++g_failed; std::cout << "  [FAIL] " << g_scenario << ": " << name << "\n"; }
+    if (cond) {
+        ++g_passed;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        ++g_failed;
+        std::cout << "  [FAIL] " << g_scenario << ": " << name << "\n";
+    }
 }
 
 static std::string rowString(const common::ResultSet &rs, const std::string &field) {
@@ -44,64 +46,77 @@ static std::string rowString(const common::ResultSet &rs, const std::string &fie
 }
 
 namespace mockraw {
-
-class Connection : public core::IDatabaseConnection {
-public:
-    explicit Connection(std::string tag) : tag_(std::move(tag)) {}
-    common::Status connect(const config::DataSourceConfig &) override { open_ = true; return Status::OK(); }
-    common::Status ping() override { return Status::OK(); }
-    common::Status query(const std::string &, common::ResultSet &out) override {
-        if (!open_) {
-            auto st = Status::error(common::ErrorCode::NotConnected, "not open");
-            st.retryable = true;
-            st.connectionBroken = true;
-            return st;
+    class Connection : public core::IDatabaseConnection {
+    public:
+        explicit Connection(std::string tag) : tag_(std::move(tag)) {
         }
-        out.setFields({"source"});
-        Row r;
-        r.set("source", tag_);
-        out.addRow(std::move(r));
-        return Status::OK();
-    }
-    common::Status execute(const std::string &, std::int64_t &a) override {
-        if (!open_) {
-            auto st = Status::error(common::ErrorCode::NotConnected, "not open");
-            st.retryable = true;
-            st.connectionBroken = true;
-            return st;
+
+        common::Status connect(const config::DataSourceConfig &) override {
+            open_ = true;
+            return Status::OK();
         }
-        a = 1;
-        return Status::OK();
-    }
-    common::Status begin() override { return Status::OK(); }
-    common::Status commit() override { return Status::OK(); }
-    common::Status rollback() override { return Status::OK(); }
-    void close() override { open_ = false; }
-    bool isOpen() const override { return open_; }
-private:
-    bool open_ = false;
-    std::string tag_;
-};
 
-class Driver : public driver::IDriver {
-public:
-    explicit Driver(std::string tag) : tag_(std::move(tag)) {}
-    const char *name() const override { return "mockraw"; }
-    std::unique_ptr<core::IDatabaseConnection> createConnection() override {
-        return std::make_unique<Connection>(tag_);
-    }
-private:
-    std::string tag_;
-};
+        common::Status ping() override { return Status::OK(); }
 
-inline void install(std::string dsname, std::string tag) {
-    driver::DriverRegistry::instance().registerDriver(
-        dsname, [tag] { return std::make_unique<Driver>(tag); });
+        common::Status query(const std::string &, common::ResultSet &out) override {
+            if (!open_) {
+                auto st = Status::error(common::ErrorCode::NotConnected, "not open");
+                st.retryable = true;
+                st.connectionBroken = true;
+                return st;
+            }
+            out.setFields({"source"});
+            Row r;
+            r.set("source", tag_);
+            out.addRow(std::move(r));
+            return Status::OK();
+        }
+
+        common::Status execute(const std::string &, std::int64_t &a) override {
+            if (!open_) {
+                auto st = Status::error(common::ErrorCode::NotConnected, "not open");
+                st.retryable = true;
+                st.connectionBroken = true;
+                return st;
+            }
+            a = 1;
+            return Status::OK();
+        }
+
+        common::Status begin() override { return Status::OK(); }
+        common::Status commit() override { return Status::OK(); }
+        common::Status rollback() override { return Status::OK(); }
+        void close() override { open_ = false; }
+        bool isOpen() const override { return open_; }
+
+    private:
+        bool open_ = false;
+        std::string tag_;
+    };
+
+    class Driver : public driver::IDriver {
+    public:
+        explicit Driver(std::string tag) : tag_(std::move(tag)) {
+        }
+
+        const char *name() const override { return "mockraw"; }
+
+        std::unique_ptr<core::IDatabaseConnection> createConnection() override {
+            return std::make_unique<Connection>(tag_);
+        }
+
+    private:
+        std::string tag_;
+    };
+
+    inline void install(std::string dsname, std::string tag) {
+        driver::DriverRegistry::instance().registerDriver(
+            dsname, [tag] { return std::make_unique<Driver>(tag); });
+    }
 }
 
+static void uninstallAllMock() {
 }
-
-static void uninstallAllMock() {}
 
 static config::DataSourceConfig dsCfg(const std::string &name) {
     config::DataSourceConfig c;
@@ -133,7 +148,9 @@ static void M8_1_sync_write_then_read_in_scope() {
     config::DataSourceGroupConfig grp;
     grp.name = "grp";
     grp.primary = "primary";
-    config::ReplicaConfig rc; rc.name = "r0"; rc.weight = 1;
+    config::ReplicaConfig rc;
+    rc.name = "r0";
+    rc.weight = 1;
     grp.replicas = {rc};
     grp.read_after_write_ms = 60000;
     check(mgr.addGroup(grp).ok(), "addGroup ok");
@@ -169,7 +186,9 @@ static void M8_2_sync_write_no_scope_RAW_zero() {
     config::DataSourceGroupConfig grp;
     grp.name = "grp";
     grp.primary = "primary";
-    config::ReplicaConfig rc; rc.name = "r0"; rc.weight = 1;
+    config::ReplicaConfig rc;
+    rc.name = "r0";
+    rc.weight = 1;
     grp.replicas = {rc};
     grp.read_after_write_ms = 0;
     check(mgr.addGroup(grp).ok(), "addGroup ok");
@@ -201,7 +220,9 @@ static void M8_3_sync_scopes_isolated() {
     config::DataSourceGroupConfig grp;
     grp.name = "grp";
     grp.primary = "primary";
-    config::ReplicaConfig rc; rc.name = "r0"; rc.weight = 1;
+    config::ReplicaConfig rc;
+    rc.name = "r0";
+    rc.weight = 1;
     grp.replicas = {rc};
     grp.read_after_write_ms = 0;
     check(mgr.addGroup(grp).ok(), "addGroup ok");
@@ -322,8 +343,8 @@ static void M8_5_config_loader_warns_on_replica_zero_window() {
 
     const std::string captured = capturedStderr.str();
     const bool sawWarn = captured.find("read_after_write_ms=0") != std::string::npos
-                      && captured.find("replica") != std::string::npos
-                      && captured.find("stale data") != std::string::npos;
+                         && captured.find("replica") != std::string::npos
+                         && captured.find("stale data") != std::string::npos;
     check(sawWarn,
           "M8.5 stderr 输出含 'read_after_write_ms=0 / replica / stale data' 提示");
 
@@ -347,7 +368,9 @@ static void M8_6_idempotency_orthogonal() {
     config::DataSourceGroupConfig grp;
     grp.name = "grp";
     grp.primary = "primary";
-    config::ReplicaConfig rc; rc.name = "r0"; rc.weight = 1;
+    config::ReplicaConfig rc;
+    rc.name = "r0";
+    rc.weight = 1;
     grp.replicas = {rc};
     grp.read_after_write_ms = 60000;
     check(mgr.addGroup(grp).ok(), "addGroup ok");

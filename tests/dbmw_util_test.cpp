@@ -37,8 +37,13 @@ static int g_failed = 0;
 static int g_passed = 0;
 
 static void check(const bool cond, const std::string &name) {
-    if (cond) { ++g_passed; std::cout << "  [PASS] " << name << "\n"; }
-    else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
+    if (cond) {
+        ++g_passed;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        ++g_failed;
+        std::cout << "  [FAIL] " << name << "\n";
+    }
 }
 
 using RowData = std::vector<std::pair<std::string, common::Value> >;
@@ -74,7 +79,8 @@ class UtilMockConnection : public core::IDatabaseConnection {
 public:
     explicit UtilMockConnection(std::atomic<int> *execCounter,
                                 std::atomic<int> *queryCounter)
-        : exec_(execCounter), query_(queryCounter) {}
+        : exec_(execCounter), query_(queryCounter) {
+    }
 
     Status connect(const config::DataSourceConfig &) override {
         open_ = true;
@@ -128,13 +134,25 @@ public:
         return Status::OK();
     }
 
-    Status begin() override { ++gBegin; tx_ = true; return Status::OK(); }
+    Status begin() override {
+        ++gBegin;
+        tx_ = true;
+        return Status::OK();
+    }
 
     Status begin(const common::TransactionOptions &) override { return begin(); }
 
-    Status commit() override { ++gCommit; tx_ = false; return Status::OK(); }
+    Status commit() override {
+        ++gCommit;
+        tx_ = false;
+        return Status::OK();
+    }
 
-    Status rollback() override { ++gRollback; tx_ = false; return Status::OK(); }
+    Status rollback() override {
+        ++gRollback;
+        tx_ = false;
+        return Status::OK();
+    }
 
     void close() override { open_ = false; }
 
@@ -334,7 +352,7 @@ int main() {
 
         resetCounters();
         const std::string raw =
-            "DELIMITER //\nCREATE PROCEDURE p() BEGIN SELECT 1; END //\nDELIMITER ;\n";
+                "DELIMITER //\nCREATE PROCEDURE p() BEGIN SELECT 1; END //\nDELIMITER ;\n";
         util::CreateRoutineOptions on;
         on.dataSource = "main";
         check(util::createRoutine(raw, on).ok(), "默认 stripDelimiter=true → 执行成功");
@@ -358,7 +376,7 @@ int main() {
         check(hasMultipleStatements(myProc), "默认参数下例程体判 true（既有行为不变）");
         check(!hasMultipleStatements(myProc, true), "allowRoutineBody 下例程体判 false");
         const std::string pgFn =
-            "CREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END; $$ LANGUAGE plpgsql";
+                "CREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END; $$ LANGUAGE plpgsql";
         check(!hasMultipleStatements(pgFn) && !hasMultipleStatements(pgFn, true),
               "PG $$ 体本来就被 mask");
         check(isRoutineDdl(myProc) && isRoutineDdl(pgFn), "isRoutineDdl 识别两种方言");
@@ -367,8 +385,8 @@ int main() {
         const std::string smuggle = "CREATE PROCEDURE p() BEGIN SELECT 1; END; DROP TABLE t";
         check(hasMultipleStatements(smuggle, true), "例程体后紧跟的独立语句仍被判 true");
         const std::string nested =
-            "CREATE PROCEDURE p() BEGIN IF 1 THEN SELECT 1; END IF; "
-            "CASE WHEN 1 THEN SELECT 2; ELSE SELECT 3; END CASE; END";
+                "CREATE PROCEDURE p() BEGIN IF 1 THEN SELECT 1; END IF; "
+                "CASE WHEN 1 THEN SELECT 2; ELSE SELECT 3; END CASE; END";
         check(!hasMultipleStatements(nested, true), "嵌套 IF/CASE 块仍正确配对");
     }
 
@@ -445,8 +463,12 @@ int main() {
 
     std::cout << "== U10. 缓存失效 ==\n";
     {
-        common::ResultSet seed = buildResultSet({{std::make_pair(
-            "a", common::Value(std::int64_t(1)))}});
+        common::ResultSet seed = buildResultSet({
+            {
+                std::make_pair(
+                    "a", common::Value(std::int64_t(1)))
+            }
+        });
         core::QueryCache::put("main", "k1", seed);
         common::ResultSet probe;
         check(core::QueryCache::get("main", "k1", probe), "前置：缓存里已有条目");
@@ -591,8 +613,10 @@ int main() {
         check(util::call("CALL p(?)", p, aff, o).ok() && aff == 7, "U16 affected 正确返回");
         check(gLastSql == "CALL p(?)", "U16 SQL 原样送达");
 
-        gRows = {{{"id", common::Value(std::int64_t(1))}, {"n", common::Value(std::string("a"))}},
-                 {{"id", common::Value(std::int64_t(2))}, {"n", common::Value(std::string("b"))}}};
+        gRows = {
+            {{"id", common::Value(std::int64_t(1))}, {"n", common::Value(std::string("a"))}},
+            {{"id", common::Value(std::int64_t(2))}, {"n", common::Value(std::string("b"))}}
+        };
         common::ResultSet rs;
         check(util::callQuery("SELECT * FROM f(?)", p, rs, o).ok() && rs.rowCount() == 2,
               "U17 callQuery 结果集正确");
@@ -710,8 +734,10 @@ int main() {
 
         util::CallParams withOut;
         withOut.emplace_back(common::Value(std::int64_t(7)));
-        withOut.emplace_back(util::CallParam{util::ParamDirection::Out,
-                                             common::Value(std::int64_t(0))});
+        withOut.emplace_back(util::CallParam{
+            util::ParamDirection::Out,
+            common::Value(std::int64_t(0))
+        });
         util::CallPlan outPlan;
         check(util::makeCallPlan(proc, withOut, util::Dialect::MySQL, true, outPlan).ok() &&
               outPlan.callSql == "CALL `p`(?, @dbmw_out_1)" &&
@@ -720,8 +746,10 @@ int main() {
               "U21 MySQL OUT → 会话变量 + 回读 SELECT");
 
         util::CallParams inOut;
-        inOut.emplace_back(util::CallParam{util::ParamDirection::InOut,
-                                           common::Value(std::int64_t(3))});
+        inOut.emplace_back(util::CallParam{
+            util::ParamDirection::InOut,
+            common::Value(std::int64_t(3))
+        });
         util::CallPlan ioPlan;
         check(util::makeCallPlan(proc, inOut, util::Dialect::MySQL, true, ioPlan).ok() &&
               ioPlan.preSql == "SET @dbmw_out_0 = ?" &&
@@ -779,8 +807,10 @@ int main() {
         proc.dataSource = "mymock";
         util::CallParams withOut;
         withOut.emplace_back(common::Value(std::int64_t(7)));
-        withOut.emplace_back(util::CallParam{util::ParamDirection::Out,
-                                             common::Value(std::int64_t(0))});
+        withOut.emplace_back(util::CallParam{
+            util::ParamDirection::Out,
+            common::Value(std::int64_t(0))
+        });
         util::CallOptions o;
         o.dataSource = "mymock";
         util::CallResult r;
@@ -803,8 +833,10 @@ int main() {
         proc.dataSource = "mymock";
         util::CallParams withOut;
         withOut.emplace_back(common::Value(std::int64_t(7)));
-        withOut.emplace_back(util::CallParam{util::ParamDirection::Out,
-                                             common::Value(std::int64_t(0))});
+        withOut.emplace_back(util::CallParam{
+            util::ParamDirection::Out,
+            common::Value(std::int64_t(0))
+        });
 
         util::CallResult r;
         const auto st = DBMW::transaction("mymock", [&](core::Session &s) {
@@ -826,8 +858,10 @@ int main() {
         proc.name = "p";
         proc.dataSource = "mymock";
         util::CallParams inOut;
-        inOut.emplace_back(util::CallParam{util::ParamDirection::InOut,
-                                           common::Value(std::int64_t(3))});
+        inOut.emplace_back(util::CallParam{
+            util::ParamDirection::InOut,
+            common::Value(std::int64_t(3))
+        });
 
         util::CallResult r;
         const auto st = DBMW::transaction("mymock", [&](core::Session &s) {
@@ -841,8 +875,10 @@ int main() {
     std::cout << "== U26. PG 函数 OUT：从结果列取值 ==\n";
     {
         resetCounters();
-        RowData pgRow{{"o", common::Value(std::int64_t(7))},
-                      {"v", common::Value(std::string("x"))}};
+        RowData pgRow{
+            {"o", common::Value(std::int64_t(7))},
+            {"v", common::Value(std::string("x"))}
+        };
         gSets = {{pgRow}};
 
         util::RoutineRef fn;
@@ -851,8 +887,10 @@ int main() {
         fn.dataSource = "pgm";
         util::CallParams params;
         params.emplace_back(common::Value(std::int64_t(1)));
-        params.emplace_back(util::CallParam{util::ParamDirection::Out,
-                                            common::Value(std::int64_t(0))});
+        params.emplace_back(util::CallParam{
+            util::ParamDirection::Out,
+            common::Value(std::int64_t(0))
+        });
         util::CallOptions o;
         o.dataSource = "pgm";
 
@@ -923,8 +961,10 @@ int main() {
 
         util::CallParams withOut;
         withOut.emplace_back(common::Value(std::int64_t(7)));
-        withOut.emplace_back(util::CallParam{util::ParamDirection::Out,
-                                             common::Value(std::int64_t(0))});
+        withOut.emplace_back(util::CallParam{
+            util::ParamDirection::Out,
+            common::Value(std::int64_t(0))
+        });
         std::promise<async::MultiQueryResult> pr3;
         auto fut3 = pr3.get_future();
         async::util::call(proc, withOut,
@@ -1106,7 +1146,7 @@ int main() {
         std::promise<async::ExecResult> pr;
         auto fut = pr.get_future();
         async::util::runScriptText("SELECT 1; SELECT 2",
-            [&pr](async::ExecResult &&r) { pr.set_value(std::move(r)); }, o);
+                                   [&pr](async::ExecResult &&r) { pr.set_value(std::move(r)); }, o);
         check(fut.get().status.ok(), "U37 回调形态执行成功");
 
         const std::string base = (std::filesystem::temp_directory_path() /

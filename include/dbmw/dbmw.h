@@ -11,44 +11,47 @@
 #include <string>
 #include <vector>
 
-namespace dbmw
-{
-    class DBMW
-    {
+namespace dbmw {
+    class DBMW {
     public:
         DBMW() = delete;
 
-        static common::Status init(const std::string& configPath);
+        static common::Status init(const std::string &configPath);
 
         static common::Status reload(
             const std::string &configPath,
             std::chrono::milliseconds grace = std::chrono::milliseconds(5000));
 
-        static common::Status query(const std::string& sql, common::ResultSet& out);
+        static common::Status query(const std::string &sql, common::ResultSet &out);
 
-        static common::Status execute(const std::string& sql, std::int64_t& affected);
+        static common::Status execute(const std::string &sql, std::int64_t &affected);
 
-        static common::Status query(const std::string& dataSource, const std::string& sql, common::ResultSet& out);
+        static common::Status query(const std::string &dataSource, const std::string &sql, common::ResultSet &out);
 
-        static common::Status execute(const std::string& dataSource, const std::string& sql, std::int64_t& affected);
+        static common::Status execute(const std::string &dataSource, const std::string &sql, std::int64_t &affected);
 
-        static common::Status query(const std::string& sql, const common::Params& params, common::ResultSet& out);
+        static common::Status query(const std::string &sql, const common::Params &params, common::ResultSet &out);
 
-        static common::Status query(const std::string& dataSource, const std::string& sql, const common::Params& params, common::ResultSet& out);
+        static common::Status query(const std::string &dataSource, const std::string &sql, const common::Params &params,
+                                    common::ResultSet &out);
 
-        static common::Status execute(const std::string& sql, const common::Params& params, std::int64_t& affected);
+        static common::Status execute(const std::string &sql, const common::Params &params, std::int64_t &affected);
 
-        static common::Status execute(const std::string& dataSource, const std::string& sql, const common::Params& params, std::int64_t& affected);
+        static common::Status execute(const std::string &dataSource, const std::string &sql,
+                                      const common::Params &params, std::int64_t &affected);
 
-        static common::Status queryAll(const std::string& sql,
-                                       std::vector<common::ResultSet>& out);
-        static common::Status queryAll(const std::string& sql, const common::Params& params,
-                                       std::vector<common::ResultSet>& out);
-        static common::Status queryAll(const std::string& dataSource, const std::string& sql,
-                                       std::vector<common::ResultSet>& out);
-        static common::Status queryAll(const std::string& dataSource, const std::string& sql,
-                                       const common::Params& params,
-                                       std::vector<common::ResultSet>& out);
+        static common::Status queryAll(const std::string &sql,
+                                       std::vector<common::ResultSet> &out);
+
+        static common::Status queryAll(const std::string &sql, const common::Params &params,
+                                       std::vector<common::ResultSet> &out);
+
+        static common::Status queryAll(const std::string &dataSource, const std::string &sql,
+                                       std::vector<common::ResultSet> &out);
+
+        static common::Status queryAll(const std::string &dataSource, const std::string &sql,
+                                       const common::Params &params,
+                                       std::vector<common::ResultSet> &out);
 
         static common::Status queryEach(const std::string &sql,
                                         const common::Params &params,
@@ -71,17 +74,17 @@ namespace dbmw
                                            common::BatchResult &out);
 
         static common::Status openCursor(const std::string &sql, const common::Params &params,
-                                        const core::CursorOptions &opts,
-                                        std::unique_ptr<core::Cursor> &out);
+                                         const core::CursorOptions &opts,
+                                         std::unique_ptr<core::Cursor> &out);
 
         static common::Status openCursor(const std::string &dataSource, const std::string &sql,
-                                        const common::Params &params,
-                                        const core::CursorOptions &opts,
-                                        std::unique_ptr<core::Cursor> &out);
+                                         const common::Params &params,
+                                         const core::CursorOptions &opts,
+                                         std::unique_ptr<core::Cursor> &out);
 
-        static common::Status transaction(const core::SessionFn& fn);
+        static common::Status transaction(const core::SessionFn &fn);
 
-        static common::Status transaction(const std::string& dataSource, const core::SessionFn& fn);
+        static common::Status transaction(const std::string &dataSource, const core::SessionFn &fn);
 
         static common::Status transaction(const common::TransactionOptions &options,
                                           const core::SessionFn &fn);
@@ -90,11 +93,11 @@ namespace dbmw
                                           const common::TransactionOptions &options,
                                           const core::SessionFn &fn);
 
-        static common::Status withSession(const std::string& dataSource, const core::SessionFn& fn);
+        static common::Status withSession(const std::string &dataSource, const core::SessionFn &fn);
 
-        static common::Status withSession(const core::SessionFn& fn);
+        static common::Status withSession(const core::SessionFn &fn);
 
-        static std::shared_ptr<core::DataSource> dataSource(const std::string& name = "");
+        static std::shared_ptr<core::DataSource> dataSource(const std::string &name = "");
 
         static bool poolStats(core::ConnectionPool::Stats &out,
                               const std::string &name = "");
@@ -103,8 +106,10 @@ namespace dbmw
 
         static std::vector<common::SlowSqlStats> slowSqlStats(
             std::size_t limit = 100, const std::string &dataSource = "");
+
         static std::vector<common::SlowSqlRecord> recentSlowSql(
             std::size_t limit = 100, const std::string &dataSource = "");
+
         static void clearSlowSqlStats();
 
         static void shutdown(std::chrono::milliseconds grace = std::chrono::milliseconds(5000));

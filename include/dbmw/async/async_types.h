@@ -10,7 +10,6 @@
 #include <string>
 
 namespace dbmw::async {
-
     struct QueryResult {
         common::Status status;
         common::ResultSet rows;
@@ -85,11 +84,11 @@ namespace dbmw::async {
     private:
         friend class detail::AsyncEngine;
 
-        explicit Handle(std::shared_ptr<detail::OpState> s) : s_(std::move(s)) {}
+        explicit Handle(std::shared_ptr<detail::OpState> s) : s_(std::move(s)) {
+        }
 
         std::shared_ptr<detail::OpState> s_;
     };
-
 }
 
 #endif

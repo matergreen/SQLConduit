@@ -51,7 +51,7 @@ namespace dbmw::common {
 
         std::uint64_t nextSampleSequence() {
             static thread_local std::uint64_t tlsSequence =
-                std::hash<std::thread::id>{}(std::this_thread::get_id());
+                    std::hash<std::thread::id>{}(std::this_thread::get_id());
             return ++tlsSequence;
         }
 
@@ -80,10 +80,19 @@ namespace dbmw::common {
             bool escaped = false;
             for (std::size_t i = 0; i < limit; ++i) {
                 const char c = text[i];
-                if (escaped) { escaped = false; continue; }
-                if (c == '\\') { escaped = true; continue; }
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+                if (c == '\\') {
+                    escaped = true;
+                    continue;
+                }
                 if (c == '\'') {
-                    if (i + 1 < limit && text[i + 1] == '\'') { ++i; continue; }
+                    if (i + 1 < limit && text[i + 1] == '\'') {
+                        ++i;
+                        continue;
+                    }
                     inLiteral = !inLiteral;
                 }
             }
@@ -137,7 +146,7 @@ namespace dbmw::common {
                 }
                 if (c == '/' && i + 1 < n && sql[i + 1] == '*') {
                     const bool semantic = i + 2 < n &&
-                        (sql[i + 2] == '!' || sql[i + 2] == '+');
+                                          (sql[i + 2] == '!' || sql[i + 2] == '+');
                     const auto close = sql.find("*/", i + 2);
                     const auto end = close == std::string::npos ? n : close + 2;
                     if (semantic) {
@@ -154,10 +163,11 @@ namespace dbmw::common {
                     std::size_t tagEnd = i + 1;
                     while (tagEnd < n &&
                            (std::isalnum(static_cast<unsigned char>(sql[tagEnd])) ||
-                            sql[tagEnd] == '_')) ++tagEnd;
+                            sql[tagEnd] == '_'))
+                        ++tagEnd;
                     const bool validTag = tagEnd < n && sql[tagEnd] == '$' &&
-                        (tagEnd == i + 1 ||
-                         !std::isdigit(static_cast<unsigned char>(sql[i + 1])));
+                                          (tagEnd == i + 1 ||
+                                           !std::isdigit(static_cast<unsigned char>(sql[i + 1])));
                     if (validTag) {
                         const std::string delimiter = sql.substr(i, tagEnd - i + 1);
                         const auto close = sql.find(delimiter, tagEnd + 1);
@@ -170,7 +180,7 @@ namespace dbmw::common {
                                 bodyHash *= 1099511628211ULL;
                             }
                             out += delimiter + "<body_hash:" +
-                                   std::to_string(bodyHash) + ">" + delimiter;
+                                    std::to_string(bodyHash) + ">" + delimiter;
                             i = end;
                             continue;
                         }
@@ -187,7 +197,10 @@ namespace dbmw::common {
                             continue;
                         }
                         if (sql[i] == '\'') {
-                            if (i + 1 < n && sql[i + 1] == '\'') { i += 2; continue; }
+                            if (i + 1 < n && sql[i + 1] == '\'') {
+                                i += 2;
+                                continue;
+                            }
                             ++i;
                             break;
                         }
@@ -219,14 +232,14 @@ namespace dbmw::common {
                 }
 
                 const bool boundary = i == 0 ||
-                    !isIdent(static_cast<unsigned char>(sql[i - 1]));
+                                      !isIdent(static_cast<unsigned char>(sql[i - 1]));
                 const bool signedNumber = (c == '+' || c == '-') && i + 1 < n &&
-                    (std::isdigit(static_cast<unsigned char>(sql[i + 1])) ||
-                     (sql[i + 1] == '.' && i + 2 < n &&
-                      std::isdigit(static_cast<unsigned char>(sql[i + 2]))));
+                                          (std::isdigit(static_cast<unsigned char>(sql[i + 1])) ||
+                                           (sql[i + 1] == '.' && i + 2 < n &&
+                                            std::isdigit(static_cast<unsigned char>(sql[i + 2]))));
                 const bool plainNumber = std::isdigit(c) ||
-                    (c == '.' && i + 1 < n &&
-                     std::isdigit(static_cast<unsigned char>(sql[i + 1])));
+                                         (c == '.' && i + 1 < n &&
+                                          std::isdigit(static_cast<unsigned char>(sql[i + 1])));
                 if (boundary && (plainNumber || signedNumber)) {
                     flushSpace();
                     out += '?';
@@ -235,7 +248,8 @@ namespace dbmw::common {
                         (sql[i + 1] == 'x' || sql[i + 1] == 'X')) {
                         i += 2;
                         while (i < n && (std::isxdigit(static_cast<unsigned char>(sql[i])) ||
-                                         sql[i] == '_')) ++i;
+                                         sql[i] == '_'))
+                            ++i;
                         continue;
                     }
                     if (i + 1 < n && sql[i] == '0' &&
@@ -245,11 +259,13 @@ namespace dbmw::common {
                         continue;
                     }
                     while (i < n && (std::isdigit(static_cast<unsigned char>(sql[i])) ||
-                                     sql[i] == '_')) ++i;
+                                     sql[i] == '_'))
+                        ++i;
                     if (i < n && sql[i] == '.') {
                         ++i;
                         while (i < n && (std::isdigit(static_cast<unsigned char>(sql[i])) ||
-                                         sql[i] == '_')) ++i;
+                                         sql[i] == '_'))
+                            ++i;
                     }
                     if (i < n && (sql[i] == 'e' || sql[i] == 'E')) {
                         std::size_t exponent = i + 1;
@@ -258,7 +274,8 @@ namespace dbmw::common {
                         const auto digits = exponent;
                         while (exponent < n &&
                                (std::isdigit(static_cast<unsigned char>(sql[exponent])) ||
-                                sql[exponent] == '_')) ++exponent;
+                                sql[exponent] == '_'))
+                            ++exponent;
                         if (exponent > digits) i = exponent;
                     }
                     continue;
@@ -378,9 +395,9 @@ namespace dbmw::common {
         if (normalized.slow_sql.recent_capacity < 0)
             normalized.slow_sql.recent_capacity = 0;
         const auto capacity =
-            static_cast<std::size_t>(normalized.slow_sql.aggregate_capacity);
+                static_cast<std::size_t>(normalized.slow_sql.aggregate_capacity);
         const auto recentCapacity =
-            static_cast<std::size_t>(normalized.slow_sql.recent_capacity);
+                static_cast<std::size_t>(normalized.slow_sql.recent_capacity);
         const auto buckets = normalized.slow_sql.histogram_buckets_ms;
 
         {
@@ -405,9 +422,9 @@ namespace dbmw::common {
         while (g_recentSlow.size() > recentCapacity) g_recentSlow.pop_front();
     }
 
-void Observability::emitSql(OperationEvent event, const std::string &sql,
-                            const SqlRenderer &renderer,
-                            const common::ResultSet *result) noexcept {
+    void Observability::emitSql(OperationEvent event, const std::string &sql,
+                                const SqlRenderer &renderer,
+                                const common::ResultSet *result) noexcept {
         try {
             const Snapshot &snapshot = currentSnapshot();
             const config::ObservabilityConfig &config = snapshot.config;
@@ -430,8 +447,9 @@ void Observability::emitSql(OperationEvent event, const std::string &sql,
 
             if (!observer && !slowEnabled && !logEnabled) return;
 
-            const std::string structure = (slowEnabled || logEnabled) ? structuralSql(sql)
-                                                                      : std::string();
+            const std::string structure = (slowEnabled || logEnabled)
+                                              ? structuralSql(sql)
+                                              : std::string();
             if (slowEnabled || logEnabled)
                 event.sqlFingerprint = fingerprint(event.dataSource, event.type, structure);
 
@@ -440,23 +458,24 @@ void Observability::emitSql(OperationEvent event, const std::string &sql,
             event.slow = slowEnabled && durationMs >= config.slow_sql.threshold_ms;
 
             const bool logEligible = logEnabled &&
-                (!config.sql_log.slow_only || durationMs >= config.slow_sql.threshold_ms) &&
-                ((event.status.ok() && config.sql_log.log_success) ||
-                 (!event.status.ok() && config.sql_log.log_errors));
+                                     (!config.sql_log.slow_only || durationMs >= config.slow_sql.threshold_ms) &&
+                                     ((event.status.ok() && config.sql_log.log_success) ||
+                                      (!event.status.ok() && config.sql_log.log_errors));
             const auto sequence = logEnabled ? nextSampleSequence() : 0;
             const bool sampled = !logEnabled ||
-                config.sql_log.sample_rate >= 1.0 ||
-                (config.sql_log.sample_rate > 0.0 &&
-                 static_cast<double>((event.sqlFingerprint ^ sequence) % 1000000ULL) /
-                     1000000.0 < config.sql_log.sample_rate);
+                                 config.sql_log.sample_rate >= 1.0 ||
+                                 (config.sql_log.sample_rate > 0.0 &&
+                                  static_cast<double>((event.sqlFingerprint ^ sequence) % 1000000ULL) /
+                                  1000000.0 < config.sql_log.sample_rate);
             const bool needsRendered = renderer &&
-                ((logEligible && sampled && config.sql_log.mode == "full") ||
-                 (event.slow && config.slow_sql.retain_rendered_sql));
+                                       ((logEligible && sampled && config.sql_log.mode == "full") ||
+                                        (event.slow && config.slow_sql.retain_rendered_sql));
 
             if (event.slow || (logEligible && sampled)) {
                 event.sqlTemplate = truncate(sql, static_cast<std::size_t>(
-                    event.slow ? config.slow_sql.max_sql_length
-                               : config.sql_log.max_sql_length));
+                                                 event.slow
+                                                     ? config.slow_sql.max_sql_length
+                                                     : config.sql_log.max_sql_length));
             }
             if (needsRendered) {
                 SqlRenderOptions options;
@@ -490,7 +509,7 @@ void Observability::emitSql(OperationEvent event, const std::string &sql,
                     stats.dataSource = event.dataSource;
                     stats.type = event.type;
                     stats.sqlTemplate = truncate(structure, static_cast<std::size_t>(
-                        config.slow_sql.max_sql_length));
+                                                     config.slow_sql.max_sql_length));
                     stats.firstSeen = now;
                     stats.minDuration = event.duration;
                     stats.histogramBucketsMs = config.slow_sql.histogram_buckets_ms;
@@ -506,7 +525,7 @@ void Observability::emitSql(OperationEvent event, const std::string &sql,
                 std::size_t bucket = 0;
                 while (bucket < stats.histogramBucketsMs.size() &&
                        event.duration.count() >
-                           static_cast<std::int64_t>(stats.histogramBucketsMs[bucket]) * 1000)
+                       static_cast<std::int64_t>(stats.histogramBucketsMs[bucket]) * 1000)
                     ++bucket;
                 ++stats.histogram[bucket];
 
@@ -518,7 +537,7 @@ void Observability::emitSql(OperationEvent event, const std::string &sql,
                     record.sqlTemplate = stats.sqlTemplate;
                     if (config.slow_sql.retain_rendered_sql)
                         record.renderedSql = truncate(event.renderedSql,
-                            static_cast<std::size_t>(config.slow_sql.max_sql_length));
+                                                      static_cast<std::size_t>(config.slow_sql.max_sql_length));
                     record.fingerprint = aggKey;
                     record.duration = event.duration;
                     record.errorCode = event.status.code;
@@ -535,7 +554,8 @@ void Observability::emitSql(OperationEvent event, const std::string &sql,
             if (logEligible && sampled) {
                 const auto &displaySql = config.sql_log.mode == "full" &&
                                          !event.renderedSql.empty()
-                    ? event.renderedSql : event.sqlTemplate;
+                                             ? event.renderedSql
+                                             : event.sqlTemplate;
                 std::ostringstream message;
                 message << "sql datasource=" << event.dataSource
                         << " operation=" << operationName(event.type)
@@ -550,7 +570,8 @@ void Observability::emitSql(OperationEvent event, const std::string &sql,
             }
 
             if (observer) {
-                try { observer(event); } catch (...) {}
+                try { observer(event); } catch (...) {
+                }
             }
         } catch (...) {
         }

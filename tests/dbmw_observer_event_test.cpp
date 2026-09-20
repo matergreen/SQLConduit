@@ -25,8 +25,13 @@ static int g_failed = 0;
 static int g_passed = 0;
 
 static void check(bool cond, const std::string &name) {
-    if (cond) { ++g_passed; std::cout << "  [PASS] " << name << "\n"; }
-    else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
+    if (cond) {
+        ++g_passed;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        ++g_failed;
+        std::cout << "  [FAIL] " << name << "\n";
+    }
 }
 
 static std::mutex g_capMtx;

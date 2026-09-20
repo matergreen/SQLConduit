@@ -1,6 +1,5 @@
 #include "dbmw/dbmw.h"
 #include "dbmw/async/dbmw_async.h"
-#include "dbmw/core/connection_pool.h"
 #include "dbmw/core/database_manager.h"
 #include "dbmw/core/idatabase_connection.h"
 #include "dbmw/config/datasource_config.h"
@@ -10,14 +9,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <iostream>
 #include <memory>
 #include <string>
-#include <vector>
 
 using namespace dbmw;
 using common::Status;
@@ -27,8 +24,13 @@ static int g_failed = 0;
 static int g_passed = 0;
 
 static void check(bool cond, const std::string &name) {
-    if (cond) { ++g_passed; std::cout << "  [PASS] " << name << "\n"; }
-    else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
+    if (cond) {
+        ++g_passed;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        ++g_failed;
+        std::cout << "  [FAIL] " << name << "\n";
+    }
 }
 
 class MockConnection : public core::IDatabaseConnection {
@@ -45,10 +47,13 @@ public:
         ++alive;
         return Status::OK();
     }
+
     common::Status ping() override {
-        return open_ ? Status::OK()
-                     : Status::error(common::ErrorCode::NotConnected, "closed");
+        return open_
+                   ? Status::OK()
+                   : Status::error(common::ErrorCode::NotConnected, "closed");
     }
+
     common::Status query(const std::string &sql, common::ResultSet &out) override {
         ++queryCount;
         if (queryFailRemaining > 0) {
@@ -60,6 +65,7 @@ public:
         out.addRow(std::move(r));
         return Status::OK();
     }
+
     common::Status execute(const std::string &, std::int64_t &affected) override {
         ++execCount;
         if (execFailRemaining > 0) {
@@ -73,16 +79,24 @@ public:
         affected = 1;
         return Status::OK();
     }
+
     common::Status begin() override {
         return open_ ? Status::OK() : Status::error(ErrorCode::NotConnected, "closed");
     }
+
     common::Status commit() override {
         return open_ ? Status::OK() : Status::error(ErrorCode::NotConnected, "closed");
     }
+
     common::Status rollback() override {
         return open_ ? Status::OK() : Status::error(ErrorCode::NotConnected, "closed");
     }
-    void close() override { open_ = false; --alive; }
+
+    void close() override {
+        open_ = false;
+        --alive;
+    }
+
     bool isOpen() const override { return open_; }
 
 private:
@@ -92,6 +106,7 @@ private:
         st.connectionBroken = true;
         return st;
     }
+
     bool open_ = false;
 };
 
@@ -105,6 +120,7 @@ std::atomic<bool> MockConnection::execFailNonRetryable{false};
 class MockDriver : public driver::IDriver {
 public:
     const char *name() const override { return "mock"; }
+
     std::unique_ptr<core::IDatabaseConnection> createConnection() override {
         return std::make_unique<MockConnection>();
     }
@@ -306,6 +322,6 @@ int main() {
     }
 
     std::cout << "\n========== M5 幂等声明 总计: " << g_passed << " 通过 / "
-              << g_failed << " 失败 ==========\n";
+            << g_failed << " 失败 ==========\n";
     return g_failed == 0 ? 0 : 1;
 }

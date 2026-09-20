@@ -16,12 +16,12 @@ namespace dbmw::core {
 
     namespace {
         common::Status verdict(const bool block, const bool logIt,
-                              const char *reason, const std::string &sql,
-                              std::atomic<std::uint64_t> &warned,
-                              std::atomic<std::uint64_t> &blocked) {
+                               const char *reason, const std::string &sql,
+                               std::atomic<std::uint64_t> &warned,
+                               std::atomic<std::uint64_t> &blocked) {
             if (logIt) {
                 DBMW_LOG_WARN(std::string("sql audit ") + (block ? "blocked" : "warn") + " ("
-                              + reason + "): " + sql);
+                    + reason + "): " + sql);
             }
             if (block) {
                 blocked.fetch_add(1, std::memory_order_relaxed);

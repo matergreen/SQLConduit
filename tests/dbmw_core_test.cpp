@@ -31,8 +31,13 @@ static int g_failed = 0;
 static int g_passed = 0;
 
 static void check(bool cond, const std::string &name) {
-    if (cond) { ++g_passed; std::cout << "  [PASS] " << name << "\n"; }
-    else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
+    if (cond) {
+        ++g_passed;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        ++g_failed;
+        std::cout << "  [FAIL] " << name << "\n";
+    }
 }
 
 class MockConnection : public core::IDatabaseConnection {
@@ -54,7 +59,10 @@ public:
 
     static std::string joined() {
         std::string s;
-        for (auto &x: log) { if (!s.empty()) s += " | "; s += x; }
+        for (auto &x: log) {
+            if (!s.empty()) s += " | ";
+            s += x;
+        }
         return s;
     }
 
@@ -163,7 +171,11 @@ public:
     }
 
     void close() override {
-        if (open_) { open_ = false; --alive; log.push_back("close"); }
+        if (open_) {
+            open_ = false;
+            --alive;
+            log.push_back("close");
+        }
     }
 
     bool isOpen() const override { return open_; }
@@ -401,7 +413,7 @@ int main() {
         check(st.ok(), "参数化查询成功");
         const std::string got = MockConnection::joined();
         const std::string want =
-            "connect | query:SELECT * FROM t WHERE name = 'O''Brien' AND note = 'a?b' /* ? */ AND id = 42";
+                "connect | query:SELECT * FROM t WHERE name = 'O''Brien' AND note = 'a?b' /* ? */ AND id = 42";
         check(got == want, "字面量正确转义且注释/引号内的 ? 未被替换\n          实际: " + got +
                            "\n          期望: " + want);
         pool->shutdown(std::chrono::milliseconds(0));
@@ -571,9 +583,9 @@ int main() {
     std::cout << "== 20. 安全配置：环境变量密码与热加载清理 ==\n";
     {
         const std::string path =
-            (std::filesystem::temp_directory_path() / "dbmw_config_loader_test.json").string();
+                (std::filesystem::temp_directory_path() / "dbmw_config_loader_test.json").string();
 #ifdef _WIN32
-        (void)_putenv_s("DBMW_TEST_PASSWORD", "from-env");
+        (void) _putenv_s("DBMW_TEST_PASSWORD", "from-env");
 #else
         setenv("DBMW_TEST_PASSWORD", "from-env", 1);
 #endif
@@ -599,7 +611,7 @@ int main() {
               "密码从环境变量解析且 describe() 不泄漏密码");
         std::remove(path.c_str());
 #ifdef _WIN32
-        (void)_putenv_s("DBMW_TEST_PASSWORD", "");
+        (void) _putenv_s("DBMW_TEST_PASSWORD", "");
 #else
         unsetenv("DBMW_TEST_PASSWORD");
 #endif
@@ -750,7 +762,8 @@ int main() {
         common::ParamBatch batch{
             common::Params{std::int64_t(1)},
             common::Params{std::int64_t(2)},
-            common::Params{std::int64_t(3)}};
+            common::Params{std::int64_t(3)}
+        };
         const auto batched = ds.executeBatch("UPDATE t SET v=?", batch, batchResult);
         check(batched.ok() && batchResult.affected.size() == 3 &&
               batchResult.totalAffected() == 3,
@@ -851,7 +864,10 @@ int main() {
             });
         }
         const auto blocked = ds.transaction(
-            [&](core::Session &) { ++reached; return Status::OK(); });
+            [&](core::Session &) {
+                ++reached;
+                return Status::OK();
+            });
         check(blocked.code == common::ErrorCode::CircuitOpen && reached == 2,
               "熔断开启后事务快速失败，不再触达驱动（实际触达 "
               + std::to_string(reached) + " 次）");
@@ -884,7 +900,10 @@ int main() {
         group.query("SELECT 2", rs);
         common::Observability::setObserver({});
         std::string actual;
-        for (const auto &t: targets) { if (!actual.empty()) actual += ","; actual += t; }
+        for (const auto &t: targets) {
+            if (!actual.empty()) actual += ",";
+            actual += t;
+        }
         check(targets == std::vector<std::string>({"replica", "primary"}),
               "withSession 中写过后，窗口内的读打到主库（回归：曾打到从库读到旧数据）"
               "\n          实际: " + actual);
@@ -900,7 +919,8 @@ int main() {
         common::ParamBatch batch{
             common::Params{std::int64_t(1)},
             common::Params{std::int64_t(2)},
-            common::Params{std::int64_t(3)}};
+            common::Params{std::int64_t(3)}
+        };
         MockConnection::executeOkBeforeFail = 2;
         common::BatchResult result;
         const auto failed = ds.executeBatch("UPDATE t SET v=?", batch, result);
@@ -1055,7 +1075,7 @@ int main() {
         const auto recent = common::Observability::recentSlowSql();
         check(aggregates.size() == 1 && aggregates.front().count == 2 &&
               aggregates.front().histogram.size() ==
-                  aggregates.front().histogramBucketsMs.size() + 1,
+              aggregates.front().histogramBucketsMs.size() + 1,
               "相同参数化模板聚合为一条慢 SQL 并维护耗时直方图");
         check(recent.size() == 2 && recent.front().renderedSql.find("'Bob'") !=
               std::string::npos,
@@ -1106,7 +1126,7 @@ int main() {
     std::cout << "== 37. 可观测配置：解析、边界校验与物理池列表 ==\n";
     {
         const std::string path =
-            (std::filesystem::temp_directory_path() / "dbmw_observability_test.json").string();
+                (std::filesystem::temp_directory_path() / "dbmw_observability_test.json").string();
         {
             std::ofstream file(path);
             file << R"({
@@ -1137,7 +1157,7 @@ int main() {
         check(initialized.ok() && pools.size() == 1 &&
               pools.front().dataSource == "metrics" &&
               pools.front().stats.maxConnections ==
-                  static_cast<std::size_t>(parsed.pool.max),
+              static_cast<std::size_t>(parsed.pool.max),
               "全部连接池接口返回物理数据源明细而不是只给组聚合值");
         manager.shutdown(std::chrono::milliseconds(0));
         common::Observability::configure(config::ObservabilityConfig{});
@@ -1163,7 +1183,8 @@ int main() {
             "SELECT * FROM t WHERE id=1",
             "SELECT * FROM t WHERE id=2",
             "SELECT * FROM t WHERE id=3",
-            "SELECT * FROM t WHERE id=99"};
+            "SELECT * FROM t WHERE id=99"
+        };
         for (const auto &sql: variants) {
             common::OperationEvent e;
             e.dataSource = "db";
@@ -1191,7 +1212,7 @@ int main() {
         common::Observability::emitSql(u, "UPDATE t SET v=1 WHERE id=5");
         agg = common::Observability::slowSqlStats(1000);
         check(agg.size() == 2, "结构不同的查询保持独立（实测 "
-              + std::to_string(agg.size()) + " 条）");
+                               + std::to_string(agg.size()) + " 条）");
         check(agg.front().histogram.size() == agg.front().histogramBucketsMs.size() + 1,
               "聚合项的直方图长度与分桶配置一致");
 
@@ -1252,10 +1273,19 @@ int main() {
             bool esc = false;
             for (std::size_t i = 0; i < s.size(); ++i) {
                 const char c = s[i];
-                if (esc) { esc = false; continue; }
-                if (c == '\\') { esc = true; continue; }
+                if (esc) {
+                    esc = false;
+                    continue;
+                }
+                if (c == '\\') {
+                    esc = true;
+                    continue;
+                }
                 if (c == '\'') {
-                    if (i + 1 < s.size() && s[i + 1] == '\'') { ++i; continue; }
+                    if (i + 1 < s.size() && s[i + 1] == '\'') {
+                        ++i;
+                        continue;
+                    }
                     depth += (depth == 0) ? 1 : -1;
                 }
             }
@@ -1392,8 +1422,10 @@ int main() {
 
         common::Observability::emitSql(event, "SELECT * FROM t WHERE id=3");
         const auto stats = common::Observability::slowSqlStats(1000);
-        const auto histogramTotal = stats.empty() ? 0ULL :
-            std::accumulate(stats.front().histogram.begin(), stats.front().histogram.end(), 0ULL);
+        const auto histogramTotal = stats.empty()
+                                        ? 0ULL
+                                        : std::accumulate(stats.front().histogram.begin(),
+                                                          stats.front().histogram.end(), 0ULL);
         check(stats.size() == 1 && stats.front().count == 1 && histogramTotal == 1,
               "热更新后的 count、累计耗时和直方图从同一批样本重新开始");
         common::Observability::clearSlowSqlStats();
@@ -1574,7 +1606,8 @@ int main() {
             std::uint64_t{18446744073709551615ULL}, common::Decimal{"1234567890.123456789"},
             common::Date{"2026-09-06"}, common::Time{"11:50:00.123456"},
             common::Uuid{"550e8400-e29b-41d4-a716-446655440000"},
-            common::Json{"{\"ok\":true}"}};
+            common::Json{"{\"ok\":true}"}
+        };
         check(common::paramTypeSignature(typed) == "umaogj",
               "扩展类型拥有互不冲突的预编译参数签名");
         check(common::valueToString(typed[1]) == "1234567890.123456789" &&
@@ -1585,12 +1618,12 @@ int main() {
         common::SqlRenderOptions renderOptions;
         std::string rendered;
         check(renderer.renderSqlForLogging("SELECT ?", {common::Json{"{\"secret\":1}"}},
-                                               renderOptions, rendered).ok() &&
+                                           renderOptions, rendered).ok() &&
               rendered.find("secret") == std::string::npos,
               "JSON/UUID 等文本强类型沿用字符串参数的默认脱敏策略");
         renderOptions.includeStringValues = true;
         check(renderer.renderSqlForLogging("SELECT ?", {common::Decimal{"1;DROP TABLE t"}},
-                                               renderOptions, rendered).ok() &&
+                                           renderOptions, rendered).ok() &&
               rendered == "SELECT '1;DROP TABLE t'",
               "强类型诊断值经驱动转义，不会被当作原始 SQL 片段");
 

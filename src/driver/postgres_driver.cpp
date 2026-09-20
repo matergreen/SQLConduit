@@ -53,11 +53,14 @@ namespace dbmw::driver {
                 std::lock_guard<std::mutex> lock(mutex_);
                 active_ = true;
             }
+
             ~ActiveOperation() {
                 std::lock_guard<std::mutex> lock(mutex_);
                 active_ = false;
             }
+
             ActiveOperation(const ActiveOperation &) = delete;
+
             ActiveOperation &operator=(const ActiveOperation &) = delete;
 
         private:
@@ -133,20 +136,20 @@ namespace dbmw::driver {
             if (f.is_null()) return Value{nullptr};
             try {
                 switch (f.type()) {
-                    case kBool:   return Value{f.template as<bool>()};
+                    case kBool: return Value{f.template as<bool>()};
                     case kInt2:
-                    case kInt4:   return Value{static_cast<std::int64_t>(f.template as<int>())};
-                    case kInt8:   return Value{static_cast<std::int64_t>(f.template as<long long>())};
+                    case kInt4: return Value{static_cast<std::int64_t>(f.template as<int>())};
+                    case kInt8: return Value{static_cast<std::int64_t>(f.template as<long long>())};
                     case kFloat4:
                     case kFloat8: return Value{f.template as<double>()};
-                    case kNumeric:return Value{common::Decimal{f.template as<std::string>()}};
-                    case kBytea:  return Value{parseBytea(f.template as<std::string>())};
-                    case kDate:   return Value{common::Date{f.template as<std::string>()}};
+                    case kNumeric: return Value{common::Decimal{f.template as<std::string>()}};
+                    case kBytea: return Value{parseBytea(f.template as<std::string>())};
+                    case kDate: return Value{common::Date{f.template as<std::string>()}};
                     case kTime:
                     case kTimetz: return Value{common::Time{f.template as<std::string>()}};
-                    case kUuid:   return Value{common::Uuid{f.template as<std::string>()}};
+                    case kUuid: return Value{common::Uuid{f.template as<std::string>()}};
                     case kJson:
-                    case kJsonb:  return Value{common::Json{f.template as<std::string>()}};
+                    case kJsonb: return Value{common::Json{f.template as<std::string>()}};
                     case kTimestamp:
                     case kTimestamptz: {
                         const std::string s = f.template as<std::string>();
@@ -154,7 +157,7 @@ namespace dbmw::driver {
                         if (common::tryParseTimestamp(s, ts)) return Value{ts};
                         return Value{s};
                     }
-                    default:      return Value{f.template as<std::string>()};
+                    default: return Value{f.template as<std::string>()};
                 }
             } catch (...) {
                 return Value{f.template as<std::string>()};
@@ -176,9 +179,9 @@ namespace dbmw::driver {
             }
             out.setFields(std::move(fields));
 
-            for (auto const &row : r) {
+            for (auto const &row: r) {
                 common::Row out_row;
-                for (auto const &field : row) {
+                for (auto const &field: row) {
                     out_row.set(field.name(), fieldToValue(field));
                 }
                 out.addRow(std::move(out_row));
@@ -186,7 +189,7 @@ namespace dbmw::driver {
         }
 
         void appendParams(pqxx::params &p, const common::Params &ps) {
-            for (const auto &v : ps) {
+            for (const auto &v: ps) {
                 if (std::holds_alternative<std::nullptr_t>(v)) {
                     p.append(std::optional<std::string>{});
                 } else if (const auto *x = std::get_if<bool>(&v)) {
@@ -221,19 +224,21 @@ namespace dbmw::driver {
 
         pqxx::result execParams(pqxx::transaction_base &tx, const std::string &sql,
                                 pqxx::params &parms) {
+
 #if defined(DBMW_PQXX_HAS_EXEC_WITH_PARAMS)
-            return tx.exec(pqxx::zview{sql}, std::move(parms));
+        return tx.exec (pqxx::zview { sql }, std::move (parms));
 #else
-            return tx.exec_params(pqxx::zview{sql}, std::move(parms));
+        return tx.exec_params (pqxx::zview { sql }, std::move (parms));
 #endif
         }
 
         pqxx::result execPrepared(pqxx::transaction_base &tx, const std::string &name,
                                   pqxx::params &parms) {
+
 #if defined(DBMW_PQXX_HAS_EXEC_WITH_PARAMS)
-            return tx.exec(pqxx::prepped{name}, std::move(parms));
+        return tx.exec (pqxx::prepped { name }, std::move (parms));
 #else
-            return tx.exec_prepared(pqxx::zview{name}, std::move(parms));
+        return tx.exec_prepared (pqxx::zview { name }, std::move (parms));
 #endif
         }
 
@@ -245,7 +250,7 @@ namespace dbmw::driver {
             pqxx::params bound;
             appendParams(bound, params);
             const std::string declare = std::string("DECLARE ") + kCursor
-                + " NO SCROLL CURSOR FOR " + sql;
+                                        + " NO SCROLL CURSOR FOR " + sql;
             if (params.empty()) tx.exec(declare);
             else execParams(tx, declare, bound);
             rows = 0;
@@ -267,7 +272,8 @@ namespace dbmw::driver {
                 }
                 tx.exec(std::string("CLOSE ") + kCursor);
             } catch (...) {
-                try { tx.exec(std::string("CLOSE ") + kCursor); } catch (...) {}
+                try { tx.exec(std::string("CLOSE ") + kCursor); } catch (...) {
+                }
                 throw;
             }
             return common::Status::OK();
@@ -278,9 +284,13 @@ namespace dbmw::driver {
 #ifdef DBMW_ENABLE_POSTGRES
     class PgCursor : public core::ICursor {
     public:
-        explicit PgCursor(PostgresConnection &owner) : owner_(owner) {}
+        explicit PgCursor(PostgresConnection &owner) : owner_(owner) {
+        }
 
-        ~PgCursor() override { try { close(); } catch (...) {} }
+        ~PgCursor() override {
+            try { close(); } catch (...) {
+            }
+        }
 
         common::Status open(const std::string &pgSql, const common::Params &params,
                             const core::CursorOptions &opts) {
@@ -300,7 +310,7 @@ namespace dbmw::driver {
             const std::string name = "dbmw_cursor_" + std::to_string(++gCursorSeq_);
             const std::string scroll = opts.scrollable ? "SCROLL" : "NO SCROLL";
             const std::string declare = "DECLARE " + name + " " + scroll
-                + " CURSOR FOR " + pgSql;
+                                        + " CURSOR FOR " + pgSql;
             pqxx::params bound;
             appendParams(bound, params);
             try {
@@ -322,12 +332,16 @@ namespace dbmw::driver {
             try {
                 ActiveOperation active(owner_.operationMtx_, owner_.operationActive_);
                 const auto rows = tx_->exec("FETCH FORWARD "
-                    + std::to_string(want) + " FROM " + name_);
+                                            + std::to_string(want) + " FROM " + name_);
                 ensureFields(out, rows);
-                if (rows.empty()) { open_ = false; eof_ = true; return common::Status::OK(); }
-                for (const auto &source : rows) {
+                if (rows.empty()) {
+                    open_ = false;
+                    eof_ = true;
+                    return common::Status::OK();
+                }
+                for (const auto &source: rows) {
                     common::Row row;
-                    for (const auto &field : source)
+                    for (const auto &field: source)
                         row.set(field.name(), fieldToValue(field));
                     out.addRow(std::move(row));
                     ++rowsFetched_;
@@ -372,7 +386,8 @@ namespace dbmw::driver {
     private:
         void rollbackOwned() {
             if (ownsTx_ && ownedTx_) {
-                try { ownedTx_->commit(); } catch (...) {}
+                try { ownedTx_->commit(); } catch (...) {
+                }
                 ownedTx_.reset();
             }
         }
@@ -412,7 +427,7 @@ namespace dbmw::driver {
         std::string cs;
         cs += "host=" + connValue(cfg.host.empty() ? std::string("localhost") : cfg.host);
         cs += " port=" + std::to_string(cfg.port != 0 ? cfg.port : 5432);
-        if (!cfg.user.empty())     cs += " user=" + connValue(cfg.user);
+        if (!cfg.user.empty()) cs += " user=" + connValue(cfg.user);
         if (!cfg.password.empty()) cs += " password=" + connValue(cfg.password);
         if (!cfg.database.empty()) cs += " dbname=" + connValue(cfg.database);
         if (cfg.connection_timeout_ms > 0)
@@ -621,7 +636,10 @@ namespace dbmw::driver {
             return postgresError(common::ErrorCode::QueryError, "stream", e);
         }
 #else
-        (void) sql; (void) params; (void) callback; rows = 0;
+        (void) sql;
+        (void) params;
+        (void) callback;
+        rows = 0;
         return common::Status::error(common::ErrorCode::DriverDisabled,
                                      "PostgreSQL driver disabled");
 #endif
@@ -667,14 +685,16 @@ namespace dbmw::driver {
             return postgresError(common::ErrorCode::QueryError, "batch", e);
         }
 #else
-        (void) sql; (void) batch; out.clear();
+        (void) sql;
+        (void) batch;
+        out.clear();
         return common::Status::error(common::ErrorCode::DriverDisabled,
                                      "PostgreSQL driver disabled");
 #endif
     }
 
     common::Status PostgresConnection::execute(const std::string &sql, std::int64_t &affected,
-                                              common::GeneratedKeys &out) {
+                                               common::GeneratedKeys &out) {
 #ifdef DBMW_ENABLE_POSTGRES
         out.clear();
         if (!open_ || !conn_) return notConnected("execute");
@@ -682,7 +702,11 @@ namespace dbmw::driver {
         try {
             pqxx::result r;
             if (tx_) r = tx_->exec(sql);
-            else { PgTx w{*conn_}; r = w.exec(sql); w.commit(); }
+            else {
+                PgTx w{*conn_};
+                r = w.exec(sql);
+                w.commit();
+            }
             affected = static_cast<std::int64_t>(r.affected_rows());
             fillResultSet(r, out.rows, 0);
             return common::Status::OK();
@@ -690,13 +714,15 @@ namespace dbmw::driver {
             return postgresError(common::ErrorCode::QueryError, "execute(keys)", e);
         }
 #else
-        (void) sql; (void) affected; out.clear();
+        (void) sql;
+        (void) affected;
+        out.clear();
         return common::Status::error(common::ErrorCode::NotSupported, "PostgreSQL driver disabled");
 #endif
     }
 
     common::Status PostgresConnection::execute(const std::string &sql, const common::Params &params,
-                                              std::int64_t &affected, common::GeneratedKeys &out) {
+                                               std::int64_t &affected, common::GeneratedKeys &out) {
 #ifdef DBMW_ENABLE_POSTGRES
         out.clear();
         if (!open_ || !conn_) return notConnected("execute");
@@ -710,7 +736,11 @@ namespace dbmw::driver {
             appendParams(pp, params);
             pqxx::result r;
             if (tx_) r = execParams(*tx_, pgSql, pp);
-            else { PgTx w{*conn_}; r = execParams(w, pgSql, pp); w.commit(); }
+            else {
+                PgTx w{*conn_};
+                r = execParams(w, pgSql, pp);
+                w.commit();
+            }
             affected = static_cast<std::int64_t>(r.affected_rows());
             fillResultSet(r, out.rows, 0);
             return common::Status::OK();
@@ -718,7 +748,10 @@ namespace dbmw::driver {
             return postgresError(common::ErrorCode::QueryError, "execute(keys)", e);
         }
 #else
-        (void) sql; (void) params; (void) affected; out.clear();
+        (void) sql;
+        (void) params;
+        (void) affected;
+        out.clear();
         return common::Status::error(common::ErrorCode::NotSupported, "PostgreSQL driver disabled");
 #endif
     }
@@ -732,8 +765,8 @@ namespace dbmw::driver {
     }
 
     common::Status PostgresConnection::prepare(const std::string &sql,
-                                              const common::Params &typesSample,
-                                              core::PreparedStatementHandle &out) {
+                                               const common::Params &typesSample,
+                                               core::PreparedStatementHandle &out) {
 #ifdef DBMW_ENABLE_POSTGRES
         out = core::PreparedStatementHandle{};
         if (!open_ || !conn_) return notConnected("prepare");
@@ -755,7 +788,7 @@ namespace dbmw::driver {
             return postgresError(common::ErrorCode::QueryError, "prepare", e);
         }
         core::PreparedStatementHandle h =
-            core::PreparedStatementHandle::make(preparedSeq_, nullptr);
+                core::PreparedStatementHandle::make(preparedSeq_, nullptr);
         preparedCache_[key] = h;
         preparedNames_[preparedSeq_] = name;
         preparedLru_.push_back(key);
@@ -766,7 +799,8 @@ namespace dbmw::driver {
                 if (const auto oit = preparedCache_.find(oldKey); oit != preparedCache_.end()) {
                     if (const auto nit = preparedNames_.find(oit->second.id());
                         nit != preparedNames_.end()) {
-                        try { conn_->unprepare(nit->second); } catch (...) {}
+                        try { conn_->unprepare(nit->second); } catch (...) {
+                        }
                         preparedNames_.erase(nit);
                     }
                     preparedCache_.erase(oit);
@@ -776,14 +810,16 @@ namespace dbmw::driver {
         out = h;
         return common::Status::OK();
 #else
-        (void) sql; (void) typesSample; out = core::PreparedStatementHandle{};
+        (void) sql;
+        (void) typesSample;
+        out = core::PreparedStatementHandle{};
         return common::Status::error(common::ErrorCode::NotSupported, "PostgreSQL driver disabled");
 #endif
     }
 
     common::Status PostgresConnection::executePrepared(const core::PreparedStatementHandle &h,
-                                                      const common::Params &params,
-                                                      common::ResultSet &out) {
+                                                       const common::Params &params,
+                                                       common::ResultSet &out) {
 #ifdef DBMW_ENABLE_POSTGRES
         if (!open_ || !conn_) return notConnected("executePrepared");
         auto it = preparedNames_.find(h.id());
@@ -806,14 +842,16 @@ namespace dbmw::driver {
             return postgresError(common::ErrorCode::QueryError, "exec_prepared", e);
         }
 #else
-        (void) h; (void) params; (void) out;
+        (void) h;
+        (void) params;
+        (void) out;
         return common::Status::error(common::ErrorCode::NotSupported, "PostgreSQL driver disabled");
 #endif
     }
 
     common::Status PostgresConnection::executePrepared(const core::PreparedStatementHandle &h,
-                                                      const common::Params &params,
-                                                      std::int64_t &affected) {
+                                                       const common::Params &params,
+                                                       std::int64_t &affected) {
 #ifdef DBMW_ENABLE_POSTGRES
         affected = 0;
         if (!open_ || !conn_) return notConnected("executePrepared");
@@ -839,15 +877,18 @@ namespace dbmw::driver {
             return postgresError(common::ErrorCode::QueryError, "exec_prepared", e);
         }
 #else
-        (void) h; (void) params; affected = 0;
+        (void) h;
+        (void) params;
+        affected = 0;
         return common::Status::error(common::ErrorCode::NotSupported, "PostgreSQL driver disabled");
 #endif
     }
 
     void PostgresConnection::closeAllPrepared() {
 #ifdef DBMW_ENABLE_POSTGRES
-        for (auto &kv : preparedNames_) {
-            try { conn_->unprepare(kv.second); } catch (...) {}
+        for (auto &kv: preparedNames_) {
+            try { conn_->unprepare(kv.second); } catch (...) {
+            }
         }
         preparedCache_.clear();
         preparedNames_.clear();
@@ -884,7 +925,10 @@ namespace dbmw::driver {
             return postgresError(common::ErrorCode::CursorError, "openCursor", e);
         }
 #else
-        (void) sql; (void) params; (void) opts; out.reset();
+        (void) sql;
+        (void) params;
+        (void) opts;
+        out.reset();
         return common::Status::error(common::ErrorCode::DriverDisabled,
                                      "PostgreSQL driver disabled");
 #endif
@@ -928,13 +972,17 @@ namespace dbmw::driver {
             switch (options.isolation) {
                 case common::IsolationLevel::Default: break;
                 case common::IsolationLevel::ReadUncommitted:
-                    settings = " ISOLATION LEVEL READ UNCOMMITTED"; break;
+                    settings = " ISOLATION LEVEL READ UNCOMMITTED";
+                    break;
                 case common::IsolationLevel::ReadCommitted:
-                    settings = " ISOLATION LEVEL READ COMMITTED"; break;
+                    settings = " ISOLATION LEVEL READ COMMITTED";
+                    break;
                 case common::IsolationLevel::RepeatableRead:
-                    settings = " ISOLATION LEVEL REPEATABLE READ"; break;
+                    settings = " ISOLATION LEVEL REPEATABLE READ";
+                    break;
                 case common::IsolationLevel::Serializable:
-                    settings = " ISOLATION LEVEL SERIALIZABLE"; break;
+                    settings = " ISOLATION LEVEL SERIALIZABLE";
+                    break;
             }
             if (options.readOnly) settings += " READ ONLY";
             if (!settings.empty()) tx_->exec("SET TRANSACTION" + settings);
@@ -986,8 +1034,9 @@ namespace dbmw::driver {
 
     common::Status PostgresConnection::savepoint(const std::string &name) {
 #ifdef DBMW_ENABLE_POSTGRES
-        if (!tx_) return common::Status::error(common::ErrorCode::TxError,
-                                                "PostgreSQL: no active transaction");
+        if (!tx_)
+            return common::Status::error(common::ErrorCode::TxError,
+                                         "PostgreSQL: no active transaction");
         try {
             tx_->exec("SAVEPOINT " + common::quoteIdentifier(name));
             return common::Status::OK();
@@ -1003,8 +1052,9 @@ namespace dbmw::driver {
 
     common::Status PostgresConnection::releaseSavepoint(const std::string &name) {
 #ifdef DBMW_ENABLE_POSTGRES
-        if (!tx_) return common::Status::error(common::ErrorCode::TxError,
-                                                "PostgreSQL: no active transaction");
+        if (!tx_)
+            return common::Status::error(common::ErrorCode::TxError,
+                                         "PostgreSQL: no active transaction");
         try {
             tx_->exec("RELEASE SAVEPOINT " + common::quoteIdentifier(name));
             return common::Status::OK();
@@ -1020,8 +1070,9 @@ namespace dbmw::driver {
 
     common::Status PostgresConnection::rollbackToSavepoint(const std::string &name) {
 #ifdef DBMW_ENABLE_POSTGRES
-        if (!tx_) return common::Status::error(common::ErrorCode::TxError,
-                                                "PostgreSQL: no active transaction");
+        if (!tx_)
+            return common::Status::error(common::ErrorCode::TxError,
+                                         "PostgreSQL: no active transaction");
         try {
             tx_->exec("ROLLBACK TO SAVEPOINT " + common::quoteIdentifier(name));
             return common::Status::OK();
@@ -1038,8 +1089,16 @@ namespace dbmw::driver {
     void PostgresConnection::close() {
 #ifdef DBMW_ENABLE_POSTGRES
         closeAllPrepared();
-        if (tx_) { try { tx_->abort(); } catch (...) {} tx_.reset(); }
-        if (conn_) { try { conn_->close(); } catch (...) {} conn_.reset(); }
+        if (tx_) {
+            try { tx_->abort(); } catch (...) {
+            }
+            tx_.reset();
+        }
+        if (conn_) {
+            try { conn_->close(); } catch (...) {
+            }
+            conn_.reset();
+        }
 #endif
         open_ = false;
     }
@@ -1062,8 +1121,7 @@ namespace dbmw::driver {
 #endif
     }
 
-    common::Status PostgresConnection::lastError(const char *where) const
-    {
+    common::Status PostgresConnection::lastError(const char *where) const {
         std::string msg = where;
         msg += ": ";
         msg += lastErr_.empty() ? "(unknown error)" : lastErr_;

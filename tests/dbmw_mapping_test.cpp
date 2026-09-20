@@ -33,28 +33,33 @@ static int g_failed = 0;
 static int g_passed = 0;
 
 static void check(const bool cond, const std::string &name) {
-    if (cond) { ++g_passed; std::cout << "  [PASS] " << name << "\n"; }
-    else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
+    if (cond) {
+        ++g_passed;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        ++g_failed;
+        std::cout << "  [FAIL] " << name << "\n";
+    }
 }
 
-using RowData = std::vector<std::pair<std::string, common::Value>>;
+using RowData = std::vector<std::pair<std::string, common::Value> >;
 
-static std::vector<RowData>   gRows;
-static std::atomic<int>       gQueryCalls{0};
-static std::atomic<int>       gExecuteCalls{0};
-static std::int64_t           gInsertId = 0;
-static RowData                gKeyRow;
+static std::vector<RowData> gRows;
+static std::atomic<int> gQueryCalls{0};
+static std::atomic<int> gExecuteCalls{0};
+static std::int64_t gInsertId = 0;
+static RowData gKeyRow;
 
 static common::ResultSet buildResultSet(const std::vector<RowData> &rows) {
     common::ResultSet rs;
     if (!rows.empty()) {
         std::vector<std::string> fields;
-        for (const auto &kv : rows.front()) fields.push_back(kv.first);
+        for (const auto &kv: rows.front()) fields.push_back(kv.first);
         rs.setFields(std::move(fields));
     }
-    for (const auto &rd : rows) {
+    for (const auto &rd: rows) {
         common::Row r;
-        for (const auto &kv : rd) r.set(kv.first, kv.second);
+        for (const auto &kv: rd) r.set(kv.first, kv.second);
         rs.addRow(std::move(r));
     }
     return rs;
@@ -67,21 +72,25 @@ public:
         open_ = true;
         return Status::OK();
     }
+
     Status ping() override {
         return open_ ? Status::OK() : Status::error(common::ErrorCode::PingFailed, "closed");
     }
+
     Status query(const std::string &sql, common::ResultSet &out) override {
         (void) sql;
         ++gQueryCalls;
         out = buildResultSet(gRows);
         return Status::OK();
     }
+
     Status execute(const std::string &sql, std::int64_t &affected) override {
         (void) sql;
         ++gExecuteCalls;
         affected = 1;
         return Status::OK();
     }
+
     Status execute(const std::string &sql, const common::Params &params,
                    std::int64_t &affected, common::GeneratedKeys &out) override {
         (void) sql;
@@ -99,10 +108,24 @@ public:
         }
         return Status::OK();
     }
-    Status begin() override { tx_ = true; return Status::OK(); }
+
+    Status begin() override {
+        tx_ = true;
+        return Status::OK();
+    }
+
     Status begin(const common::TransactionOptions &) override { return begin(); }
-    Status commit() override { tx_ = false; return Status::OK(); }
-    Status rollback() override { tx_ = false; return Status::OK(); }
+
+    Status commit() override {
+        tx_ = false;
+        return Status::OK();
+    }
+
+    Status rollback() override {
+        tx_ = false;
+        return Status::OK();
+    }
+
     void close() override { open_ = false; }
     bool isOpen() const override { return open_; }
     bool inTransaction() const override { return tx_; }
@@ -116,6 +139,7 @@ private:
 class MappingMockDriver : public driver::IDriver {
 public:
     const char *name() const override { return "mmock"; }
+
     std::unique_ptr<core::IDatabaseConnection> createConnection() override {
         return std::make_unique<MappingMockConnection>();
     }
@@ -123,7 +147,9 @@ public:
 
 class FakeCursor final : public core::ICursor {
 public:
-    explicit FakeCursor(std::vector<RowData> rows) : rows_(std::move(rows)) {}
+    explicit FakeCursor(std::vector<RowData> rows) : rows_(std::move(rows)) {
+    }
+
     common::Status fetch(std::size_t n, common::ResultSet &out) override {
         const std::size_t take = (n == 0 || n > rows_.size() - pos_) ? rows_.size() - pos_ : n;
         std::vector<RowData> slice(rows_.begin() + static_cast<long>(pos_),
@@ -132,6 +158,7 @@ public:
         out = buildResultSet(slice);
         return Status::OK();
     }
+
     common::Status fetchRow(common::Row &out, bool &ok) override {
         if (pos_ >= rows_.size()) {
             ok = false;
@@ -141,7 +168,12 @@ public:
         ok = true;
         return Status::OK();
     }
-    common::Status close() override { open_ = false; return Status::OK(); }
+
+    common::Status close() override {
+        open_ = false;
+        return Status::OK();
+    }
+
     bool isOpen() const override { return open_; }
     bool hasNext() const override { return pos_ < rows_.size(); }
     std::uint64_t rowsFetched() const override { return static_cast<std::uint64_t>(pos_); }
@@ -171,99 +203,154 @@ struct StrictMissingUser {
     common::Decimal balance{"0"};
 };
 
-struct FlagRow { bool active = false; };
-struct SmallRow { std::int32_t qty = 0; };
-struct LossyAmountRow { double amount = 0; };
-struct StrictAmountRow { double amount = 0; };
-struct TextualTsRow { common::Timestamp ts{}; };
-struct PlainTsRow { common::Timestamp ts{}; };
-struct StrRow { std::string s; };
+struct FlagRow {
+    bool active = false;
+};
+
+struct SmallRow {
+    std::int32_t qty = 0;
+};
+
+struct LossyAmountRow {
+    double amount = 0;
+};
+
+struct StrictAmountRow {
+    double amount = 0;
+};
+
+struct TextualTsRow {
+    common::Timestamp ts{};
+};
+
+struct PlainTsRow {
+    common::Timestamp ts{};
+};
+
+struct StrRow {
+    std::string s;
+};
 
 enum class UserState : std::int32_t { Active = 1, Locked = 2 };
-struct EnumRow { UserState st = UserState::Active; };
 
-struct UserId { std::int64_t v = 0; };
-struct RefRow { UserId uid; };
+struct EnumRow {
+    UserState st = UserState::Active;
+};
 
-struct NoPkRow { std::string name; };
+struct UserId {
+    std::int64_t v = 0;
+};
+
+struct RefRow {
+    UserId uid;
+};
+
+struct NoPkRow {
+    std::string name;
+};
 
 namespace dbmw::mapping {
-
-    template <> struct RowMapper<User> {
+    template<>
+    struct RowMapper<User> {
         static Mapping<User> describe() {
             return Mapping<User>()
-                .field(&User::id, "id", FieldFlags::PrimaryKey | FieldFlags::Generated)
-                .field(&User::name, "name")
-                .field(&User::email, "email")
-                .field(&User::balance, "balance")
-                .field(&User::createdAt, "created_at");
+                    .field(&User::id, "id", FieldFlags::PrimaryKey | FieldFlags::Generated)
+                    .field(&User::name, "name")
+                    .field(&User::email, "email")
+                    .field(&User::balance, "balance")
+                    .field(&User::createdAt, "created_at");
         }
     };
 
-    template <> struct RowMapper<StrictUser> {
+    template<>
+    struct RowMapper<StrictUser> {
         static Mapping<StrictUser> describe() {
             return Mapping<StrictUser>()
-                .field(&StrictUser::id, "id")
-                .field(&StrictUser::name, "name")
-                .extraColumns(ExtraColumns::Error);
+                    .field(&StrictUser::id, "id")
+                    .field(&StrictUser::name, "name")
+                    .extraColumns(ExtraColumns::Error);
         }
     };
 
-    template <> struct RowMapper<StrictMissingUser> {
+    template<>
+    struct RowMapper<StrictMissingUser> {
         static Mapping<StrictMissingUser> describe() {
             return Mapping<StrictMissingUser>()
-                .field(&StrictMissingUser::id, "id")
-                .field(&StrictMissingUser::name, "name")
-                .field(&StrictMissingUser::balance, "balance")
-                .missingColumns(MissingColumns::Error);
+                    .field(&StrictMissingUser::id, "id")
+                    .field(&StrictMissingUser::name, "name")
+                    .field(&StrictMissingUser::balance, "balance")
+                    .missingColumns(MissingColumns::Error);
         }
     };
 
-    template <> struct RowMapper<FlagRow> {
+    template<>
+    struct RowMapper<FlagRow> {
         static Mapping<FlagRow> describe() { return Mapping<FlagRow>().field(&FlagRow::active, "active"); }
     };
-    template <> struct RowMapper<SmallRow> {
+
+    template<>
+    struct RowMapper<SmallRow> {
         static Mapping<SmallRow> describe() { return Mapping<SmallRow>().field(&SmallRow::qty, "qty"); }
     };
-    template <> struct RowMapper<LossyAmountRow> {
+
+    template<>
+    struct RowMapper<LossyAmountRow> {
         static Mapping<LossyAmountRow> describe() {
             return Mapping<LossyAmountRow>().field(&LossyAmountRow::amount, "amount", FieldFlags::Lossy);
         }
     };
-    template <> struct RowMapper<StrictAmountRow> {
+
+    template<>
+    struct RowMapper<StrictAmountRow> {
         static Mapping<StrictAmountRow> describe() {
             return Mapping<StrictAmountRow>().field(&StrictAmountRow::amount, "amount");
         }
     };
-    template <> struct RowMapper<TextualTsRow> {
+
+    template<>
+    struct RowMapper<TextualTsRow> {
         static Mapping<TextualTsRow> describe() {
             return Mapping<TextualTsRow>().field(&TextualTsRow::ts, "ts", FieldFlags::Textual);
         }
     };
-    template <> struct RowMapper<PlainTsRow> {
+
+    template<>
+    struct RowMapper<PlainTsRow> {
         static Mapping<PlainTsRow> describe() { return Mapping<PlainTsRow>().field(&PlainTsRow::ts, "ts"); }
     };
-    template <> struct RowMapper<StrRow> {
+
+    template<>
+    struct RowMapper<StrRow> {
         static Mapping<StrRow> describe() { return Mapping<StrRow>().field(&StrRow::s, "s"); }
     };
-    template <> struct RowMapper<EnumRow> {
+
+    template<>
+    struct RowMapper<EnumRow> {
         static Mapping<EnumRow> describe() { return Mapping<EnumRow>().field(&EnumRow::st, "st"); }
     };
-    template <> struct RowMapper<RefRow> {
+
+    template<>
+    struct RowMapper<RefRow> {
         static Mapping<RefRow> describe() { return Mapping<RefRow>().field(&RefRow::uid, "uid"); }
     };
-    template <> struct RowMapper<NoPkRow> {
+
+    template<>
+    struct RowMapper<NoPkRow> {
         static Mapping<NoPkRow> describe() { return Mapping<NoPkRow>().field(&NoPkRow::name, "name"); }
     };
 
-    template <> struct ValueConverter<UserId> {
+    template<>
+    struct ValueConverter<UserId> {
         static Status fromValue(const common::Value &v, UserId &out, FieldFlags) {
-            if (const auto p = std::get_if<std::int64_t>(&v)) { out.v = *p; return Status::OK(); }
+            if (const auto p = std::get_if<std::int64_t>(&v)) {
+                out.v = *p;
+                return Status::OK();
+            }
             return mapError("UserId expects int64");
         }
+
         static common::Value toValue(const UserId &in) { return common::Value(in.v); }
     };
-
 }
 
 struct CfgFlags {
@@ -273,11 +360,11 @@ struct CfgFlags {
 
 static std::string buildConfig(const CfgFlags &f) {
     const std::string cache = f.cache
-        ? R"("query_cache": { "enabled": true, "ttl_ms": 60000, "max_entries": 100 },)"
-        : R"("query_cache": { "enabled": false },)";
+                                  ? R"("query_cache": { "enabled": true, "ttl_ms": 60000, "max_entries": 100 },)"
+                                  : R"("query_cache": { "enabled": false },)";
     const std::string icp = f.interceptors
-        ? R"("interceptors": { "enabled": true },)"
-        : R"("interceptors": { "enabled": false },)";
+                                ? R"("interceptors": { "enabled": true },)"
+                                : R"("interceptors": { "enabled": false },)";
     return R"({
   "default_datasource": "main",
   "heartbeat_interval_ms": 5000,
@@ -320,18 +407,23 @@ static RowData userRow(const std::int64_t id, const std::string &name,
 class MaskingInterceptor final : public core::ISqlInterceptor {
 public:
     void onRoute(const std::string &, const std::string &, common::OperationType,
-                 common::SqlContext &) override {}
+                 common::SqlContext &) override {
+    }
+
     common::Status beforeExecution(const core::ExecutionView &) override { return Status::OK(); }
+
     void afterExecution(const core::ExecutionView &view) override {
         if (view.result == nullptr) return;
-        for (auto &row : view.result->mutableRows())
+        for (auto &row: view.result->mutableRows())
             if (row.has("name")) row.set("name", common::Value(std::string("***")));
     }
-    void onCompletion(const core::ExecutionView &) override {}
+
+    void onCompletion(const core::ExecutionView &) override {
+    }
 };
 
 #if defined(DBMW_ENABLE_ASYNC_CORO)
-static async::Task<void> coroQueryBody(std::promise<EntityResult<User>> pr) {
+static async::Task<void> coroQueryBody(std::promise<EntityResult<User> > pr) {
     common::Params p;
     auto r = co_await async::queryAsAsync<User>("SELECT coro", p);
     pr.set_value(std::move(r));
@@ -353,8 +445,10 @@ int main() {
 
     std::cout << "== M1. 基本映射：全类型往返 ==\n";
     {
-        gRows = {userRow(1, "alice", std::string("a@x.com"), "12.50"),
-                 userRow(2, "bob", std::nullopt, "0.01")};
+        gRows = {
+            userRow(1, "alice", std::string("a@x.com"), "12.50"),
+            userRow(2, "bob", std::nullopt, "0.01")
+        };
         const auto r = queryAs<User>("SELECT * FROM users");
         check(r.status.ok(), "queryAs 成功");
         check(r.items.size() == 2, "两行全部映射");
@@ -380,7 +474,7 @@ int main() {
               "NULL 落进 optional → nullopt（合法）");
 
         RowData bad = userRow(1, "x", std::nullopt, "1.00");
-        for (auto &kv : bad) if (kv.first == "name") kv.second = common::Value(nullptr);
+        for (auto &kv: bad) if (kv.first == "name") kv.second = common::Value(nullptr);
         gRows = {bad};
         const auto r2 = queryAs<User>("SELECT 2");
         check(!r2.status.ok() && r2.status.code == common::ErrorCode::MappingError,
@@ -533,7 +627,7 @@ int main() {
         check(pg.rfind("INSERT INTO \"users\" (", 0) == 0, "PG 方言：表名用双引号");
 
         const std::string qual =
-            mapping::insertSql<User>("public.users", common::util::Dialect::Postgres);
+                mapping::insertSql<User>("public.users", common::util::Dialect::Postgres);
         check(qual.find("\"public\".\"users\"") != std::string::npos,
               "PG 方言：schema 限定名逐段加引号");
 
@@ -545,24 +639,24 @@ int main() {
     std::cout << "== M11c. insertSqlReturning（生成键回读）==\n";
     {
         const std::string pg =
-            mapping::insertSqlReturning<User>("users", common::util::Dialect::Postgres);
+                mapping::insertSqlReturning<User>("users", common::util::Dialect::Postgres);
         check(pg.rfind("INSERT INTO \"users\"", 0) == 0, "PG：仍是标准 INSERT 开头");
         check(pg.find(" RETURNING \"id\"") != std::string::npos,
               "PG：尾部追加 RETURNING（只列 Generated 列）");
         check(pg.find("\"name\"") != std::string::npos, "PG：RETURNING 不影响原有列清单");
 
         const std::string my =
-            mapping::insertSqlReturning<User>("users", common::util::Dialect::MySQL);
+                mapping::insertSqlReturning<User>("users", common::util::Dialect::MySQL);
         check(my.find("RETURNING") == std::string::npos,
               "MySQL：不支持 RETURNING，原样返回（走 mysql_insert_id）");
 
         const std::string ms =
-            mapping::insertSqlReturning<User>("users", common::util::Dialect::SqlServer);
+                mapping::insertSqlReturning<User>("users", common::util::Dialect::SqlServer);
         check(ms.find("OUTPUT") == std::string::npos,
               "SQL Server：暂不自动补 OUTPUT（trigger 会报错，待真机验证）");
 
         const std::string au =
-            mapping::insertSqlReturning<User>("users", common::util::Dialect::Auto);
+                mapping::insertSqlReturning<User>("users", common::util::Dialect::Auto);
         check(au.find("RETURNING") == std::string::npos, "Dialect::Auto：探测不出方言时不补");
     }
 
@@ -606,13 +700,18 @@ int main() {
 
     std::cout << "== M15. 流式 queryEachAs ==\n";
     {
-        gRows = {userRow(1, "a", std::nullopt, "1.00"),
-                 userRow(2, "b", std::nullopt, "2.00"),
-                 userRow(3, "c", std::nullopt, "3.00")};
+        gRows = {
+            userRow(1, "a", std::nullopt, "1.00"),
+            userRow(2, "b", std::nullopt, "2.00"),
+            userRow(3, "c", std::nullopt, "3.00")
+        };
         std::vector<std::string> names;
         std::uint64_t rows = 0;
         const auto st = queryEachAs<User>("SELECT stream", common::Params{},
-                                          [&](User &&u) { names.push_back(u.name); return true; }, rows);
+                                          [&](User &&u) {
+                                              names.push_back(u.name);
+                                              return true;
+                                          }, rows);
         check(st.ok() && rows == 3, "queryEachAs 全量映射 3 行");
         check(names.size() == 3 && names[0] == "a" && names[2] == "c", "逐行映射内容正确");
 
@@ -623,7 +722,7 @@ int main() {
         check(st2.ok() && rows2 == 2, "回调返回 false 提前终止（rows=2）");
 
         RowData bad = userRow(1, "a", std::nullopt, "1.00");
-        for (auto &kv : bad) if (kv.first == "name") kv.second = common::Value(std::int64_t(1));
+        for (auto &kv: bad) if (kv.first == "name") kv.second = common::Value(std::int64_t(1));
         gRows = {bad, userRow(2, "b", std::nullopt, "2.00")};
         std::uint64_t rows3 = 0;
         const auto st3 = queryEachAs<User>("SELECT stream3", common::Params{},
@@ -700,11 +799,13 @@ int main() {
 
     std::cout << "== M20. 异步三形态：回调 / future / 协程 ==\n";
     {
-        gRows = {userRow(1, "async", std::string("a@x.com"), "5.00"),
-                 userRow(2, "async2", std::nullopt, "6.00")};
+        gRows = {
+            userRow(1, "async", std::string("a@x.com"), "5.00"),
+            userRow(2, "async2", std::nullopt, "6.00")
+        };
         const auto callerTid = std::this_thread::get_id();
 
-        std::promise<EntityResult<User>> pr1;
+        std::promise<EntityResult<User> > pr1;
         auto fut1 = pr1.get_future();
         std::thread::id cbTid{};
         common::Params p;
@@ -731,7 +832,7 @@ int main() {
               o3.items[1].id == o1.items[1].id, "回调式与 future 式同源同结果");
 
 #if defined(DBMW_ENABLE_ASYNC_CORO)
-        std::promise<EntityResult<User>> prC;
+        std::promise<EntityResult<User> > prC;
         auto futC = prC.get_future();
         async::run(coroQueryBody(std::move(prC)));
         auto oC = futC.get();
@@ -745,9 +846,9 @@ int main() {
     std::cout << "== M21/M22. 异步映射失败与失败后可用性 ==\n";
     {
         RowData bad = userRow(1, "a", std::nullopt, "1.00");
-        for (auto &kv : bad) if (kv.first == "name") kv.second = common::Value(std::int64_t(1));
+        for (auto &kv: bad) if (kv.first == "name") kv.second = common::Value(std::int64_t(1));
         gRows = {bad};
-        std::promise<EntityResult<User>> pr;
+        std::promise<EntityResult<User> > pr;
         auto fut = pr.get_future();
         common::Params p;
         async::queryAs<User>("SELECT bad", p, [&](EntityResult<User> &&r) { pr.set_value(std::move(r)); });

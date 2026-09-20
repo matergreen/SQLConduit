@@ -87,9 +87,11 @@ namespace dbmw::common::util {
 
         CallParam() = default;
 
-        explicit CallParam(Value v) : value(std::move(v)) {}
+        explicit CallParam(Value v) : value(std::move(v)) {
+        }
 
-        CallParam(const ParamDirection d, Value v) : value(std::move(v)), direction(d) {}
+        CallParam(const ParamDirection d, Value v) : value(std::move(v)), direction(d) {
+        }
     };
 
     using CallParams = std::vector<CallParam>;
@@ -372,8 +374,10 @@ namespace dbmw::common::util {
         if (d == Dialect::SqlServer) {
             out.callSql = returnsRows
                               ? "{CALL " + name + parenArgs(args.size()) + "}"
-                              : "EXEC " + name + (args.empty() ? std::string() : " " + csvArgs(
-                                     args.size()));
+                              : "EXEC " + name + (args.empty()
+                                                      ? std::string()
+                                                      : " " + csvArgs(
+                                                            args.size()));
             return Status::OK();
         }
         return unsupported("dbmw::util: unknown dialect");
@@ -547,7 +551,8 @@ namespace dbmw::common::util {
         if (sql.empty()) return badSpec("dbmw::util: createRoutine sql is empty");
         const Dialect d = resolveDialect(opts);
         if (const auto s = detail::validateCreateRoutine(opts.replace, opts.ifNotExists, d);
-            !s.ok()) return s;
+            !s.ok())
+            return s;
         std::string finalSql = sql;
         if (opts.stripDelimiter) {
             const std::size_t n = stripDelimiterDirectives(finalSql);
@@ -612,33 +617,69 @@ namespace dbmw::common::util {
         bool inS = false, inD = false, inLine = false, inBlock = false;
         for (std::size_t i = 0; i < n; ++i) {
             const char c = sql[i];
-            if (inLine) { prot[i] = 1; if (c == '\n') inLine = false; continue; }
+            if (inLine) {
+                prot[i] = 1;
+                if (c == '\n') inLine = false;
+                continue;
+            }
             if (inBlock) {
                 prot[i] = 1;
-                if (c == '*' && i + 1 < n && sql[i + 1] == '/') { prot[i + 1] = 1; inBlock = false; ++i; }
+                if (c == '*' && i + 1 < n && sql[i + 1] == '/') {
+                    prot[i + 1] = 1;
+                    inBlock = false;
+                    ++i;
+                }
                 continue;
             }
             if (inS) {
                 prot[i] = 1;
                 if (c == '\'') {
-                    if (i + 1 < n && sql[i + 1] == '\'') { prot[i + 1] = 1; ++i; }
-                    else inS = false;
+                    if (i + 1 < n && sql[i + 1] == '\'') {
+                        prot[i + 1] = 1;
+                        ++i;
+                    } else inS = false;
                 }
                 continue;
             }
             if (inD) {
                 prot[i] = 1;
                 if (c == '"') {
-                    if (i + 1 < n && sql[i + 1] == '"') { prot[i + 1] = 1; ++i; }
-                    else inD = false;
+                    if (i + 1 < n && sql[i + 1] == '"') {
+                        prot[i + 1] = 1;
+                        ++i;
+                    } else inD = false;
                 }
                 continue;
             }
-            if (c == '-' && i + 1 < n && sql[i + 1] == '-') { inLine = true; prot[i] = 1; prot[i + 1] = 1; ++i; continue; }
-            if (c == '#') { inLine = true; prot[i] = 1; continue; }
-            if (c == '/' && i + 1 < n && sql[i + 1] == '*') { inBlock = true; prot[i] = 1; prot[i + 1] = 1; ++i; continue; }
-            if (c == '\'') { inS = true; prot[i] = 1; continue; }
-            if (c == '"') { inD = true; prot[i] = 1; continue; }
+            if (c == '-' && i + 1 < n && sql[i + 1] == '-') {
+                inLine = true;
+                prot[i] = 1;
+                prot[i + 1] = 1;
+                ++i;
+                continue;
+            }
+            if (c == '#') {
+                inLine = true;
+                prot[i] = 1;
+                continue;
+            }
+            if (c == '/' && i + 1 < n && sql[i + 1] == '*') {
+                inBlock = true;
+                prot[i] = 1;
+                prot[i + 1] = 1;
+                ++i;
+                continue;
+            }
+            if (c == '\'') {
+                inS = true;
+                prot[i] = 1;
+                continue;
+            }
+            if (c == '"') {
+                inD = true;
+                prot[i] = 1;
+                continue;
+            }
         }
 
         enum Blk { B_BEGIN = 1, B_CASE, B_IF, B_LOOP, B_WHILE, B_REPEAT };
@@ -652,10 +693,16 @@ namespace dbmw::common::util {
             return true;
         };
         while (i < n) {
-            if (prot[i]) { ++i; continue; }
+            if (prot[i]) {
+                ++i;
+                continue;
+            }
             std::size_t j = i;
             while (j < n && (std::isalnum(static_cast<unsigned char>(sql[j])) || sql[j] == '_')) ++j;
-            if (j == i) { ++i; continue; }
+            if (j == i) {
+                ++i;
+                continue;
+            }
             if (isKw(i, j, "begin")) stack.emplace_back(B_BEGIN, j);
             else if (isKw(i, j, "case")) stack.emplace_back(B_CASE, j);
             else if (isKw(i, j, "if")) stack.emplace_back(B_IF, j);
@@ -709,7 +756,10 @@ namespace dbmw::common::util {
             const auto st = detail::runDdl(opts, s);
             if (!st.ok()) {
                 lastErr = st;
-                if (opts.stopOnError) { if (executed) *executed = done; return st; }
+                if (opts.stopOnError) {
+                    if (executed) *executed = done;
+                    return st;
+                }
             } else {
                 ++done;
             }
@@ -776,8 +826,9 @@ namespace dbmw::common::util {
                 if (it->is_regular_file(e2)) collect(it->path().string());
             }
         }
-        if (ec) return Status::error(ErrorCode::IoError,
-                                     "dbmw::util: failed to walk directory " + dir + ": " + ec.message());
+        if (ec)
+            return Status::error(ErrorCode::IoError,
+                                 "dbmw::util: failed to walk directory " + dir + ": " + ec.message());
         std::sort(files.begin(), files.end());
         return runScripts(files, opts, perFile);
     }
@@ -832,8 +883,8 @@ namespace dbmw::common::util {
         }
         if (plan.needsSameConnection) {
             out.status = unsupported("dbmw::util: OUT/INOUT parameters on dialect=" +
-                std::string(dialectName(d)) + " must run on one connection; use the "
-                "core::Session overload");
+                                     std::string(dialectName(d)) + " must run on one connection; use the "
+                                     "core::Session overload");
             return out.status;
         }
         const detail::ExecScope scope(o);
@@ -859,8 +910,10 @@ namespace dbmw::common::util {
     inline Status call(core::Session &s, const RoutineRef &ref, const CallParams &params,
                        CallResult &out, CallOptions opts = {}) {
         out = CallResult{};
-        opts.dialect = opts.dialect != Dialect::Auto ? opts.dialect : detectDialect(
-                           opts.dataSource.empty() ? ref.dataSource : opts.dataSource);
+        opts.dialect = opts.dialect != Dialect::Auto
+                           ? opts.dialect
+                           : detectDialect(
+                               opts.dataSource.empty() ? ref.dataSource : opts.dataSource);
         CallPlan plan;
         if (const auto st = makeCallPlan(ref, params, opts.dialect, opts.returnsRows, plan);
             !st.ok()) {
@@ -1023,7 +1076,7 @@ namespace dbmw::async::util {
                            ? opts.dialect
                            : common::util::detectDialect(opts.dataSource);
         if (const auto s = common::util::detail::validateCreateRoutine(opts.replace,
-                                                                      opts.ifNotExists, d);
+                                                                       opts.ifNotExists, d);
             !s.ok()) {
             detail::failOp(cb, s);
             return {};
@@ -1186,16 +1239,16 @@ namespace dbmw::async::util {
         };
 
         inline void scriptRunStatement(std::shared_ptr<ScriptRunState> st,
-                                        std::string path,
-                                        std::vector<std::string> stmts,
-                                        std::size_t idx, std::size_t executed);
+                                       std::string path,
+                                       std::vector<std::string> stmts,
+                                       std::size_t idx, std::size_t executed);
 
         inline void scriptRunFile(std::shared_ptr<ScriptRunState> st);
 
         inline void scriptRunStatement(std::shared_ptr<ScriptRunState> st,
-                                        std::string path,
-                                        std::vector<std::string> stmts,
-                                        std::size_t idx, std::size_t executed) {
+                                       std::string path,
+                                       std::vector<std::string> stmts,
+                                       std::size_t idx, std::size_t executed) {
             if (idx >= stmts.size()) {
                 common::util::ScriptResult fr;
                 fr.path = std::move(path);
@@ -1242,7 +1295,10 @@ namespace dbmw::async::util {
             if (st->fileIndex >= st->files.size()) {
                 ExecResult r;
                 for (const auto &fr: st->results)
-                    if (!fr.status.ok()) { r.status = fr.status; break; }
+                    if (!fr.status.ok()) {
+                        r.status = fr.status;
+                        break;
+                    }
                 if (st->userCb) st->userCb(std::move(r));
                 return;
             }
@@ -1321,7 +1377,7 @@ namespace dbmw::async::util {
         if (ec) {
             ExecResult r;
             r.status = common::Status::error(common::ErrorCode::IoError,
-                                    "dbmw::util: failed to walk directory " + dir + ": " + ec.message());
+                                             "dbmw::util: failed to walk directory " + dir + ": " + ec.message());
             if (cb) cb(std::move(r));
             return Handle();
         }
@@ -1424,7 +1480,10 @@ namespace dbmw::async::util {
                     else
                         async::execute(opts.dataSource, s, common::Params{}, std::move(cb), async::Options{});
                 });
-            if (!r.status.ok()) { res.status = r.status; if (opts.stopOnError) co_return res; }
+            if (!r.status.ok()) {
+                res.status = r.status;
+                if (opts.stopOnError) co_return res;
+            }
         }
         co_return res;
     }

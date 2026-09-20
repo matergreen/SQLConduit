@@ -15,9 +15,12 @@ namespace dbmw::exporters {
             out.reserve(s.size() + 8);
             for (const char c: s) {
                 switch (c) {
-                    case '\\': out += "\\\\"; break;
-                    case '"': out += "\\\""; break;
-                    case '\n': out += "\\n"; break;
+                    case '\\': out += "\\\\";
+                        break;
+                    case '"': out += "\\\"";
+                        break;
+                    case '\n': out += "\\n";
+                        break;
                     default:
                         if (static_cast<unsigned char>(c) < 0x20) {
                             out.push_back('?');
@@ -33,12 +36,13 @@ namespace dbmw::exporters {
                       const std::string &help) {
             os << "# HELP " << name << ' ' << help << '\n';
         }
+
         void emitType(std::ostringstream &os, const std::string &name,
                       const std::string &type) {
             os << "# TYPE " << name << ' ' << type << '\n';
         }
 
-        std::string renderLabels(const std::vector<std::pair<std::string, std::string>> &kvs) {
+        std::string renderLabels(const std::vector<std::pair<std::string, std::string> > &kvs) {
             if (kvs.empty()) return {};
             std::ostringstream os;
             bool first = true;
@@ -55,6 +59,7 @@ namespace dbmw::exporters {
             if (labels.empty()) os << name << ' ' << value << '\n';
             else os << name << '{' << labels << "} " << value << '\n';
         }
+
         void emitMetric(std::ostringstream &os, const std::string &name,
                         const std::string &labels, double value) {
             if (labels.empty()) os << name << ' ' << value << '\n';
@@ -248,8 +253,8 @@ namespace dbmw::exporters {
 
         if (!slow.empty()) {
             const std::size_t take = maxFingerprintLabels == 0
-                ? slow.size()
-                : (std::min)(slow.size(), maxFingerprintLabels);
+                                         ? slow.size()
+                                         : (std::min)(slow.size(), maxFingerprintLabels);
 
             const std::string s_count = prefix + "_slow_sql_count";
             const std::string s_err = prefix + "_slow_sql_errors";
@@ -313,7 +318,7 @@ namespace dbmw::exporters {
                 for (std::size_t b = 0; b < n; ++b) {
                     cumulative += s.histogram[b];
                     const double leSec =
-                        static_cast<double>(s.histogramBucketsMs[b]) / 1000.0;
+                            static_cast<double>(s.histogramBucketsMs[b]) / 1000.0;
                     std::ostringstream leStream;
                     leStream << leSec;
                     const std::string bucketLbl = renderLabels({

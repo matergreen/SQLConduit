@@ -14,7 +14,7 @@ namespace dbmw::core {
         stop();
     }
 
-    void HeartbeatManager::addPool(const std::shared_ptr<ConnectionPool>& pool) {
+    void HeartbeatManager::addPool(const std::shared_ptr<ConnectionPool> &pool) {
         if (!pool) return;
         std::lock_guard<std::mutex> lk(poolsMtx_);
         pools_.push_back(pool);

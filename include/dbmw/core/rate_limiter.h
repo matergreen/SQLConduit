@@ -12,7 +12,8 @@ namespace dbmw::core {
     class TokenBucket {
     public:
         TokenBucket(double ratePerSec, double burst)
-            : tokens_(burst), rate_(ratePerSec), burst_(burst), last_(clock::now()) {}
+            : tokens_(burst), rate_(ratePerSec), burst_(burst), last_(clock::now()) {
+        }
 
         bool tryAcquire() {
             std::lock_guard<std::mutex> lk(mtx_);
@@ -87,7 +88,7 @@ namespace dbmw::core {
         double perFpQps_;
         std::string fpMode_;
         std::mutex mapMtx_;
-        std::unordered_map<std::uint64_t, std::shared_ptr<TokenBucket>> fpBuckets_;
+        std::unordered_map<std::uint64_t, std::shared_ptr<TokenBucket> > fpBuckets_;
     };
 }
 

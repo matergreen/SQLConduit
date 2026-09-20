@@ -32,7 +32,9 @@ namespace dbmw::core {
         bool enqueue(std::function<common::Status()> task);
 
         void start();
+
         void stop();
+
         [[nodiscard]] bool enabled() const { return enabled_; }
 
         [[nodiscard]] std::size_t pending() const;

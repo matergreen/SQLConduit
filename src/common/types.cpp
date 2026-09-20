@@ -14,33 +14,33 @@
 namespace dbmw::common {
     const char *errorCodeToString(const ErrorCode c) {
         switch (c) {
-            case ErrorCode::Ok:              return "Ok";
-            case ErrorCode::ConfigError:     return "ConfigError";
-            case ErrorCode::ConnectionFailed:return "ConnectionFailed";
-            case ErrorCode::QueryError:      return "QueryError";
-            case ErrorCode::QueryTimeout:    return "QueryTimeout";
-            case ErrorCode::Cancelled:       return "Cancelled";
-            case ErrorCode::ConstraintViolation:return "ConstraintViolation";
-            case ErrorCode::Deadlock:        return "Deadlock";
-            case ErrorCode::PingFailed:      return "PingFailed";
-            case ErrorCode::TxError:         return "TxError";
-            case ErrorCode::PoolExhausted:   return "PoolExhausted";
-            case ErrorCode::PoolClosed:      return "PoolClosed";
-            case ErrorCode::CircuitOpen:     return "CircuitOpen";
-            case ErrorCode::NotConnected:    return "NotConnected";
-            case ErrorCode::DriverDisabled:  return "DriverDisabled";
-            case ErrorCode::UnknownDriver:   return "UnknownDriver";
-            case ErrorCode::NotSupported:    return "NotSupported";
-            case ErrorCode::RateLimited:     return "RateLimited";
-            case ErrorCode::SqlBlocked:      return "SqlBlocked";
-            case ErrorCode::Buffered:        return "Buffered";
-            case ErrorCode::CursorClosed:     return "CursorClosed";
-            case ErrorCode::CursorLimit:      return "CursorLimit";
-            case ErrorCode::CursorError:      return "CursorError";
-            case ErrorCode::Unknown:         break;
-            case ErrorCode::Overloaded:      return "Overloaded";
-            case ErrorCode::MappingError:    return "MappingError";
-            case ErrorCode::IoError:         return "IoError";
+            case ErrorCode::Ok: return "Ok";
+            case ErrorCode::ConfigError: return "ConfigError";
+            case ErrorCode::ConnectionFailed: return "ConnectionFailed";
+            case ErrorCode::QueryError: return "QueryError";
+            case ErrorCode::QueryTimeout: return "QueryTimeout";
+            case ErrorCode::Cancelled: return "Cancelled";
+            case ErrorCode::ConstraintViolation: return "ConstraintViolation";
+            case ErrorCode::Deadlock: return "Deadlock";
+            case ErrorCode::PingFailed: return "PingFailed";
+            case ErrorCode::TxError: return "TxError";
+            case ErrorCode::PoolExhausted: return "PoolExhausted";
+            case ErrorCode::PoolClosed: return "PoolClosed";
+            case ErrorCode::CircuitOpen: return "CircuitOpen";
+            case ErrorCode::NotConnected: return "NotConnected";
+            case ErrorCode::DriverDisabled: return "DriverDisabled";
+            case ErrorCode::UnknownDriver: return "UnknownDriver";
+            case ErrorCode::NotSupported: return "NotSupported";
+            case ErrorCode::RateLimited: return "RateLimited";
+            case ErrorCode::SqlBlocked: return "SqlBlocked";
+            case ErrorCode::Buffered: return "Buffered";
+            case ErrorCode::CursorClosed: return "CursorClosed";
+            case ErrorCode::CursorLimit: return "CursorLimit";
+            case ErrorCode::CursorError: return "CursorError";
+            case ErrorCode::Unknown: break;
+            case ErrorCode::Overloaded: return "Overloaded";
+            case ErrorCode::MappingError: return "MappingError";
+            case ErrorCode::IoError: return "IoError";
         }
         return "Unknown";
     }
@@ -52,7 +52,8 @@ namespace dbmw::common {
         status.nativeCode = vendorCode;
 
         const std::string sqlClass = status.sqlState.size() >= 2
-            ? status.sqlState.substr(0, 2) : std::string();
+                                         ? status.sqlState.substr(0, 2)
+                                         : std::string();
         if (status.sqlState == "HYT00" || status.sqlState == "HYT01") {
             status.code = ErrorCode::QueryTimeout;
             status.retryable = true;
@@ -84,13 +85,15 @@ namespace dbmw::common {
         std::tm toTm(const Timestamp &t, long long &fracNs, const bool utc) {
             const auto secs = std::chrono::floor<std::chrono::seconds>(t.time_since_epoch());
             fracNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                         t.time_since_epoch() - secs).count();
+                t.time_since_epoch() - secs).count();
             const auto tt = static_cast<std::time_t>(secs.count());
             std::tm tm{};
 #if defined(_WIN32)
-            if (utc) gmtime_s(&tm, &tt); else localtime_s(&tm, &tt);
+            if (utc) gmtime_s(&tm, &tt);
+            else localtime_s(&tm, &tt);
 #else
-            if (utc) gmtime_r(&tt, &tm); else localtime_r(&tt, &tm);
+            if (utc) gmtime_r(&tt, &tm);
+            else localtime_r(&tt, &tm);
 #endif
             return tm;
         }
@@ -171,10 +174,16 @@ namespace dbmw::common {
             long long v = 0;
             int digits = 0;
             while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
-                if (digits < 9) { v = v * 10 + (s[i] - '0'); ++digits; }
+                if (digits < 9) {
+                    v = v * 10 + (s[i] - '0');
+                    ++digits;
+                }
                 ++i;
             }
-            while (digits < 9) { v *= 10; ++digits; }
+            while (digits < 9) {
+                v *= 10;
+                ++digits;
+            }
             fracNs = v;
         }
 
@@ -200,8 +209,10 @@ namespace dbmw::common {
         const auto leap = [](int year) {
             return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
         };
-        static constexpr int monthDays[] = {31, 28, 31, 30, 31, 30,
-                                             31, 31, 30, 31, 30, 31};
+        static constexpr int monthDays[] = {
+            31, 28, 31, 30, 31, 30,
+            31, 31, 30, 31, 30, 31
+        };
         if (mo < 1 || mo > 12 || d < 1 ||
             d > monthDays[mo - 1] + (mo == 2 && leap(y) ? 1 : 0) ||
             h < 0 || h > 23 || mi < 0 || mi > 59 || se < 0 || se > 59 || y < 1900) {
@@ -352,7 +363,8 @@ namespace dbmw::common {
         if (const auto *i = std::get_if<std::int64_t>(&v)) return *i;
         if (const auto *i = std::get_if<std::uint64_t>(&v)) {
             return *i <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())
-                ? static_cast<std::int64_t>(*i) : 0;
+                       ? static_cast<std::int64_t>(*i)
+                       : 0;
         }
         if (const auto *s = std::get_if<std::string>(&v)) {
             try {

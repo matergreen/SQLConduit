@@ -8,7 +8,6 @@
 #include <memory>
 
 namespace dbmw::async {
-
     struct ExecutorStats {
         std::size_t threads = 0;
         std::size_t queueDepth = 0;
@@ -30,13 +29,12 @@ namespace dbmw::async {
         virtual void postAfter(Task task, std::chrono::milliseconds delay) = 0;
 
         virtual void shutdown(std::chrono::milliseconds grace
-                              = std::chrono::milliseconds(5000)) = 0;
+                = std::chrono::milliseconds(5000)) = 0;
 
         [[nodiscard]] virtual ExecutorStats stats() const = 0;
     };
 
     std::shared_ptr<IExecutor> makeThreadPoolExecutor(int threads, std::size_t queueSize);
-
 }
 
 #endif

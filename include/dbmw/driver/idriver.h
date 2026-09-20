@@ -9,7 +9,7 @@ namespace dbmw::driver {
     public:
         virtual ~IDriver() = default;
 
-        virtual const char *name() const = 0;
+        [[nodiscard]] virtual const char *name() const = 0;
 
         virtual std::unique_ptr<core::IDatabaseConnection> createConnection() = 0;
     };

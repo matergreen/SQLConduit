@@ -17,7 +17,8 @@ namespace dbmw::driver {
     namespace {
         [[maybe_unused]] bool validSavepointName(const std::string &name) {
             if (name.empty() || !(std::isalpha(static_cast<unsigned char>(name[0])) ||
-                                  name[0] == '_')) return false;
+                                  name[0] == '_'))
+                return false;
             return std::all_of(name.begin() + 1, name.end(), [](const char c) {
                 return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
             });
@@ -33,7 +34,8 @@ namespace dbmw::driver {
 
         class StmtGuard {
         public:
-            explicit StmtGuard(MYSQL_STMT *s = nullptr) : s_(s) {}
+            explicit StmtGuard(MYSQL_STMT *s = nullptr) : s_(s) {
+            }
 
             ~StmtGuard() { if (s_) mysql_stmt_close(s_); }
 
@@ -66,11 +68,14 @@ namespace dbmw::driver {
                 std::lock_guard<std::mutex> lock(mutex_);
                 slot_ = threadId_;
             }
+
             ~ActiveMysqlOperation() {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (slot_ == threadId_) slot_ = 0;
             }
+
             ActiveMysqlOperation(const ActiveMysqlOperation &) = delete;
+
             ActiveMysqlOperation &operator=(const ActiveMysqlOperation &) = delete;
 
         private:
@@ -107,8 +112,12 @@ namespace dbmw::driver {
                 case MYSQL_TYPE_LONG:
                 case MYSQL_TYPE_LONGLONG: {
                     if ((flags & UNSIGNED_FLAG) != 0) {
-                        try { return Value{static_cast<std::uint64_t>(
-                            std::stoull(std::string(data, len)))}; } catch (...) {
+                        try {
+                            return Value{
+                                static_cast<std::uint64_t>(
+                                    std::stoull(std::string(data, len)))
+                            };
+                        } catch (...) {
                             return Value{std::string(data, len)};
                         }
                     }
@@ -185,7 +194,8 @@ namespace dbmw::driver {
             mysql_options(m_, MYSQL_OPT_CONNECT_TIMEOUT, &t);
         }
         const int ioTimeoutMs = cfg.query_timeout_ms > 0
-            ? cfg.query_timeout_ms : cfg.socket_timeout_ms;
+                                    ? cfg.query_timeout_ms
+                                    : cfg.socket_timeout_ms;
         if (ioTimeoutMs > 0) {
             unsigned int t = static_cast<unsigned int>(std::max(1, (ioTimeoutMs + 999) / 1000));
             mysql_options(m_, MYSQL_OPT_READ_TIMEOUT, &t);
@@ -202,12 +212,13 @@ namespace dbmw::driver {
                           cfg.tls_ca.empty() ? nullptr : cfg.tls_ca.c_str(),
                           nullptr, nullptr);
 #if defined(MYSQL_VERSION_ID) && MYSQL_VERSION_ID >= 80000 && !defined(MARIADB_VERSION_ID)
-            const mysql_ssl_mode mode = cfg.tls_verify_peer
-                ? SSL_MODE_VERIFY_IDENTITY : SSL_MODE_REQUIRED;
-            mysql_options(m_, MYSQL_OPT_SSL_MODE, &mode);
+        const mysql_ssl_mode mode = cfg.tls_verify_peer
+                                        ? SSL_MODE_VERIFY_IDENTITY
+                                        : SSL_MODE_REQUIRED;
+        mysql_options(m_, MYSQL_OPT_SSL_MODE, &mode);
 #else
-            MysqlBool verify = cfg.tls_verify_peer ? 1 : 0;
-            mysql_options(m_, MYSQL_OPT_SSL_VERIFY_SERVER_CERT, &verify);
+        MysqlBool verify = cfg.tls_verify_peer ? 1 : 0;
+        mysql_options(m_, MYSQL_OPT_SSL_VERIFY_SERVER_CERT, &verify);
 #endif
         }
 
@@ -245,7 +256,8 @@ namespace dbmw::driver {
         common::Status fillResultSet(MYSQL_RES *res, const config::DataSourceConfig &cfg,
                                      common::ResultSet &out) {
             if (const auto st = rowLimitExceeded(mysql_num_rows(res), cfg.max_result_rows);
-                !st.ok()) return st;
+                !st.ok())
+                return st;
 
             const unsigned int nfields = mysql_num_fields(res);
             MYSQL_FIELD *fields = mysql_fetch_fields(res);
@@ -318,7 +330,8 @@ namespace dbmw::driver {
             return lastError("mysql_real_query");
 
         for (;;) {
-            std::unique_ptr<MYSQL_RES, void(*)(MYSQL_RES *)> res(
+            std::unique_ptr<MYSQL_RES, void(*)(MYSQL_RES *)>
+            res(
                 mysql_store_result(m_), &freeMysqlResult);
             if (res) {
                 common::ResultSet rs;
@@ -363,13 +376,14 @@ namespace dbmw::driver {
             const int rc = mysql_next_result(m_);
             if (rc > 0) return lastError("mysql_next_result");
             if (rc < 0) break;
-            std::unique_ptr<MYSQL_RES, void(*)(MYSQL_RES *)> res(
+            std::unique_ptr<MYSQL_RES, void(*)(MYSQL_RES *)>
+            res(
                 mysql_store_result(m_), &freeMysqlResult);
             ++discarded;
         }
         if (discarded > 0)
             DBMW_LOG_WARN("mysql: discarded " + std::to_string(discarded) +
-                " extra result set(s); use queryAll() to collect them");
+            " extra result set(s); use queryAll() to collect them");
         return common::Status::OK();
 #else
         return common::Status::error(common::ErrorCode::DriverDisabled, "MySQL driver disabled");
@@ -506,7 +520,8 @@ namespace dbmw::driver {
                                              const common::RowCallback *callback,
                                              std::uint64_t *delivered,
                                              int maxRows = 0) {
-            std::unique_ptr<MYSQL_RES, void(*)(MYSQL_RES *)> meta(
+            std::unique_ptr<MYSQL_RES, void(*)(MYSQL_RES *)>
+            meta(
                 mysql_stmt_result_metadata(stmt),
                 [](MYSQL_RES *r) { if (r) mysql_free_result(r); });
             if (!meta) return common::Status::OK();
@@ -605,13 +620,17 @@ namespace dbmw::driver {
         MyCursor(MySQLConnection &owner, StmtGuard guard, ParamStorage storage,
                  std::size_t batchSize)
             : owner_(owner), guard_(std::move(guard)), storage_(std::move(storage)),
-              batchSize_(batchSize) {}
+              batchSize_(batchSize) {
+        }
 
         ~MyCursor() override { reset(); }
 
         common::Status setupResult() {
             meta_ = mysql_stmt_result_metadata(guard_.get());
-            if (!meta_) { eof_ = true; return common::Status::OK(); }
+            if (!meta_) {
+                eof_ = true;
+                return common::Status::OK();
+            }
             nfields_ = mysql_num_fields(meta_);
             fields_.reserve(nfields_);
             types_.reserve(nfields_);
@@ -644,11 +663,17 @@ namespace dbmw::driver {
             if (!open_ || eof_) return common::Status::OK();
             ActiveMysqlOperation active(owner_.operationMtx_, owner_.activeThreadId_,
                                         mysql_thread_id(owner_.m_));
-            if (!fieldsSet_) { out.setFields(fields_); fieldsSet_ = true; }
+            if (!fieldsSet_) {
+                out.setFields(fields_);
+                fieldsSet_ = true;
+            }
             const std::size_t want = (n == 0) ? batchSize_ : n;
             for (std::size_t i = 0; i < want; ++i) {
                 const int rc = mysql_stmt_fetch(guard_.get());
-                if (rc == MYSQL_NO_DATA) { eof_ = true; break; }
+                if (rc == MYSQL_NO_DATA) {
+                    eof_ = true;
+                    break;
+                }
                 if (rc != 0 && rc != MYSQL_DATA_TRUNCATED)
                     return owner_.lastError("mysql_stmt_fetch(openCursor)");
                 if (rc == MYSQL_DATA_TRUNCATED) {
@@ -665,7 +690,10 @@ namespace dbmw::driver {
                 common::Row row;
                 for (unsigned int c = 0; c < nfields_; ++c) {
                     const char *colName = fields_[c].c_str();
-                    if (isNull_[c]) { row.set(colName, nullptr); continue; }
+                    if (isNull_[c]) {
+                        row.set(colName, nullptr);
+                        continue;
+                    }
                     row.set(colName, fieldToValue(types_[c], flags_[c],
                                                   buf_[c].data(), len_[c]));
                 }
@@ -698,7 +726,10 @@ namespace dbmw::driver {
 
     private:
         void reset() {
-            if (meta_) { mysql_free_result(meta_); meta_ = nullptr; }
+            if (meta_) {
+                mysql_free_result(meta_);
+                meta_ = nullptr;
+            }
             guard_ = StmtGuard(nullptr);
             open_ = false;
         }
@@ -712,7 +743,7 @@ namespace dbmw::driver {
         std::vector<std::string> fields_;
         std::vector<enum_field_types> types_;
         std::vector<unsigned int> flags_;
-        std::vector<std::vector<char>> buf_;
+        std::vector<std::vector<char> > buf_;
         std::vector<unsigned long> len_;
         MysqlBoolArray isNull_;
         std::vector<MYSQL_BIND> bind_;
@@ -767,7 +798,7 @@ namespace dbmw::driver {
     }
 
     common::Status MySQLConnection::execute(const std::string &sql, std::int64_t &affected,
-                                           common::GeneratedKeys &out) {
+                                            common::GeneratedKeys &out) {
 #ifdef DBMW_ENABLE_MYSQL
         out.clear();
         if (const auto s = execute(sql, affected); !s.ok()) return s;
@@ -779,13 +810,15 @@ namespace dbmw::driver {
         }
         return common::Status::OK();
 #else
-        (void) sql; (void) affected; out.clear();
+        (void) sql;
+        (void) affected;
+        out.clear();
         return common::Status::error(common::ErrorCode::NotSupported, "MySQL driver disabled");
 #endif
     }
 
     common::Status MySQLConnection::execute(const std::string &sql, const common::Params &params,
-                                           std::int64_t &affected, common::GeneratedKeys &out) {
+                                            std::int64_t &affected, common::GeneratedKeys &out) {
 #ifdef DBMW_ENABLE_MYSQL
         out.clear();
         if (!open_ || !m_) return notConnected("execute");
@@ -804,7 +837,10 @@ namespace dbmw::driver {
         }
         return common::Status::OK();
 #else
-        (void) sql; (void) params; (void) affected; out.clear();
+        (void) sql;
+        (void) params;
+        (void) affected;
+        out.clear();
         return common::Status::error(common::ErrorCode::NotSupported, "MySQL driver disabled");
 #endif
     }
@@ -818,8 +854,8 @@ namespace dbmw::driver {
     }
 
     common::Status MySQLConnection::prepare(const std::string &sql,
-                                           const common::Params &typesSample,
-                                           core::PreparedStatementHandle &out) {
+                                            const common::Params &typesSample,
+                                            core::PreparedStatementHandle &out) {
 #ifdef DBMW_ENABLE_MYSQL
         out = core::PreparedStatementHandle{};
         if (!open_ || !m_) return notConnected("prepare");
@@ -841,7 +877,7 @@ namespace dbmw::driver {
         }
         const auto id = ++preparedSeq_;
         core::PreparedStatementHandle h =
-            core::PreparedStatementHandle::make(id, static_cast<void *>(stmt));
+                core::PreparedStatementHandle::make(id, static_cast<void *>(stmt));
         preparedCache_[key] = h;
         preparedKeys_[id] = key;
         preparedLru_.push_back(key);
@@ -860,21 +896,25 @@ namespace dbmw::driver {
         out = h;
         return common::Status::OK();
 #else
-        (void) sql; (void) typesSample; out = core::PreparedStatementHandle{};
+        (void) sql;
+        (void) typesSample;
+        out = core::PreparedStatementHandle{};
         return common::Status::error(common::ErrorCode::NotSupported, "MySQL driver disabled");
 #endif
     }
 
     common::Status MySQLConnection::executePrepared(const core::PreparedStatementHandle &h,
-                                                   const common::Params &params,
-                                                   common::ResultSet &out) {
+                                                    const common::Params &params,
+                                                    common::ResultSet &out) {
 #ifdef DBMW_ENABLE_MYSQL
         if (!open_ || !m_) return notConnected("executePrepared");
         const auto key = preparedKeys_.find(h.id());
         const auto cached = key == preparedKeys_.end()
-            ? preparedCache_.end() : preparedCache_.find(key->second);
+                                ? preparedCache_.end()
+                                : preparedCache_.find(key->second);
         MYSQL_STMT *stmt = cached == preparedCache_.end()
-            ? nullptr : static_cast<MYSQL_STMT *>(cached->second.native());
+                               ? nullptr
+                               : static_cast<MYSQL_STMT *>(cached->second.native());
         if (!h.valid() || !stmt)
             return common::Status::error(common::ErrorCode::QueryError,
                                          "MySQL: prepared handle is invalid or has been evicted");
@@ -884,22 +924,26 @@ namespace dbmw::driver {
         if (mysql_stmt_execute(stmt) != 0) return stmtError("mysql_stmt_execute(prepared)", stmt);
         return fetchPrepared(stmt, out, cfg_.max_result_rows);
 #else
-        (void) h; (void) params; (void) out;
+        (void) h;
+        (void) params;
+        (void) out;
         return common::Status::error(common::ErrorCode::NotSupported, "MySQL driver disabled");
 #endif
     }
 
     common::Status MySQLConnection::executePrepared(const core::PreparedStatementHandle &h,
-                                                   const common::Params &params,
-                                                   std::int64_t &affected) {
+                                                    const common::Params &params,
+                                                    std::int64_t &affected) {
 #ifdef DBMW_ENABLE_MYSQL
         affected = 0;
         if (!open_ || !m_) return notConnected("executePrepared");
         const auto key = preparedKeys_.find(h.id());
         const auto cached = key == preparedKeys_.end()
-            ? preparedCache_.end() : preparedCache_.find(key->second);
+                                ? preparedCache_.end()
+                                : preparedCache_.find(key->second);
         MYSQL_STMT *stmt = cached == preparedCache_.end()
-            ? nullptr : static_cast<MYSQL_STMT *>(cached->second.native());
+                               ? nullptr
+                               : static_cast<MYSQL_STMT *>(cached->second.native());
         if (!h.valid() || !stmt)
             return common::Status::error(common::ErrorCode::QueryError,
                                          "MySQL: prepared handle is invalid or has been evicted");
@@ -910,14 +954,16 @@ namespace dbmw::driver {
         affected = static_cast<std::int64_t>(mysql_stmt_affected_rows(stmt));
         return common::Status::OK();
 #else
-        (void) h; (void) params; affected = 0;
+        (void) h;
+        (void) params;
+        affected = 0;
         return common::Status::error(common::ErrorCode::NotSupported, "MySQL driver disabled");
 #endif
     }
 
     void MySQLConnection::closeAllPrepared() {
 #ifdef DBMW_ENABLE_MYSQL
-        for (auto &kv : preparedCache_) {
+        for (auto &kv: preparedCache_) {
             if (MYSQL_STMT *s = static_cast<MYSQL_STMT *>(kv.second.native()))
                 mysql_stmt_close(s);
         }
@@ -951,14 +997,17 @@ namespace dbmw::driver {
             return stmtError("mysql_stmt_execute(stream)", guard.get());
         return fetchPreparedEach(guard.get(), callback, rows);
 #else
-        (void) sql; (void) params; (void) callback; rows = 0;
+        (void) sql;
+        (void) params;
+        (void) callback;
+        rows = 0;
         return common::Status::error(common::ErrorCode::DriverDisabled, "MySQL driver disabled");
 #endif
     }
 
     common::Status MySQLConnection::openCursor(const std::string &sql, const common::Params &params,
-                                              const core::CursorOptions &opts,
-                                              std::unique_ptr<core::ICursor> &out) {
+                                               const core::CursorOptions &opts,
+                                               std::unique_ptr<core::ICursor> &out) {
 #ifdef DBMW_ENABLE_MYSQL
         out.reset();
         if (!open_ || !m_) return notConnected("openCursor");
@@ -975,7 +1024,10 @@ namespace dbmw::driver {
         out = std::move(cur);
         return common::Status::OK();
 #else
-        (void) sql; (void) params; (void) opts; out.reset();
+        (void) sql;
+        (void) params;
+        (void) opts;
+        out.reset();
         return common::Status::error(common::ErrorCode::DriverDisabled, "MySQL driver disabled");
 #endif
     }
@@ -1023,10 +1075,14 @@ namespace dbmw::driver {
         const char *level = nullptr;
         switch (options.isolation) {
             case common::IsolationLevel::Default: break;
-            case common::IsolationLevel::ReadUncommitted: level = "READ UNCOMMITTED"; break;
-            case common::IsolationLevel::ReadCommitted: level = "READ COMMITTED"; break;
-            case common::IsolationLevel::RepeatableRead: level = "REPEATABLE READ"; break;
-            case common::IsolationLevel::Serializable: level = "SERIALIZABLE"; break;
+            case common::IsolationLevel::ReadUncommitted: level = "READ UNCOMMITTED";
+                break;
+            case common::IsolationLevel::ReadCommitted: level = "READ COMMITTED";
+                break;
+            case common::IsolationLevel::RepeatableRead: level = "REPEATABLE READ";
+                break;
+            case common::IsolationLevel::Serializable: level = "SERIALIZABLE";
+                break;
         }
         if (level) {
             const std::string sql = std::string("SET TRANSACTION ISOLATION LEVEL ") + level;

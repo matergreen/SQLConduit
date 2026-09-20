@@ -32,19 +32,25 @@ namespace dbmw::driver {
 
         common::Status execute(const std::string &sql, int64_t &affected,
                                common::GeneratedKeys &out) override;
+
         common::Status execute(const std::string &sql, const common::Params &params,
                                int64_t &affected, common::GeneratedKeys &out) override;
 
         [[nodiscard]] bool supportsPrepared() const override;
+
         common::Status prepare(const std::string &sql, const common::Params &typesSample,
                                core::PreparedStatementHandle &out) override;
+
         common::Status executePrepared(const core::PreparedStatementHandle &h,
                                        const common::Params &params,
                                        common::ResultSet &out) override;
+
         common::Status executePrepared(const core::PreparedStatementHandle &h,
                                        const common::Params &params,
                                        int64_t &affected) override;
+
         void closeAllPrepared() override;
+
         void setPreparedCacheLimit(int maxPerConnection) override;
 
         common::Status queryEach(const std::string &sql, const common::Params &params,
@@ -52,8 +58,8 @@ namespace dbmw::driver {
                                  std::uint64_t &rows) override;
 
         common::Status openCursor(const std::string &sql, const common::Params &params,
-                                 const core::CursorOptions &opts,
-                                 std::unique_ptr<core::ICursor> &out) override;
+                                  const core::CursorOptions &opts,
+                                  std::unique_ptr<core::ICursor> &out) override;
 
         [[nodiscard]] bool supportsParams() const override {
 #ifdef DBMW_ENABLE_ODBC
@@ -70,8 +76,11 @@ namespace dbmw::driver {
         common::Status commit() override;
 
         common::Status rollback() override;
+
         common::Status savepoint(const std::string &name) override;
+
         common::Status releaseSavepoint(const std::string &name) override;
+
         common::Status rollbackToSavepoint(const std::string &name) override;
 
         void close() override;

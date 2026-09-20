@@ -88,22 +88,30 @@ namespace dbmw::common {
         Observability() = delete;
 
         static void setObserver(OperationObserver observer);
+
         static void emit(const OperationEvent &event) noexcept;
 
         static void setPoolMetricsObserver(PoolMetricsObserver observer);
+
         static void setPoolMetricsCollector(PoolMetricsCollector collector,
                                             const void *owner = nullptr);
+
         static void clearPoolMetricsCollector(const void *owner);
+
         static PoolMetricsEvent samplePoolMetrics() noexcept;
 
         static void configure(const config::ObservabilityConfig &config);
+
         static void emitSql(OperationEvent event, const std::string &sql,
                             const SqlRenderer &renderer = {},
                             const common::ResultSet *result = nullptr) noexcept;
+
         static std::vector<SlowSqlStats> slowSqlStats(
             std::size_t limit = 100, const std::string &dataSource = {});
+
         static std::vector<SlowSqlRecord> recentSlowSql(
             std::size_t limit = 100, const std::string &dataSource = {});
+
         static void clearSlowSqlStats();
     };
 }

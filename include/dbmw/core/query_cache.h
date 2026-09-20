@@ -21,12 +21,15 @@ namespace dbmw::core {
         static void configure(const config::QueryCacheConfig &cfg);
 
         static bool enabled();
+
         static bool replicaOnly();
 
         static bool get(const std::string &dataSource, const std::string &key,
                         common::ResultSet &out);
+
         static void put(const std::string &dataSource, const std::string &key,
                         const common::ResultSet &rs);
+
         static void invalidate(const std::string &dataSource);
 
         struct Stats {

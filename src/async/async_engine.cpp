@@ -27,7 +27,9 @@ namespace dbmw::async {
 
         class CompletionFallback final {
         public:
-            CompletionFallback() : worker_([this] { run(); }) {}
+            CompletionFallback() : worker_([this] { run(); }) {
+            }
+
             ~CompletionFallback() {
                 {
                     std::lock_guard<std::mutex> lk(mtx_);
@@ -368,13 +370,15 @@ namespace dbmw::async {
                             r.status = common::Status::OK();
                             r.rows = std::move(cached);
                             {
-                                core::ExecutionView view{root->name(), sql,
+                                core::ExecutionView view{
+                                    root->name(), sql,
                                     common::OperationType::Query,
                                     &params, &r.rows, 0,
                                     std::chrono::microseconds{0},
                                     common::Status::OK(),
-                                     true,  0,
-                                    ctx->entryCtx};
+                                    true, 0,
+                                    ctx->entryCtx
+                                };
                                 core::detail::runAfterExecution(view);
                             }
                             deliverResult(std::move(ctx->cb), std::move(r));
@@ -560,9 +564,9 @@ namespace dbmw::async {
                 }
 
                 const bool transferable = ctx->policy.isWrite
-                    ? core::DataSource::safeToFailoverWrite(st)
-                    : (st.retryable || st.connectionBroken ||
-                       st.code == common::ErrorCode::CircuitOpen);
+                                              ? core::DataSource::safeToFailoverWrite(st)
+                                              : (st.retryable || st.connectionBroken ||
+                                                 st.code == common::ErrorCode::CircuitOpen);
                 bool rowsOk = true;
                 if (ctx->policy.fallbackOnlyIfNoRows) {
                     if constexpr (std::is_same_v<R, EachResult>) rowsOk = r.rows == 0;

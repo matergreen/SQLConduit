@@ -39,9 +39,9 @@ namespace dbmw::core {
                        std::chrono::milliseconds idleTimeout = std::chrono::milliseconds(0),
                        std::chrono::milliseconds maxLifetime = std::chrono::milliseconds(0),
                        std::chrono::milliseconds leakDetectionThreshold =
-                           std::chrono::milliseconds(0),
+                               std::chrono::milliseconds(0),
                        std::chrono::milliseconds validationInterval =
-                           std::chrono::milliseconds(500),
+                               std::chrono::milliseconds(500),
                        bool metricsEnabled = true,
                        bool pooled = true);
 
@@ -102,7 +102,7 @@ namespace dbmw::core {
 
         std::unique_ptr<Handle> borrow(common::ErrorCode &code, std::string &error,
                                        std::chrono::milliseconds timeout =
-                                           std::chrono::milliseconds(-1)) const;
+                                               std::chrono::milliseconds(-1)) const;
 
         std::unique_ptr<Handle> borrow(std::string &error) const;
 
@@ -181,7 +181,7 @@ namespace dbmw::core {
         };
 
         std::unique_ptr<IDatabaseConnection> createConnection(common::ErrorCode &code,
-                                                             std::string &error) const;
+                                                              std::string &error) const;
 
         void expireWaiters() const;
 

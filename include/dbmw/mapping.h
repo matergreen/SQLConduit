@@ -977,8 +977,9 @@ namespace dbmw {
         template<class T>
         common::Status applyBatchKeys(const common::BatchResult &batch, std::vector<T> &entities) {
             if (batch.keys.empty()) return common::Status::OK();
-            const std::size_t n = batch.keys.size() < entities.size() ? batch.keys.size()
-                                                                     : entities.size();
+            const std::size_t n = batch.keys.size() < entities.size()
+                                      ? batch.keys.size()
+                                      : entities.size();
             for (std::size_t i = 0; i < n; ++i) {
                 if (const auto s = mapping::applyGeneratedKeys(batch.keys[i], entities[i]); !s.ok())
                     return s;

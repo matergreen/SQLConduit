@@ -15,23 +15,23 @@
 #include <utility>
 
 namespace dbmw::async {
-
-    template <class T>
+    template<class T>
     class Task;
 
     void run(Task<void> t);
 
     namespace detail {
-
-        template <class T>
+        template<class T>
         class TaskPromise;
 
-        template <class T>
+        template<class T>
         class TaskPromiseBase {
         public:
             Task<T> get_return_object() noexcept {
-                return Task<T>{std::coroutine_handle<TaskPromise<T>>::from_promise(
-                    *static_cast<TaskPromise<T> *>(this))};
+                return Task<T>{
+                    std::coroutine_handle<TaskPromise<T> >::from_promise(
+                        *static_cast<TaskPromise<T> *>(this))
+                };
             }
 
             std::suspend_always initial_suspend() noexcept { return {}; }
@@ -40,7 +40,7 @@ namespace dbmw::async {
                 bool await_ready() const noexcept { return false; }
 
                 std::coroutine_handle<> await_suspend(
-                    std::coroutine_handle<TaskPromise<T>> h) noexcept {
+                    std::coroutine_handle<TaskPromise<T> > h) noexcept {
                     auto &p = h.promise();
                     std::coroutine_handle<> cont = p.continuation_;
                     if (cont == nullptr) {
@@ -51,7 +51,8 @@ namespace dbmw::async {
                     return cont;
                 }
 
-                void await_resume() const noexcept {}
+                void await_resume() const noexcept {
+                }
             };
 
             FinalAwaiter final_suspend() noexcept { return {}; }
@@ -67,7 +68,7 @@ namespace dbmw::async {
             std::exception_ptr exception_;
         };
 
-        template <class T>
+        template<class T>
         class TaskPromise final : public TaskPromiseBase<T> {
         public:
             void return_value(T v) { value_.emplace(std::move(v)); }
@@ -78,19 +79,21 @@ namespace dbmw::async {
             std::optional<T> value_;
         };
 
-        template <>
+        template<>
         class TaskPromise<void> final : public TaskPromiseBase<void> {
         public:
-            void return_void() noexcept {}
+            void return_void() noexcept {
+            }
         };
 
-        template <class R>
+        template<class R>
         class OpAwaiter {
         public:
             using Callback = std::function<void(R &&)>;
             using Launcher = std::function<void(Callback)>;
 
-            explicit OpAwaiter(Launcher launch) : launch_(std::move(launch)) {}
+            explicit OpAwaiter(Launcher launch) : launch_(std::move(launch)) {
+            }
 
             bool await_ready() const noexcept { return false; }
 
@@ -110,15 +113,15 @@ namespace dbmw::async {
             R result_{};
             std::coroutine_handle<> self_;
         };
-
     }
 
-    template <class T>
+    template<class T>
     class [[nodiscard]] Task {
     public:
         using promise_type = detail::TaskPromise<T>;
 
-        Task(Task &&other) noexcept : h_(std::exchange(other.h_, {})) {}
+        Task(Task &&other) noexcept : h_(std::exchange(other.h_, {})) {
+        }
 
         Task &operator=(Task &&other) noexcept {
             if (this != &other) {
@@ -129,6 +132,7 @@ namespace dbmw::async {
         }
 
         Task(const Task &) = delete;
+
         Task &operator=(const Task &) = delete;
 
         ~Task() {
@@ -151,9 +155,11 @@ namespace dbmw::async {
 
     private:
         friend class detail::TaskPromiseBase<T>;
+
         friend void run(Task<void> t);
 
-        explicit Task(std::coroutine_handle<promise_type> h) noexcept : h_(h) {}
+        explicit Task(std::coroutine_handle<promise_type> h) noexcept : h_(h) {
+        }
 
         std::coroutine_handle<promise_type> h_;
     };
@@ -165,13 +171,16 @@ namespace dbmw::async {
 
     Task<QueryResult> queryAsync(std::string sql, common::Params params = {},
                                  Options opts = {});
+
     Task<QueryResult> queryAsync(std::string dataSource, std::string sql,
                                  common::Params params, Options opts = {});
 
     Task<ExecResult> executeAsync(std::string sql, common::Params params = {},
                                   Options opts = {});
+
     Task<ExecKeysResult> executeAsync(std::string dataSource, std::string sql,
                                       common::Params params, Options opts = {});
+
     Task<ExecKeysResult> executeKeysAsync(std::string sql, common::Params params = {},
                                           Options opts = {});
 
@@ -180,7 +189,6 @@ namespace dbmw::async {
 
     Task<OpResult> transactionAsync(common::TransactionOptions txOpts,
                                     core::SessionFn fn);
-
 }
 
 #endif

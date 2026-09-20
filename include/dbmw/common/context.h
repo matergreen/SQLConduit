@@ -6,7 +6,6 @@
 #include <vector>
 
 namespace dbmw::common {
-
     enum class Idempotency {
         Unspecified,
         Idempotent,
@@ -32,10 +31,15 @@ namespace dbmw::common {
     class ContextScope {
     public:
         explicit ContextScope(SqlContext ctx);
+
         ~ContextScope();
+
         ContextScope(const ContextScope &) = delete;
+
         ContextScope &operator=(const ContextScope &) = delete;
+
         ContextScope(ContextScope &&) = delete;
+
         ContextScope &operator=(ContextScope &&) = delete;
 
         [[nodiscard]] static const SqlContext &current() noexcept;
@@ -43,6 +47,7 @@ namespace dbmw::common {
         [[nodiscard]] static std::size_t depth() noexcept;
 
         static std::vector<SqlContext> &stack();
+
         static const SqlContext &defaultInstance();
 
         static constexpr std::size_t kMaxDepth = 64;
@@ -56,7 +61,6 @@ namespace dbmw::common {
     bool parseTraceparent(const std::string &header, SqlContext &out);
 
     std::string formatTraceparent(const SqlContext &ctx);
-
 }
 
 #endif

@@ -1,5 +1,4 @@
 #include "dbmw/core/database_manager.h"
-#include "dbmw/core/connection_pool.h"
 #include "dbmw/core/idatabase_connection.h"
 #include "dbmw/core/rate_limiter.h"
 #include "dbmw/config/config_loader.h"
@@ -19,8 +18,13 @@ static int g_failed = 0;
 static int g_passed = 0;
 
 static void check(bool cond, const std::string &name) {
-    if (cond) { ++g_passed; std::cout << "  [PASS] " << name << "\n"; }
-    else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
+    if (cond) {
+        ++g_passed;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        ++g_failed;
+        std::cout << "  [FAIL] " << name << "\n";
+    }
 }
 
 class MockConnection : public core::IDatabaseConnection {
@@ -137,7 +141,11 @@ public:
     }
 
     void close() override {
-        if (open_) { open_ = false; --alive; log.push_back("close"); }
+        if (open_) {
+            open_ = false;
+            --alive;
+            log.push_back("close");
+        }
     }
 
     bool isOpen() const override { return open_; }
@@ -176,7 +184,11 @@ public:
 class CountingLimiter : public core::IRateLimiter {
 public:
     std::atomic<int> acquires{0};
-    bool acquire(std::uint64_t) override { acquires.fetch_add(1); return true; }
+
+    bool acquire(std::uint64_t) override {
+        acquires.fetch_add(1);
+        return true;
+    }
 };
 
 class DenyLimiter : public core::IRateLimiter {

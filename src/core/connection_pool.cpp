@@ -14,22 +14,22 @@ namespace dbmw::core {
                                                     common::Status)> complete,
                                  std::unique_ptr<ConnectionPool::Handle> handle,
                                  common::Status status) {
-            io.deliver([handle = std::make_shared<std::unique_ptr<ConnectionPool::Handle>>(
-                               std::move(handle)),
-                        complete = std::move(complete),
-                        status = std::move(status)]() mutable {
-                complete(std::move(*handle), std::move(status));
-            });
+            io.deliver([handle = std::make_shared<std::unique_ptr<ConnectionPool::Handle> >(
+                        std::move(handle)),
+                    complete = std::move(complete),
+                    status = std::move(status)]() mutable {
+                    complete(std::move(*handle), std::move(status));
+                });
         }
 
         std::string poolExhaustedMessage(const std::string &poolName, int maxConn,
                                          int total, int borrowed,
                                          std::chrono::milliseconds waited) {
             return "pool '" + poolName + "' exhausted: waited "
-                + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-                    waited).count()) + "ms (max=" + std::to_string(maxConn)
-                + ", total=" + std::to_string(total)
-                + ", borrowed=" + std::to_string(borrowed) + ")";
+                   + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                       waited).count()) + "ms (max=" + std::to_string(maxConn)
+                   + ", total=" + std::to_string(total)
+                   + ", borrowed=" + std::to_string(borrowed) + ")";
         }
     }
 
@@ -44,13 +44,13 @@ namespace dbmw::core {
                             now - borrowedAt >= leakDetectionThreshold;
         if (leaked) {
             DBMW_LOG_WARN("pool [" + poolName + "] possible connection leak: borrowed for "
-                          + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-                              now - borrowedAt).count()) + "ms");
+                + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - borrowedAt).count()) + "ms");
         }
         bool doClose = false;
         std::optional<AsyncWaiter> handoff;
         std::unique_ptr<ConnectionPool::Handle> handoffHandle;
-        std::vector<std::pair<AsyncWaiter, common::Status>> expiredWaiters;
+        std::vector<std::pair<AsyncWaiter, common::Status> > expiredWaiters;
         {
             std::lock_guard lk(mtx);
             if (leaked) ++leakWarnings;
@@ -181,16 +181,14 @@ namespace dbmw::core {
         }
     }
 
-    std::unique_ptr<ConnectionPool::Handle> ConnectionPool::borrow(std::string &error) const
-    {
+    std::unique_ptr<ConnectionPool::Handle> ConnectionPool::borrow(std::string &error) const {
         auto code = common::ErrorCode::Ok;
         return borrow(code, error);
     }
 
     std::unique_ptr<ConnectionPool::Handle> ConnectionPool::borrow(common::ErrorCode &code,
-                                                                  std::string &error,
-                                                                  std::chrono::milliseconds timeout) const
-    {
+                                                                   std::string &error,
+                                                                   std::chrono::milliseconds timeout) const {
         if (timeout < std::chrono::milliseconds(0)) timeout = borrowTimeout_;
         if (timeout < std::chrono::milliseconds(0)) timeout = std::chrono::milliseconds(0);
 
@@ -263,9 +261,9 @@ namespace dbmw::core {
                 const bool expired = maxLifetime_ > std::chrono::milliseconds(0) &&
                                      now - item.createdAt >= maxLifetime_;
                 const bool needsPing = state_->validationInterval <=
-                                           std::chrono::milliseconds(0) ||
+                                       std::chrono::milliseconds(0) ||
                                        (now - item.lastValidated) >=
-                                           state_->validationInterval;
+                                       state_->validationInterval;
                 const bool alive = !expired && item.conn &&
                                    (!needsPing || item.conn->ping().ok());
                 if (alive) item.lastValidated = now;
@@ -358,7 +356,7 @@ namespace dbmw::core {
     }
 
     void ConnectionPool::expireWaiters() const {
-        std::vector<std::pair<State::AsyncWaiter, common::Status>> expired;
+        std::vector<std::pair<State::AsyncWaiter, common::Status> > expired;
         {
             std::lock_guard<std::mutex> lk(state_->mtx);
             if (state_->asyncWaiters.empty()) return;
@@ -453,55 +451,55 @@ namespace dbmw::core {
                 return;
             }
             lk.unlock();
-            auto connBox = std::make_shared<std::unique_ptr<IDatabaseConnection>>(
+            auto connBox = std::make_shared<std::unique_ptr<IDatabaseConnection> >(
                 std::move(item.conn));
             io.post([self = shared_from_this(), st = state_, connBox,
-                     createdAt = item.createdAt,
-                     io, complete = std::move(complete),
-                     effective]() mutable {
-                auto &conn = *connBox;
-                const bool alive = static_cast<bool>(conn) && conn->ping().ok();
-                const auto finishedAt = std::chrono::steady_clock::now();
-                std::unique_ptr<Handle> handle;
-                bool closed = false;
-                {
-                    std::lock_guard<std::mutex> lk2(st->mtx);
-                    if (st->closed) {
-                        closed = true;
-                    } else if (alive) {
-                        ++st->borrowed;
-                        if (st->metricsEnabled) {
-                            ++st->borrowSuccesses;
-                            st->maxBorrowed = std::max(st->maxBorrowed, st->borrowed);
+                    createdAt = item.createdAt,
+                    io, complete = std::move(complete),
+                    effective]() mutable {
+                    auto &conn = *connBox;
+                    const bool alive = static_cast<bool>(conn) && conn->ping().ok();
+                    const auto finishedAt = std::chrono::steady_clock::now();
+                    std::unique_ptr<Handle> handle;
+                    bool closed = false;
+                    {
+                        std::lock_guard<std::mutex> lk2(st->mtx);
+                        if (st->closed) {
+                            closed = true;
+                        } else if (alive) {
+                            ++st->borrowed;
+                            if (st->metricsEnabled) {
+                                ++st->borrowSuccesses;
+                                st->maxBorrowed = std::max(st->maxBorrowed, st->borrowed);
+                            }
+                            handle = std::unique_ptr<Handle>(
+                                new Handle(st->weak_from_this(), std::move(conn),
+                                           createdAt, finishedAt));
                         }
-                        handle = std::unique_ptr<Handle>(
-                            new Handle(st->weak_from_this(), std::move(conn),
-                                       createdAt, finishedAt));
                     }
-                }
-                if (closed) {
+                    if (closed) {
+                        if (conn) conn->close();
+                        deliverBorrowResult(io, std::move(complete), nullptr,
+                                            common::Status::error(
+                                                common::ErrorCode::PoolClosed,
+                                                "pool is closed"));
+                        return;
+                    }
+                    if (handle) {
+                        deliverBorrowResult(io, std::move(complete), std::move(handle),
+                                            common::Status::OK());
+                        return;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lk2(st->mtx);
+                        --st->total;
+                        ++st->connectionsClosed;
+                        ++st->validationFailures;
+                        if (st->total < 0) st->total = 0;
+                    }
                     if (conn) conn->close();
-                    deliverBorrowResult(io, std::move(complete), nullptr,
-                                        common::Status::error(
-                                            common::ErrorCode::PoolClosed,
-                                            "pool is closed"));
-                    return;
-                }
-                if (handle) {
-                    deliverBorrowResult(io, std::move(complete), std::move(handle),
-                                        common::Status::OK());
-                    return;
-                }
-                {
-                    std::lock_guard<std::mutex> lk2(st->mtx);
-                    --st->total;
-                    ++st->connectionsClosed;
-                    ++st->validationFailures;
-                    if (st->total < 0) st->total = 0;
-                }
-                if (conn) conn->close();
-                self->borrowAsync(effective, io, std::move(complete));
-            });
+                    self->borrowAsync(effective, io, std::move(complete));
+                });
             return;
         }
 
@@ -531,56 +529,55 @@ namespace dbmw::core {
         std::function<void(std::unique_ptr<Handle>, common::Status)> complete,
         const bool slotReserved) const {
         io.post([self = shared_from_this(), st = state_, io,
-                 complete = std::move(complete), slotReserved]() mutable {
-            common::ErrorCode code = common::ErrorCode::Ok;
-            std::string err;
-            auto conn = self->createConnection(code, err);
-            std::unique_ptr<Handle> handle;
-            common::Status status;
-            bool doClose = false;
-            {
-                std::lock_guard<std::mutex> lk(st->mtx);
-                if (st->closed) {
-                    if (conn) doClose = true;
-                    status = common::Status::error(common::ErrorCode::PoolClosed,
-                                                   "pool '" + st->poolName + "' is closed");
-                    if (slotReserved && st->total > 0) --st->total;
-                } else if (!conn) {
-                    if (slotReserved) {
-                        --st->total;
-                        ++st->connectionCreateFailures;
-                        if (st->total < 0) st->total = 0;
+                complete = std::move(complete), slotReserved]() mutable {
+                common::ErrorCode code = common::ErrorCode::Ok;
+                std::string err;
+                auto conn = self->createConnection(code, err);
+                std::unique_ptr<Handle> handle;
+                common::Status status;
+                bool doClose = false;
+                {
+                    std::lock_guard<std::mutex> lk(st->mtx);
+                    if (st->closed) {
+                        if (conn) doClose = true;
+                        status = common::Status::error(common::ErrorCode::PoolClosed,
+                                                       "pool '" + st->poolName + "' is closed");
+                        if (slotReserved && st->total > 0) --st->total;
+                    } else if (!conn) {
+                        if (slotReserved) {
+                            --st->total;
+                            ++st->connectionCreateFailures;
+                            if (st->total < 0) st->total = 0;
+                        } else {
+                            ++st->connectionCreateFailures;
+                        }
+                        status = common::Status::error(code, err);
+                        if (code == common::ErrorCode::ConnectionFailed) {
+                            status.retryable = true;
+                            status.connectionBroken = true;
+                        }
                     } else {
-                        ++st->connectionCreateFailures;
+                        if (!slotReserved) ++st->total;
+                        ++st->borrowed;
+                        ++st->connectionsCreated;
+                        if (st->metricsEnabled) {
+                            ++st->borrowSuccesses;
+                            st->maxBorrowed = std::max(st->maxBorrowed, st->borrowed);
+                        }
+                        const auto createdAt = std::chrono::steady_clock::now();
+                        handle = std::unique_ptr<Handle>(
+                            new Handle(st->weak_from_this(), std::move(conn),
+                                       createdAt, createdAt));
+                        status = common::Status::OK();
                     }
-                    status = common::Status::error(code, err);
-                    if (code == common::ErrorCode::ConnectionFailed) {
-                        status.retryable = true;
-                        status.connectionBroken = true;
-                    }
-                } else {
-                    if (!slotReserved) ++st->total;
-                    ++st->borrowed;
-                    ++st->connectionsCreated;
-                    if (st->metricsEnabled) {
-                        ++st->borrowSuccesses;
-                        st->maxBorrowed = std::max(st->maxBorrowed, st->borrowed);
-                    }
-                    const auto createdAt = std::chrono::steady_clock::now();
-                    handle = std::unique_ptr<Handle>(
-                        new Handle(st->weak_from_this(), std::move(conn),
-                                   createdAt, createdAt));
-                    status = common::Status::OK();
                 }
-            }
-            if (doClose && conn) conn->close();
-            deliverBorrowResult(io, std::move(complete), std::move(handle),
-                                std::move(status));
-        });
+                if (doClose && conn) conn->close();
+                deliverBorrowResult(io, std::move(complete), std::move(handle),
+                                    std::move(status));
+            });
     }
 
-    void ConnectionPool::healthCheck() const
-    {
+    void ConnectionPool::healthCheck() const {
         if (!state_->pooled) return;
 
         expireWaiters();
@@ -661,9 +658,8 @@ namespace dbmw::core {
         }
     }
 
-    void ConnectionPool::shutdown(const std::chrono::milliseconds grace) const
-    {
-        std::vector<std::pair<State::AsyncWaiter, common::Status>> waiters;
+    void ConnectionPool::shutdown(const std::chrono::milliseconds grace) const {
+        std::vector<std::pair<State::AsyncWaiter, common::Status> > waiters;
         std::unique_lock<std::mutex> lk(state_->mtx);
         state_->closed = true;
         state_->cv.notify_all();
@@ -750,7 +746,7 @@ namespace dbmw::core {
     }
 
     std::unique_ptr<IDatabaseConnection> ConnectionPool::createConnection(common::ErrorCode &code,
-                                                                        std::string &error) const {
+                                                                          std::string &error) const {
         code = common::ErrorCode::Ok;
         error.clear();
 

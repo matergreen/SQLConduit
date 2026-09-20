@@ -15,7 +15,7 @@ namespace dbmw::common {
     namespace {
         bool isLowerHex16(const std::string &s) {
             if (s.size() != 16) return false;
-            for (char c : s) {
+            for (char c: s) {
                 if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
             }
             return true;
@@ -27,8 +27,13 @@ static int g_failed = 0;
 static int g_passed = 0;
 
 static void check(bool cond, const std::string &name) {
-    if (cond) { ++g_passed; std::cout << "  [PASS] " << name << "\n"; }
-    else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
+    if (cond) {
+        ++g_passed;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        ++g_failed;
+        std::cout << "  [FAIL] " << name << "\n";
+    }
 }
 
 static std::mutex g_capMtx;

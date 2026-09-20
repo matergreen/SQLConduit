@@ -11,7 +11,6 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -27,8 +26,13 @@ static int g_failed = 0;
 static int g_passed = 0;
 
 static void check(bool cond, const std::string &name) {
-    if (cond) { ++g_passed; std::cout << "  [PASS] " << name << "\n"; }
-    else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
+    if (cond) {
+        ++g_passed;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        ++g_failed;
+        std::cout << "  [FAIL] " << name << "\n";
+    }
 }
 
 static std::atomic<int> gMockQueryCount{0};
@@ -36,12 +40,16 @@ static std::atomic<int> gMockQueryCount{0};
 class MockRedactConnection : public core::IDatabaseConnection {
 public:
     common::Status connect(const config::DataSourceConfig &) override {
-        open_ = true; return Status::OK();
+        open_ = true;
+        return Status::OK();
     }
+
     common::Status ping() override {
-        return open_ ? Status::OK()
-                     : Status::error(common::ErrorCode::NotConnected, "closed");
+        return open_
+                   ? Status::OK()
+                   : Status::error(common::ErrorCode::NotConnected, "closed");
     }
+
     common::Status query(const std::string &, common::ResultSet &out) override {
         ++gMockQueryCount;
         out.setFields({"secret"});
@@ -50,14 +58,18 @@ public:
         out.addRow(std::move(r));
         return Status::OK();
     }
+
     common::Status execute(const std::string &, std::int64_t &affected) override {
-        affected = 1; return Status::OK();
+        affected = 1;
+        return Status::OK();
     }
+
     common::Status begin() override { return Status::OK(); }
     common::Status commit() override { return Status::OK(); }
     common::Status rollback() override { return Status::OK(); }
     void close() override { open_ = false; }
     bool isOpen() const override { return open_; }
+
 private:
     bool open_ = false;
 };
@@ -65,6 +77,7 @@ private:
 class MockRedactDriver : public driver::IDriver {
 public:
     const char *name() const override { return "mockr"; }
+
     std::unique_ptr<core::IDatabaseConnection> createConnection() override {
         return std::make_unique<MockRedactConnection>();
     }
@@ -77,7 +90,8 @@ struct RedactionInterceptor : public core::ISqlInterceptor {
     std::atomic<int> rowCount{0};
 
     void onRoute(const std::string &, const std::string &,
-                 common::OperationType, common::SqlContext &) override {}
+                 common::OperationType, common::SqlContext &) override {
+    }
 
     common::Status beforeExecution(const core::ExecutionView &) override {
         return Status::OK();
@@ -88,7 +102,7 @@ struct RedactionInterceptor : public core::ISqlInterceptor {
         if (!enableTransform) return;
         if (!view.result) return;
         view.result->transformed = true;
-        (void)view.result->rows();
+        (void) view.result->rows();
     }
 
     void onRow(const core::ExecutionView &, common::Row &row) override {
@@ -96,14 +110,17 @@ struct RedactionInterceptor : public core::ISqlInterceptor {
         if (enableTransform && row.has("secret")) row.set("secret", maskedValue);
     }
 
-    void onCompletion(const core::ExecutionView &) override {}
+    void onCompletion(const core::ExecutionView &) override {
+    }
 };
 
 static void test_sync_redaction_not_cached() {
     std::cout << "== M7.1 同步路径：脱敏读不进缓存（I10 核心）==\n";
     core::DatabaseManager mgr;
     config::DataSourceConfig ds;
-    ds.name = "ds"; ds.type = "mockr"; ds.host = "localhost";
+    ds.name = "ds";
+    ds.type = "mockr";
+    ds.host = "localhost";
     check(mgr.addDataSource(ds).ok(), "addDataSource ok");
 
     config::QueryCacheConfig qc_on;
@@ -156,7 +173,9 @@ static void test_non_redacted_caches_normally() {
     std::cout << "== M7.2 未脱敏的读照常进缓存（I10 不误伤）==\n";
     core::DatabaseManager mgr;
     config::DataSourceConfig ds;
-    ds.name = "ds"; ds.type = "mockr"; ds.host = "localhost";
+    ds.name = "ds";
+    ds.type = "mockr";
+    ds.host = "localhost";
     mgr.addDataSource(ds);
 
     config::QueryCacheConfig qc_on;
@@ -196,23 +215,30 @@ static std::atomic<int> gTransformedReads{0};
 
 struct RedactionFlagInterceptor : public core::ISqlInterceptor {
     void onRoute(const std::string &, const std::string &,
-                 common::OperationType, common::SqlContext &) override {}
+                 common::OperationType, common::SqlContext &) override {
+    }
+
     common::Status beforeExecution(const core::ExecutionView &) override {
         return Status::OK();
     }
+
     void afterExecution(const core::ExecutionView &view) override {
         if (!view.result) return;
         view.result->transformed = true;
         ++gTransformedReads;
     }
-    void onCompletion(const core::ExecutionView &) override {}
+
+    void onCompletion(const core::ExecutionView &) override {
+    }
 };
 
 static void test_transformed_flag_blocks_cache() {
     std::cout << "== M7.3 transformed=true 不污染原始缓存==\n";
     core::DatabaseManager mgr;
     config::DataSourceConfig ds;
-    ds.name = "ds"; ds.type = "mockr"; ds.host = "localhost";
+    ds.name = "ds";
+    ds.type = "mockr";
+    ds.host = "localhost";
     mgr.addDataSource(ds);
 
     config::QueryCacheConfig qc_on;
@@ -376,6 +402,6 @@ int main() {
     test_async_cache_hit_triggers_after();
 
     std::cout << "\n========== M7 结果脱敏 总计: " << g_passed << " 通过 / "
-              << g_failed << " 失败 ==========\n";
+            << g_failed << " 失败 ==========\n";
     return g_failed == 0 ? 0 : 1;
 }

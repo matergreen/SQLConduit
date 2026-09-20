@@ -30,9 +30,11 @@ namespace dbmw::common {
         std::chrono::microseconds totalBorrowWait{0};
         std::chrono::microseconds maxBorrowWait{0};
         std::size_t asyncWaiting = 0;
+
         [[nodiscard]] double utilization() const {
-            return maxConnections == 0 ? 0.0
-                : static_cast<double>(borrowed) / static_cast<double>(maxConnections);
+            return maxConnections == 0
+                       ? 0.0
+                       : static_cast<double>(borrowed) / static_cast<double>(maxConnections);
         }
     };
 

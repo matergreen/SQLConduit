@@ -1,8 +1,6 @@
 #include "dbmw/common/context.h"
 
 #include <atomic>
-#include <chrono>
-#include <cstdio>
 #include <iostream>
 #include <set>
 #include <string>
@@ -15,13 +13,18 @@ static int g_failed = 0;
 static int g_passed = 0;
 
 static void check(bool cond, const std::string &name) {
-    if (cond) { ++g_passed; std::cout << "  [PASS] " << name << "\n"; }
-    else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
+    if (cond) {
+        ++g_passed;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        ++g_failed;
+        std::cout << "  [FAIL] " << name << "\n";
+    }
 }
 
 static bool isLowerHex16(const std::string &s) {
     if (s.size() != 16) return false;
-    for (char c : s) {
+    for (char c: s) {
         if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
     }
     return true;
@@ -79,7 +82,8 @@ int main() {
     {
         check(ContextScope::depth() == 0, "进入异常测试前栈空");
         try {
-            SqlContext a; a.traceId = "throw-trace";
+            SqlContext a;
+            a.traceId = "throw-trace";
             ContextScope s(a);
             check(ContextScope::depth() == 1, "异常路径中 push 也成功");
             throw std::runtime_error("boom");
@@ -101,7 +105,8 @@ int main() {
         std::thread t([&] {
             workerObserved = ContextScope::current().traceId;
             workerOk.store(ContextScope::current().empty());
-            SqlContext c; c.traceId = "worker-trace";
+            SqlContext c;
+            c.traceId = "worker-trace";
             ContextScope ws(c);
         });
         t.join();
@@ -191,7 +196,8 @@ int main() {
         check(nextSpanId().empty(),
               "无调用方上下文时 nextSpanId 返回空串（不发幽灵 span）");
 
-        SqlContext ctx; ctx.traceId = "0af7651916cd43dd8448eb211c80319c";
+        SqlContext ctx;
+        ctx.traceId = "0af7651916cd43dd8448eb211c80319c";
         ContextScope scope(ctx);
         const auto first = nextSpanId();
         const auto second = nextSpanId();
@@ -204,7 +210,7 @@ int main() {
 
         constexpr std::size_t kThreads = 8;
         constexpr std::size_t kPerThread = 128;
-        std::vector<std::vector<std::string>> generated(kThreads);
+        std::vector<std::vector<std::string> > generated(kThreads);
         std::vector<std::thread> workers;
         for (std::size_t t = 0; t < kThreads; ++t) {
             workers.emplace_back([&, t] {
@@ -216,9 +222,9 @@ int main() {
                     generated[t].push_back(nextSpanId());
             });
         }
-        for (auto &worker : workers) worker.join();
+        for (auto &worker: workers) worker.join();
         std::set<std::string> all;
-        for (const auto &perThread : generated)
+        for (const auto &perThread: generated)
             all.insert(perThread.begin(), perThread.end());
         check(all.size() == kThreads * kPerThread,
               "多线程生成的 spanId 不发生区间重叠");

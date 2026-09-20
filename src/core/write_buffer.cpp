@@ -102,7 +102,7 @@ namespace dbmw::core {
                 }
                 if (dropped > 0) {
                     DBMW_LOG_WARN("write buffer: queue full, dropped "
-                                  + std::to_string(dropped) + " buffered write(s)");
+                        + std::to_string(dropped) + " buffered write(s)");
                 }
             }
 
@@ -115,7 +115,7 @@ namespace dbmw::core {
                 }
                 if (abandoned > 0) {
                     DBMW_LOG_WARN("write buffer: abandoning " + std::to_string(abandoned)
-                                  + " buffered write(s) on shutdown");
+                        + " buffered write(s) on shutdown");
                 }
                 return;
             }

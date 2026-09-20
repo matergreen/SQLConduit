@@ -36,11 +36,16 @@ namespace dbmw::core {
             out.reserve(s.size() + 8);
             for (const char c: s) {
                 switch (c) {
-                    case '"': out += "\\\""; break;
-                    case '\\': out += "\\\\"; break;
-                    case '\n': out += "\\n"; break;
-                    case '\r': out += "\\r"; break;
-                    case '\t': out += "\\t"; break;
+                    case '"': out += "\\\"";
+                        break;
+                    case '\\': out += "\\\\";
+                        break;
+                    case '\n': out += "\\n";
+                        break;
+                    case '\r': out += "\\r";
+                        break;
+                    case '\t': out += "\\t";
+                        break;
                     default:
                         if (static_cast<unsigned char>(c) < 0x20) {
                             char buf[8];
@@ -117,7 +122,7 @@ namespace dbmw::core {
         std::vector<NamedPoolStats> pools;
         if (cfg_.include_pool && collector_) pools = collector_();
         if (cfg_.include_pool) {
-            (void)common::Observability::samplePoolMetrics();
+            (void) common::Observability::samplePoolMetrics();
         }
         std::vector<common::SlowSqlStats> slowSql;
         if (cfg_.include_slow_sql) {
@@ -162,16 +167,16 @@ namespace dbmw::core {
                 for (const auto &p: pools) {
                     const auto &s = p.stats;
                     os << "  " << p.dataSource
-                       << "  idle=" << s.idle
-                       << " borrowed=" << s.borrowed << "/" << s.maxConnections
-                       << " waiting=" << s.waiting
-                       << " util=" << std::fixed << std::setprecision(1)
-                       << (s.utilization() * 100.0) << "%"
-                       << " created=" << s.connectionsCreated
-                       << " closed=" << s.connectionsClosed
-                       << " timeouts=" << s.borrowTimeouts
-                       << " invalidated=" << s.invalidatedConnections
-                       << "\n";
+                            << "  idle=" << s.idle
+                            << " borrowed=" << s.borrowed << "/" << s.maxConnections
+                            << " waiting=" << s.waiting
+                            << " util=" << std::fixed << std::setprecision(1)
+                            << (s.utilization() * 100.0) << "%"
+                            << " created=" << s.connectionsCreated
+                            << " closed=" << s.connectionsClosed
+                            << " timeouts=" << s.borrowTimeouts
+                            << " invalidated=" << s.invalidatedConnections
+                            << "\n";
                 }
             }
         }
@@ -184,13 +189,13 @@ namespace dbmw::core {
                 int rank = 1;
                 for (const auto &s: slowSql) {
                     os << "  " << (rank++) << ". [" << s.dataSource << "]"
-                       << " avg=" << std::fixed << std::setprecision(2) << averageMs(s) << "ms"
-                       << " max=" << std::fixed << std::setprecision(2)
-                       << (s.maxDuration.count() / 1000.0) << "ms"
-                       << " count=" << s.count
-                       << " errors=" << s.errorCount
-                       << " timeouts=" << s.timeoutCount
-                       << "  " << clip(s.sqlTemplate, 120) << "\n";
+                            << " avg=" << std::fixed << std::setprecision(2) << averageMs(s) << "ms"
+                            << " max=" << std::fixed << std::setprecision(2)
+                            << (s.maxDuration.count() / 1000.0) << "ms"
+                            << " count=" << s.count
+                            << " errors=" << s.errorCount
+                            << " timeouts=" << s.timeoutCount
+                            << "  " << clip(s.sqlTemplate, 120) << "\n";
                 }
             }
         }
@@ -213,16 +218,16 @@ namespace dbmw::core {
                 first = false;
                 const auto &s = p.stats;
                 os << R"({"name":")" << escapeJson(p.dataSource) << "\""
-                   << ",\"idle\":" << s.idle
-                   << ",\"borrowed\":" << s.borrowed
-                   << ",\"max\":" << s.maxConnections
-                   << ",\"waiting\":" << s.waiting
-                   << ",\"utilization\":" << std::setprecision(4) << s.utilization()
-                   << ",\"created\":" << s.connectionsCreated
-                   << ",\"closed\":" << s.connectionsClosed
-                   << ",\"timeouts\":" << s.borrowTimeouts
-                   << ",\"invalidated\":" << s.invalidatedConnections
-                   << "}";
+                        << ",\"idle\":" << s.idle
+                        << ",\"borrowed\":" << s.borrowed
+                        << ",\"max\":" << s.maxConnections
+                        << ",\"waiting\":" << s.waiting
+                        << ",\"utilization\":" << std::setprecision(4) << s.utilization()
+                        << ",\"created\":" << s.connectionsCreated
+                        << ",\"closed\":" << s.connectionsClosed
+                        << ",\"timeouts\":" << s.borrowTimeouts
+                        << ",\"invalidated\":" << s.invalidatedConnections
+                        << "}";
             }
             os << "]";
         }
@@ -234,15 +239,15 @@ namespace dbmw::core {
                 if (!first) os << ",";
                 first = false;
                 os << R"({"data_source":")" << escapeJson(s.dataSource) << "\""
-                   << ",\"fingerprint\":" << s.fingerprint
-                   << ",\"avg_ms\":" << std::setprecision(2) << averageMs(s)
-                   << ",\"max_ms\":" << std::setprecision(2)
-                   << (s.maxDuration.count() / 1000.0)
-                   << ",\"count\":" << s.count
-                   << ",\"errors\":" << s.errorCount
-                   << ",\"timeouts\":" << s.timeoutCount
-                   << R"(,"sql":")" << escapeJson(clip(s.sqlTemplate, 512)) << "\""
-                   << "}";
+                        << ",\"fingerprint\":" << s.fingerprint
+                        << ",\"avg_ms\":" << std::setprecision(2) << averageMs(s)
+                        << ",\"max_ms\":" << std::setprecision(2)
+                        << (s.maxDuration.count() / 1000.0)
+                        << ",\"count\":" << s.count
+                        << ",\"errors\":" << s.errorCount
+                        << ",\"timeouts\":" << s.timeoutCount
+                        << R"(,"sql":")" << escapeJson(clip(s.sqlTemplate, 512)) << "\""
+                        << "}";
             }
             os << "]";
         }

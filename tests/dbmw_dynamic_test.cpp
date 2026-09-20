@@ -1,6 +1,5 @@
 #include "dbmw/dbmw.h"
 #include "dbmw/common/context.h"
-#include "dbmw/core/connection_pool.h"
 #include "dbmw/core/database_manager.h"
 #include "dbmw/core/idatabase_connection.h"
 #include "dbmw/config/datasource_config.h"
@@ -10,12 +9,10 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -27,8 +24,13 @@ static int g_failed = 0;
 static int g_passed = 0;
 
 static void check(bool cond, const std::string &name) {
-    if (cond) { ++g_passed; std::cout << "  [PASS] " << name << "\n"; }
-    else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
+    if (cond) {
+        ++g_passed;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        ++g_failed;
+        std::cout << "  [FAIL] " << name << "\n";
+    }
 }
 
 class MockConnection : public core::IDatabaseConnection {
@@ -68,15 +70,22 @@ public:
         if (!open_) return Status::error(common::ErrorCode::NotConnected, "closed");
         return Status::OK();
     }
+
     common::Status commit() override {
         if (!open_) return Status::error(common::ErrorCode::NotConnected, "closed");
         return Status::OK();
     }
+
     common::Status rollback() override {
         if (!open_) return Status::error(common::ErrorCode::NotConnected, "closed");
         return Status::OK();
     }
-    void close() override { open_ = false; --alive; }
+
+    void close() override {
+        open_ = false;
+        --alive;
+    }
+
     bool isOpen() const override { return open_; }
 
 private:
@@ -89,6 +98,7 @@ std::atomic<bool> MockConnection::connectFails{false};
 class MockDriver : public driver::IDriver {
 public:
     const char *name() const override { return "mock"; }
+
     std::unique_ptr<core::IDatabaseConnection> createConnection() override {
         return std::make_unique<MockConnection>();
     }
@@ -436,7 +446,7 @@ int main() {
         const int expected = kThreads * kPerThread;
         check(ok.load() == expected,
               "并发 addDataSource 全部成功（" + std::to_string(ok.load()) +
-                  "/" + std::to_string(expected) + "）");
+              "/" + std::to_string(expected) + "）");
         check(fail.load() == 0, "并发 addDataSource 失败数 = 0");
         check(mgr.dataSourceCount() == static_cast<size_t>(1 + expected),
               "dataSourceCount == anchor + 并发成功数");
@@ -454,7 +464,7 @@ int main() {
     {
         resetMock();
         const std::string cfgPath =
-            (std::filesystem::temp_directory_path() / "dbmw_m4_facade.json").string();
+                (std::filesystem::temp_directory_path() / "dbmw_m4_facade.json").string();
         {
             std::ofstream f(cfgPath);
             f << R"({

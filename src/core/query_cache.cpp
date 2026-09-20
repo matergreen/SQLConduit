@@ -42,7 +42,7 @@ namespace dbmw::core {
         std::size_t bytes = 0;
         for (const auto &f: rs.fields()) bytes += f.size() + sizeof(std::string);
         for (const auto &row: rs.rows()) {
-            for (const auto & [col, val]: row.data()) {
+            for (const auto &[col, val]: row.data()) {
                 bytes += col.size() + sizeof(std::string) + valueBytes(val);
             }
         }
@@ -57,13 +57,15 @@ namespace dbmw::core {
 
     void QueryCache::evictLocked(const std::size_t incomingBytes, const bool reserveSlot) {
         const auto maxEntries = cfg_.max_entries > 0
-            ? static_cast<std::size_t>(cfg_.max_entries) : 0;
+                                    ? static_cast<std::size_t>(cfg_.max_entries)
+                                    : 0;
         const auto maxBytes = cfg_.max_memory_bytes > 0
-            ? static_cast<std::size_t>(cfg_.max_memory_bytes) : 0;
+                                  ? static_cast<std::size_t>(cfg_.max_memory_bytes)
+                                  : 0;
 
         while (!lru_.empty()) {
             const bool tooMany = maxEntries > 0 &&
-                (reserveSlot ? store_.size() >= maxEntries : store_.size() > maxEntries);
+                                 (reserveSlot ? store_.size() >= maxEntries : store_.size() > maxEntries);
             const bool tooBig = maxBytes > 0 && totalBytes_ + incomingBytes > maxBytes;
             if (!tooMany && !tooBig) return;
             const std::string old = lru_.back();
@@ -168,7 +170,8 @@ namespace dbmw::core {
                 if (it->first.size() >= prefix.size() &&
                     it->first.compare(0, prefix.size(), prefix) == 0) {
                     totalBytes_ -= (it->second.bytes <= totalBytes_
-                                        ? it->second.bytes : totalBytes_);
+                                        ? it->second.bytes
+                                        : totalBytes_);
                     lru_.erase(it->second.lru);
                     it = store_.erase(it);
                     ++removed;

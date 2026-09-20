@@ -15,7 +15,7 @@ namespace dbmw::core {
 
         [[nodiscard]] bool valid() const { return id_ != 0; }
         [[nodiscard]] std::uint64_t id() const { return id_; }
-        void *native() const { return native_; }
+        [[nodiscard]] void *native() const { return native_; }
 
         static PreparedStatementHandle make(std::uint64_t id, void *native) {
             PreparedStatementHandle h;
@@ -50,7 +50,9 @@ namespace dbmw::core {
         virtual common::Status rollback() = 0;
 
         virtual common::Status savepoint(const std::string &name);
+
         virtual common::Status releaseSavepoint(const std::string &name);
+
         virtual common::Status rollbackToSavepoint(const std::string &name);
 
         virtual void close() = 0;

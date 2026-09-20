@@ -9,7 +9,6 @@
 #include <memory>
 
 namespace dbmw::core {
-
     class ICursor {
     public:
         virtual ~ICursor() = default;
@@ -21,7 +20,9 @@ namespace dbmw::core {
         virtual common::Status close() = 0;
 
         [[nodiscard]] virtual bool isOpen() const = 0;
+
         [[nodiscard]] virtual bool hasNext() const = 0;
+
         [[nodiscard]] virtual std::uint64_t rowsFetched() const = 0;
     };
 
@@ -31,7 +32,6 @@ namespace dbmw::core {
         std::chrono::milliseconds timeout{0};
         bool auto_transaction = true;
     };
-
 }
 
 #endif

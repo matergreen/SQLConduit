@@ -26,7 +26,8 @@ namespace dbmw::driver {
 
         bool validSavepointName(const std::string &name) {
             if (name.empty() || !(std::isalpha(static_cast<unsigned char>(name[0])) ||
-                                  name[0] == '_')) return false;
+                                  name[0] == '_'))
+                return false;
             return std::all_of(name.begin() + 1, name.end(), [](const char c) {
                 return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
             });
@@ -59,7 +60,7 @@ namespace dbmw::driver {
                 }
                 info.message += record == 1 ? ": " : "; ";
                 info.message += "[" + std::string(reinterpret_cast<char *>(state)) + "/"
-                                + std::to_string(native) + "] ";
+                        + std::to_string(native) + "] ";
                 info.message.append(reinterpret_cast<char *>(text),
                                     static_cast<std::size_t>(std::max<SQLSMALLINT>(0, length)));
                 ++record;
@@ -76,8 +77,11 @@ namespace dbmw::driver {
 
         class StmtGuard {
         public:
-            explicit StmtGuard(SQLHSTMT stmt = SQL_NULL_HSTMT) : stmt_(stmt) {}
+            explicit StmtGuard(SQLHSTMT stmt = SQL_NULL_HSTMT) : stmt_(stmt) {
+            }
+
             ~StmtGuard() { if (stmt_ != SQL_NULL_HSTMT) SQLFreeHandle(SQL_HANDLE_STMT, stmt_); }
+
             StmtGuard(const StmtGuard &) = delete;
 
             StmtGuard &operator=(const StmtGuard &) = delete;
@@ -108,11 +112,14 @@ namespace dbmw::driver {
                 std::lock_guard<std::mutex> lock(mutex_);
                 slot_ = value_;
             }
+
             ~ActiveStatement() {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (slot_ == value_) slot_ = nullptr;
             }
+
             ActiveStatement(const ActiveStatement &) = delete;
+
             ActiveStatement &operator=(const ActiveStatement &) = delete;
 
         private:
@@ -164,7 +171,8 @@ namespace dbmw::driver {
                 return odbcError(common::ErrorCode::QueryError, SQL_HANDLE_DBC, dbc,
                                  "SQLAllocHandle(STMT)");
             const int timeoutMs = cfg.query_timeout_ms > 0
-                ? cfg.query_timeout_ms : cfg.socket_timeout_ms;
+                                      ? cfg.query_timeout_ms
+                                      : cfg.socket_timeout_ms;
             if (timeoutMs > 0) {
                 const SQLULEN seconds = static_cast<SQLULEN>(
                     std::max(1, (timeoutMs + 999) / 1000));
@@ -215,11 +223,11 @@ namespace dbmw::driver {
                         return common::Value{std::move(value)};
                     }
 #ifdef SQL_GUID
-                    case SQL_GUID:
-                        return common::Value{common::Uuid{std::move(value)}};
+        case SQL_GUID :
+                        return common::Value { common::Uuid{std::move(value)} };
 #endif
-                    default:
-                        return common::Value{std::move(value)};
+        default :
+                        return common::Value { std::move(value) };
                 }
             } catch (...) {
                 return common::Value{std::move(value)};
@@ -322,8 +330,8 @@ namespace dbmw::driver {
                 for (SQLUSMALLINT i = 1; i <= static_cast<SQLUSMALLINT>(columns); ++i) {
                     common::Value value{nullptr};
                     common::Status status = binaryType(types[i - 1])
-                        ? readBinaryColumn(stmt, i, value)
-                        : readTextColumn(stmt, i, types[i - 1], value);
+                                                ? readBinaryColumn(stmt, i, value)
+                                                : readTextColumn(stmt, i, types[i - 1], value);
                     if (!status.ok()) return status;
                     row.set(names[i - 1], std::move(value));
                 }
@@ -373,23 +381,31 @@ namespace dbmw::driver {
                 } else if (const auto *v = std::get_if<bool>(&value)) {
                     slot.integer = *v ? 1 : 0;
                     slot.indicator = 0;
-                    cType = SQL_C_SBIGINT; sqlType = SQL_BIGINT;
-                    data = &slot.integer; bufferLength = sizeof(slot.integer);
+                    cType = SQL_C_SBIGINT;
+                    sqlType = SQL_BIGINT;
+                    data = &slot.integer;
+                    bufferLength = sizeof(slot.integer);
                 } else if (const auto *v = std::get_if<std::int64_t>(&value)) {
                     slot.integer = *v;
                     slot.indicator = 0;
-                    cType = SQL_C_SBIGINT; sqlType = SQL_BIGINT;
-                    data = &slot.integer; bufferLength = sizeof(slot.integer);
+                    cType = SQL_C_SBIGINT;
+                    sqlType = SQL_BIGINT;
+                    data = &slot.integer;
+                    bufferLength = sizeof(slot.integer);
                 } else if (const auto *v = std::get_if<std::uint64_t>(&value)) {
                     slot.unsignedInteger = *v;
                     slot.indicator = 0;
-                    cType = SQL_C_UBIGINT; sqlType = SQL_BIGINT;
-                    data = &slot.unsignedInteger; bufferLength = sizeof(slot.unsignedInteger);
+                    cType = SQL_C_UBIGINT;
+                    sqlType = SQL_BIGINT;
+                    data = &slot.unsignedInteger;
+                    bufferLength = sizeof(slot.unsignedInteger);
                 } else if (const auto *v = std::get_if<double>(&value)) {
                     slot.real = *v;
                     slot.indicator = 0;
-                    cType = SQL_C_DOUBLE; sqlType = SQL_DOUBLE;
-                    data = &slot.real; bufferLength = sizeof(slot.real);
+                    cType = SQL_C_DOUBLE;
+                    sqlType = SQL_DOUBLE;
+                    data = &slot.real;
+                    bufferLength = sizeof(slot.real);
                 } else if (const auto *v = std::get_if<common::Timestamp>(&value)) {
                     slot.text = common::timestampToStringMs(*v);
                     slot.indicator = static_cast<SQLLEN>(slot.text.size());
@@ -399,10 +415,11 @@ namespace dbmw::driver {
                 } else if (const auto *v = std::get_if<common::Decimal>(&value)) {
                     slot.text = v->value;
                     slot.indicator = static_cast<SQLLEN>(slot.text.size());
-                    cType = SQL_C_CHAR; sqlType = SQL_DECIMAL;
+                    cType = SQL_C_CHAR;
+                    sqlType = SQL_DECIMAL;
                     std::size_t precision = 0;
                     bool fractional = false;
-                    for (const char ch : slot.text) {
+                    for (const char ch: slot.text) {
                         if (ch == 'e' || ch == 'E') break;
                         if (ch == '.') {
                             fractional = true;
@@ -417,14 +434,16 @@ namespace dbmw::driver {
                 } else if (const auto *v = std::get_if<common::Date>(&value)) {
                     slot.text = v->value;
                     slot.indicator = static_cast<SQLLEN>(slot.text.size());
-                    cType = SQL_C_CHAR; sqlType = SQL_TYPE_DATE;
+                    cType = SQL_C_CHAR;
+                    sqlType = SQL_TYPE_DATE;
                     columnSize = static_cast<SQLULEN>(slot.text.size());
                     data = const_cast<char *>(slot.text.data());
                     bufferLength = static_cast<SQLLEN>(slot.text.size());
                 } else if (const auto *v = std::get_if<common::Time>(&value)) {
                     slot.text = v->value;
                     slot.indicator = static_cast<SQLLEN>(slot.text.size());
-                    cType = SQL_C_CHAR; sqlType = SQL_TYPE_TIME;
+                    cType = SQL_C_CHAR;
+                    sqlType = SQL_TYPE_TIME;
                     columnSize = static_cast<SQLULEN>(slot.text.size());
                     data = const_cast<char *>(slot.text.data());
                     bufferLength = static_cast<SQLLEN>(slot.text.size());
@@ -433,11 +452,11 @@ namespace dbmw::driver {
                     slot.indicator = static_cast<SQLLEN>(slot.text.size());
                     cType = SQL_C_CHAR;
 #ifdef SQL_GUID
-                    sqlType = SQL_GUID;
+        sqlType= SQL_GUID;
 #endif
-                    columnSize = static_cast<SQLULEN>(slot.text.size());
-                    data = const_cast<char *>(slot.text.data());
-                    bufferLength = static_cast<SQLLEN>(slot.text.size());
+        columnSize=static_cast<SQLULEN>(slot.text.size());
+        data=const_cast<char *>(slot.text.data());
+        bufferLength=static_cast<SQLLEN>(slot.text.size());
                 } else if (const auto *v = std::get_if<common::Json>(&value)) {
                     slot.text = v->value;
                     slot.indicator = static_cast<SQLLEN>(slot.text.size());
@@ -460,11 +479,11 @@ namespace dbmw::driver {
                     bufferLength = static_cast<SQLLEN>(slot.text.size());
                 }
 
-                const SQLRETURN rc = SQLBindParameter(
-                    stmt, static_cast<SQLUSMALLINT>(i + 1), SQL_PARAM_INPUT,
-                    cType, sqlType, columnSize, decimalDigits,
-                    data, bufferLength, &slot.indicator);
-                if (!succeeded(rc))
+        const SQLRETURN rc = SQLBindParameter(
+            stmt, static_cast<SQLUSMALLINT>(i + 1), SQL_PARAM_INPUT,
+            cType, sqlType, columnSize, decimalDigits,
+            data, bufferLength, &slot.indicator);
+                if (!succeeded (rc))
                     return odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT,
                                      stmt, "SQLBindParameter");
             }
@@ -472,8 +491,8 @@ namespace dbmw::driver {
         }
 
         common::Status prepareAndBind(SQLHDBC dbc, const config::DataSourceConfig &cfg,
-                                     const std::string &sql, const common::Params &params,
-                                     SQLHSTMT &stmt, std::vector<ParamBinding> &storage) {
+                                      const std::string &sql, const common::Params &params,
+                                      SQLHSTMT &stmt, std::vector<ParamBinding> &storage) {
             if (const auto status = newStatement(dbc, cfg, stmt); !status.ok()) return status;
             if (const SQLRETURN rc = SQLPrepare(
                     stmt, reinterpret_cast<SQLCHAR *>(const_cast<char *>(sql.data())), SQL_NTS);
@@ -490,7 +509,8 @@ namespace dbmw::driver {
     class OdbcCursor : public core::ICursor {
     public:
         OdbcCursor(StmtGuard guard, std::vector<ParamBinding> storage, std::size_t batchSize)
-            : guard_(std::move(guard)), storage_(std::move(storage)), batchSize_(batchSize) {}
+            : guard_(std::move(guard)), storage_(std::move(storage)), batchSize_(batchSize) {
+        }
 
         ~OdbcCursor() override { reset(); }
 
@@ -507,12 +527,12 @@ namespace dbmw::driver {
                 SQLULEN size = 0;
                 SQLSMALLINT dig = 0, null = 0;
                 if (const SQLRETURN rc = SQLDescribeCol(guard_.get(), i, name, sizeof(name),
-                                                       &nl, &type, &size, &dig, &null);
+                                                        &nl, &type, &size, &dig, &null);
                     !succeeded(rc))
                     return odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT,
                                      guard_.get(), "SQLDescribeCol");
                 names_.emplace_back(reinterpret_cast<char *>(name),
-                                   static_cast<std::size_t>(nl));
+                                    static_cast<std::size_t>(nl));
                 types_.push_back(type);
             }
             open_ = true;
@@ -521,11 +541,17 @@ namespace dbmw::driver {
 
         common::Status fetch(std::size_t n, common::ResultSet &out) override {
             if (!open_ || eof_) return common::Status::OK();
-            if (!fieldsSet_) { out.setFields(names_); fieldsSet_ = true; }
+            if (!fieldsSet_) {
+                out.setFields(names_);
+                fieldsSet_ = true;
+            }
             const std::size_t want = (n == 0) ? batchSize_ : n;
             for (std::size_t i = 0; i < want; ++i) {
                 const SQLRETURN rc = SQLFetch(guard_.get());
-                if (rc == SQL_NO_DATA) { eof_ = true; break; }
+                if (rc == SQL_NO_DATA) {
+                    eof_ = true;
+                    break;
+                }
                 if (!succeeded(rc))
                     return odbcError(common::ErrorCode::CursorError, SQL_HANDLE_STMT,
                                      guard_.get(), "SQLFetch");
@@ -533,8 +559,8 @@ namespace dbmw::driver {
                 for (SQLUSMALLINT c = 1; c <= static_cast<SQLUSMALLINT>(names_.size()); ++c) {
                     common::Value v{nullptr};
                     common::Status st = binaryType(types_[c - 1])
-                        ? readBinaryColumn(guard_.get(), c, v)
-                        : readTextColumn(guard_.get(), c, types_[c - 1], v);
+                                            ? readBinaryColumn(guard_.get(), c, v)
+                                            : readTextColumn(guard_.get(), c, types_[c - 1], v);
                     if (!st.ok()) return st;
                     row.set(names_[c - 1], std::move(v));
                 }
@@ -556,14 +582,20 @@ namespace dbmw::driver {
             return common::Status::OK();
         }
 
-        common::Status close() override { reset(); return common::Status::OK(); }
+        common::Status close() override {
+            reset();
+            return common::Status::OK();
+        }
 
         [[nodiscard]] bool isOpen() const override { return open_; }
         [[nodiscard]] bool hasNext() const override { return open_ && !eof_; }
         [[nodiscard]] std::uint64_t rowsFetched() const override { return rowsFetched_; }
 
     private:
-        void reset() { guard_ = StmtGuard(SQL_NULL_HSTMT); open_ = false; }
+        void reset() {
+            guard_ = StmtGuard(SQL_NULL_HSTMT);
+            open_ = false;
+        }
 
         StmtGuard guard_;
         std::vector<ParamBinding> storage_;
@@ -612,8 +644,8 @@ namespace dbmw::driver {
             SQLSetConnectAttr(dbc, SQL_LOGIN_TIMEOUT,
                               reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0);
 #ifdef SQL_ATTR_CONNECTION_TIMEOUT
-            SQLSetConnectAttr(dbc, SQL_ATTR_CONNECTION_TIMEOUT,
-                              reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0);
+        SQLSetConnectAttr(dbc, SQL_ATTR_CONNECTION_TIMEOUT,
+                          reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0);
 #endif
         }
 
@@ -691,8 +723,9 @@ namespace dbmw::driver {
 
     common::Status OdbcConnection::query(const std::string &sql, common::ResultSet &out) {
 #ifdef DBMW_ENABLE_ODBC
-        if (!open_) return common::Status::error(common::ErrorCode::NotConnected,
-                                                  "ODBC: not connected (query)");
+        if (!open_)
+            return common::Status::error(common::ErrorCode::NotConnected,
+                                         "ODBC: not connected (query)");
         SQLHSTMT raw = SQL_NULL_HSTMT;
         if (const auto status = newStatement(static_cast<SQLHDBC>(dbc_), cfg_, raw); !status.ok())
             return status;
@@ -714,8 +747,9 @@ namespace dbmw::driver {
     common::Status OdbcConnection::execute(const std::string &sql, int64_t &affected) {
 #ifdef DBMW_ENABLE_ODBC
         affected = 0;
-        if (!open_) return common::Status::error(common::ErrorCode::NotConnected,
-                                                  "ODBC: not connected (execute)");
+        if (!open_)
+            return common::Status::error(common::ErrorCode::NotConnected,
+                                         "ODBC: not connected (execute)");
         SQLHSTMT raw = SQL_NULL_HSTMT;
         if (const auto status = newStatement(static_cast<SQLHDBC>(dbc_), cfg_, raw); !status.ok())
             return status;
@@ -742,12 +776,13 @@ namespace dbmw::driver {
     common::Status OdbcConnection::query(const std::string &sql, const common::Params &params,
                                          common::ResultSet &out) {
 #ifdef DBMW_ENABLE_ODBC
-        if (!open_) return common::Status::error(common::ErrorCode::NotConnected,
-                                                  "ODBC: not connected (query)");
+        if (!open_)
+            return common::Status::error(common::ErrorCode::NotConnected,
+                                         "ODBC: not connected (query)");
         SQLHSTMT raw = SQL_NULL_HSTMT;
         std::vector<ParamBinding> storage;
         const auto status = prepareAndBind(static_cast<SQLHDBC>(dbc_), cfg_, sql, params,
-                                          raw, storage);
+                                           raw, storage);
         StmtGuard stmt(raw);
         if (!status.ok()) return status;
         ActiveStatement active(activeStmtMtx_, activeStmt_, raw);
@@ -756,7 +791,9 @@ namespace dbmw::driver {
                              "SQLExecute");
         return fetchRows(stmt.get(), out);
 #else
-        (void) sql; (void) params; (void) out;
+        (void) sql;
+        (void) params;
+        (void) out;
         return common::Status::error(common::ErrorCode::DriverDisabled, "ODBC driver disabled");
 #endif
     }
@@ -765,12 +802,13 @@ namespace dbmw::driver {
                                            int64_t &affected) {
 #ifdef DBMW_ENABLE_ODBC
         affected = 0;
-        if (!open_) return common::Status::error(common::ErrorCode::NotConnected,
-                                                  "ODBC: not connected (execute)");
+        if (!open_)
+            return common::Status::error(common::ErrorCode::NotConnected,
+                                         "ODBC: not connected (execute)");
         SQLHSTMT raw = SQL_NULL_HSTMT;
         std::vector<ParamBinding> storage;
         const auto status = prepareAndBind(static_cast<SQLHDBC>(dbc_), cfg_, sql, params,
-                                          raw, storage);
+                                           raw, storage);
         StmtGuard stmt(raw);
         if (!status.ok()) return status;
         ActiveStatement active(activeStmtMtx_, activeStmt_, raw);
@@ -784,7 +822,9 @@ namespace dbmw::driver {
         affected = rows < 0 ? 0 : static_cast<std::int64_t>(rows);
         return common::Status::OK();
 #else
-        (void) sql; (void) params; affected = 0;
+        (void) sql;
+        (void) params;
+        affected = 0;
         return common::Status::error(common::ErrorCode::DriverDisabled, "ODBC driver disabled");
 #endif
     }
@@ -795,8 +835,9 @@ namespace dbmw::driver {
                                              std::uint64_t &rows) {
 #ifdef DBMW_ENABLE_ODBC
         rows = 0;
-        if (!open_) return common::Status::error(common::ErrorCode::NotConnected,
-                                                  "ODBC: not connected (stream)");
+        if (!open_)
+            return common::Status::error(common::ErrorCode::NotConnected,
+                                         "ODBC: not connected (stream)");
         SQLHSTMT raw = SQL_NULL_HSTMT;
         std::vector<ParamBinding> storage;
         const auto status = prepareAndBind(static_cast<SQLHDBC>(dbc_), cfg_, sql, params,
@@ -809,17 +850,22 @@ namespace dbmw::driver {
                              "SQLExecute(stream)");
         return fetchEach(raw, callback, rows);
 #else
-        (void) sql; (void) params; (void) callback; rows = 0;
+        (void) sql;
+        (void) params;
+        (void) callback;
+        rows = 0;
         return common::Status::error(common::ErrorCode::DriverDisabled, "ODBC driver disabled");
 #endif
     }
 
     common::Status OdbcConnection::begin() {
 #ifdef DBMW_ENABLE_ODBC
-        if (!open_) return common::Status::error(common::ErrorCode::NotConnected,
-                                                  "ODBC: not connected (begin)");
-        if (txOpen_) return common::Status::error(common::ErrorCode::TxError,
-                                                   "ODBC: transaction already open");
+        if (!open_)
+            return common::Status::error(common::ErrorCode::NotConnected,
+                                         "ODBC: not connected (begin)");
+        if (txOpen_)
+            return common::Status::error(common::ErrorCode::TxError,
+                                         "ODBC: transaction already open");
         const SQLRETURN rc = SQLSetConnectAttr(static_cast<SQLHDBC>(dbc_), SQL_ATTR_AUTOCOMMIT,
                                                reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0);
         if (!succeeded(rc))
@@ -834,15 +880,20 @@ namespace dbmw::driver {
 
     common::Status OdbcConnection::begin(const common::TransactionOptions &options) {
 #ifdef DBMW_ENABLE_ODBC
-        if (!open_) return common::Status::error(common::ErrorCode::NotConnected,
-                                                  "ODBC: not connected (begin)");
+        if (!open_)
+            return common::Status::error(common::ErrorCode::NotConnected,
+                                         "ODBC: not connected (begin)");
         SQLUINTEGER isolation = static_cast<SQLUINTEGER>(defaultIsolation_);
         switch (options.isolation) {
             case common::IsolationLevel::Default: break;
-            case common::IsolationLevel::ReadUncommitted: isolation = SQL_TXN_READ_UNCOMMITTED; break;
-            case common::IsolationLevel::ReadCommitted: isolation = SQL_TXN_READ_COMMITTED; break;
-            case common::IsolationLevel::RepeatableRead: isolation = SQL_TXN_REPEATABLE_READ; break;
-            case common::IsolationLevel::Serializable: isolation = SQL_TXN_SERIALIZABLE; break;
+            case common::IsolationLevel::ReadUncommitted: isolation = SQL_TXN_READ_UNCOMMITTED;
+                break;
+            case common::IsolationLevel::ReadCommitted: isolation = SQL_TXN_READ_COMMITTED;
+                break;
+            case common::IsolationLevel::RepeatableRead: isolation = SQL_TXN_REPEATABLE_READ;
+                break;
+            case common::IsolationLevel::Serializable: isolation = SQL_TXN_SERIALIZABLE;
+                break;
         }
         if (isolation != 0) {
             const SQLRETURN rc = SQLSetConnectAttr(
@@ -868,8 +919,9 @@ namespace dbmw::driver {
 
     common::Status OdbcConnection::commit() {
 #ifdef DBMW_ENABLE_ODBC
-        if (!open_ || !txOpen_) return common::Status::error(common::ErrorCode::TxError,
-                                                              "ODBC: no active transaction");
+        if (!open_ || !txOpen_)
+            return common::Status::error(common::ErrorCode::TxError,
+                                         "ODBC: no active transaction");
         const SQLRETURN rc = SQLEndTran(SQL_HANDLE_DBC, static_cast<SQLHDBC>(dbc_), SQL_COMMIT);
         const SQLRETURN autoRc = SQLSetConnectAttr(
             static_cast<SQLHDBC>(dbc_), SQL_ATTR_AUTOCOMMIT,
@@ -889,8 +941,9 @@ namespace dbmw::driver {
 
     common::Status OdbcConnection::rollback() {
 #ifdef DBMW_ENABLE_ODBC
-        if (!open_ || !txOpen_) return common::Status::error(common::ErrorCode::TxError,
-                                                              "ODBC: no active transaction");
+        if (!open_ || !txOpen_)
+            return common::Status::error(common::ErrorCode::TxError,
+                                         "ODBC: no active transaction");
         const SQLRETURN rc = SQLEndTran(SQL_HANDLE_DBC, static_cast<SQLHDBC>(dbc_), SQL_ROLLBACK);
         const SQLRETURN autoRc = SQLSetConnectAttr(
             static_cast<SQLHDBC>(dbc_), SQL_ATTR_AUTOCOMMIT,
@@ -915,7 +968,8 @@ namespace dbmw::driver {
                                          "ODBC: invalid savepoint or no active transaction");
         const auto style = cfg_.extra.find("savepoint_style");
         const std::string sql = style != cfg_.extra.end() && style->second == "sqlserver"
-            ? "SAVE TRANSACTION " + name : "SAVEPOINT " + name;
+                                    ? "SAVE TRANSACTION " + name
+                                    : "SAVEPOINT " + name;
         std::int64_t affected = 0;
         auto status = execute(sql, affected);
         if (!status.ok()) status.code = common::ErrorCode::TxError;
@@ -951,7 +1005,8 @@ namespace dbmw::driver {
                                          "ODBC: invalid savepoint or no active transaction");
         const auto style = cfg_.extra.find("savepoint_style");
         const std::string sql = style != cfg_.extra.end() && style->second == "sqlserver"
-            ? "ROLLBACK TRANSACTION " + name : "ROLLBACK TO SAVEPOINT " + name;
+                                    ? "ROLLBACK TRANSACTION " + name
+                                    : "ROLLBACK TO SAVEPOINT " + name;
         std::int64_t affected = 0;
         auto status = execute(sql, affected);
         if (!status.ok()) status.code = common::ErrorCode::TxError;
@@ -981,8 +1036,7 @@ namespace dbmw::driver {
 
     common::Status OdbcConnection::cancel() {
 #ifdef DBMW_ENABLE_ODBC
-        void *stmt = nullptr;
-        {
+        void *stmt = nullptr; {
             std::lock_guard<std::mutex> lock(activeStmtMtx_);
             stmt = activeStmt_;
             activeStmt_ = nullptr;
@@ -1001,13 +1055,13 @@ namespace dbmw::driver {
     }
 
     common::Status OdbcConnection::openCursor(const std::string &sql, const common::Params &params,
-                                          const core::CursorOptions &opts,
-                                          std::unique_ptr<core::ICursor> &out) {
+                                              const core::CursorOptions &opts,
+                                              std::unique_ptr<core::ICursor> &out) {
 #ifdef DBMW_ENABLE_ODBC
         out.reset();
         if (!open_)
             return common::Status::error(common::ErrorCode::NotConnected,
-                                          "ODBC: not connected (openCursor)");
+                                         "ODBC: not connected (openCursor)");
         SQLHSTMT raw = SQL_NULL_HSTMT;
         if (const auto s = newStatement(static_cast<SQLHDBC>(dbc_), cfg_, raw); !s.ok()) return s;
         StmtGuard stmt(raw);
@@ -1035,7 +1089,10 @@ namespace dbmw::driver {
         out = std::move(cur);
         return common::Status::OK();
 #else
-        (void) sql; (void) params; (void) opts; out.reset();
+        (void) sql;
+        (void) params;
+        (void) opts;
+        out.reset();
         return common::Status::error(common::ErrorCode::DriverDisabled, "ODBC driver disabled");
 #endif
     }
@@ -1045,8 +1102,9 @@ namespace dbmw::driver {
 #ifdef DBMW_ENABLE_ODBC
         out.clear();
         affected = 0;
-        if (!open_) return common::Status::error(common::ErrorCode::NotConnected,
-                                                 "ODBC: not connected (execute)");
+        if (!open_)
+            return common::Status::error(common::ErrorCode::NotConnected,
+                                         "ODBC: not connected (execute)");
         SQLHSTMT raw = SQL_NULL_HSTMT;
         if (const auto status = newStatement(static_cast<SQLHDBC>(dbc_), cfg_, raw); !status.ok())
             return status;
@@ -1065,7 +1123,9 @@ namespace dbmw::driver {
         if (!st.ok()) return st;
         return common::Status::OK();
 #else
-        (void) sql; affected = 0; out.clear();
+        (void) sql;
+        affected = 0;
+        out.clear();
         return common::Status::error(common::ErrorCode::DriverDisabled, "ODBC driver disabled");
 #endif
     }
@@ -1075,8 +1135,9 @@ namespace dbmw::driver {
 #ifdef DBMW_ENABLE_ODBC
         out.clear();
         affected = 0;
-        if (!open_) return common::Status::error(common::ErrorCode::NotConnected,
-                                                 "ODBC: not connected (execute)");
+        if (!open_)
+            return common::Status::error(common::ErrorCode::NotConnected,
+                                         "ODBC: not connected (execute)");
         SQLHSTMT raw = SQL_NULL_HSTMT;
         std::vector<ParamBinding> storage;
         const auto status = prepareAndBind(static_cast<SQLHDBC>(dbc_), cfg_, sql, params,
@@ -1096,7 +1157,10 @@ namespace dbmw::driver {
         if (!st.ok()) return st;
         return common::Status::OK();
 #else
-        (void) sql; (void) params; affected = 0; out.clear();
+        (void) sql;
+        (void) params;
+        affected = 0;
+        out.clear();
         return common::Status::error(common::ErrorCode::DriverDisabled, "ODBC driver disabled");
 #endif
     }
@@ -1114,8 +1178,9 @@ namespace dbmw::driver {
                                            core::PreparedStatementHandle &out) {
 #ifdef DBMW_ENABLE_ODBC
         out = core::PreparedStatementHandle{};
-        if (!open_) return common::Status::error(common::ErrorCode::NotConnected,
-                                                 "ODBC: not connected (prepare)");
+        if (!open_)
+            return common::Status::error(common::ErrorCode::NotConnected,
+                                         "ODBC: not connected (prepare)");
         const std::string key = sql + common::paramTypeSignature(typesSample);
         if (const auto it = preparedCache_.find(key); it != preparedCache_.end()) {
             preparedLru_.remove(key);
@@ -1134,7 +1199,7 @@ namespace dbmw::driver {
         }
         const std::uint64_t id = ++preparedSeq_;
         core::PreparedStatementHandle h =
-            core::PreparedStatementHandle::make(id, reinterpret_cast<void *>(raw));
+                core::PreparedStatementHandle::make(id, reinterpret_cast<void *>(raw));
         preparedCache_[key] = h;
         preparedKeys_[id] = key;
         preparedLru_.push_back(key);
@@ -1153,7 +1218,9 @@ namespace dbmw::driver {
         out = h;
         return common::Status::OK();
 #else
-        (void) sql; (void) typesSample; out = core::PreparedStatementHandle{};
+        (void) sql;
+        (void) typesSample;
+        out = core::PreparedStatementHandle{};
         return common::Status::error(common::ErrorCode::DriverDisabled, "ODBC driver disabled");
 #endif
     }
@@ -1163,11 +1230,13 @@ namespace dbmw::driver {
                                                    common::ResultSet &out) {
 #ifdef DBMW_ENABLE_ODBC
         out.clear();
-        if (!open_) return common::Status::error(common::ErrorCode::NotConnected,
-                                                 "ODBC: not connected (executePrepared)");
+        if (!open_)
+            return common::Status::error(common::ErrorCode::NotConnected,
+                                         "ODBC: not connected (executePrepared)");
         const auto key = preparedKeys_.find(h.id());
         const auto cached = key == preparedKeys_.end()
-            ? preparedCache_.end() : preparedCache_.find(key->second);
+                                ? preparedCache_.end()
+                                : preparedCache_.find(key->second);
         if (!h.valid() || cached == preparedCache_.end() || cached->second.native() == nullptr)
             return common::Status::error(common::ErrorCode::QueryError,
                                          "ODBC: prepared handle is invalid or has been evicted");
@@ -1180,7 +1249,9 @@ namespace dbmw::driver {
                              "SQLExecute(prepared)");
         return fetchRows(stmt, out);
 #else
-        (void) h; (void) params; out.clear();
+        (void) h;
+        (void) params;
+        out.clear();
         return common::Status::error(common::ErrorCode::DriverDisabled, "ODBC driver disabled");
 #endif
     }
@@ -1190,11 +1261,13 @@ namespace dbmw::driver {
                                                    int64_t &affected) {
 #ifdef DBMW_ENABLE_ODBC
         affected = 0;
-        if (!open_) return common::Status::error(common::ErrorCode::NotConnected,
-                                                 "ODBC: not connected (executePrepared)");
+        if (!open_)
+            return common::Status::error(common::ErrorCode::NotConnected,
+                                         "ODBC: not connected (executePrepared)");
         const auto key = preparedKeys_.find(h.id());
         const auto cached = key == preparedKeys_.end()
-            ? preparedCache_.end() : preparedCache_.find(key->second);
+                                ? preparedCache_.end()
+                                : preparedCache_.find(key->second);
         if (!h.valid() || cached == preparedCache_.end() || cached->second.native() == nullptr)
             return common::Status::error(common::ErrorCode::QueryError,
                                          "ODBC: prepared handle is invalid or has been evicted");
@@ -1211,14 +1284,16 @@ namespace dbmw::driver {
         affected = rows < 0 ? 0 : static_cast<std::int64_t>(rows);
         return common::Status::OK();
 #else
-        (void) h; (void) params; affected = 0;
+        (void) h;
+        (void) params;
+        affected = 0;
         return common::Status::error(common::ErrorCode::DriverDisabled, "ODBC driver disabled");
 #endif
     }
 
     void OdbcConnection::closeAllPrepared() {
 #ifdef DBMW_ENABLE_ODBC
-        for (auto &kv : preparedCache_) {
+        for (auto &kv: preparedCache_) {
             SQLHSTMT stmt = reinterpret_cast<SQLHSTMT>(kv.second.native());
             if (stmt != SQL_NULL_HSTMT) SQLFreeHandle(SQL_HANDLE_STMT, stmt);
         }

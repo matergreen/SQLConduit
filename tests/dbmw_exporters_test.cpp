@@ -24,8 +24,13 @@ static int g_failed = 0;
 static int g_passed = 0;
 
 static void check(bool cond, const std::string &name) {
-    if (cond) { ++g_passed; std::cout << "  [PASS] " << name << "\n"; }
-    else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
+    if (cond) {
+        ++g_passed;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        ++g_failed;
+        std::cout << "  [FAIL] " << name << "\n";
+    }
 }
 
 static NamedPoolStats makePool(const std::string &name,
@@ -156,7 +161,7 @@ int main() {
             });
         bool noThrow = true;
         try {
-            (void)common::Observability::samplePoolMetrics();
+            (void) common::Observability::samplePoolMetrics();
         } catch (...) {
             noThrow = false;
         }
@@ -204,7 +209,7 @@ int main() {
               "ds-app waiting = 0（waiting+asyncWaiting）");
 
         const int connHelpCount = countMatches(text,
-            std::string(R"(# HELP dbmw_pool_connections )"));
+                                               std::string(R"(# HELP dbmw_pool_connections )"));
         check(connHelpCount == 1,
               "dbmw_pool_connections HELP 行只出现一次（无重复）");
     }
@@ -234,11 +239,17 @@ int main() {
         check(contains(text, R"(dbmw_slow_sql_duration_seconds_count{data_source="ds-app",fingerprint="12345"} 7)"),
               "histogram family 包含 _count 样本");
 
-        check(contains(text, R"(dbmw_slow_sql_duration_seconds_bucket{data_source="ds-app",fingerprint="12345",le="0.01"} 0)"),
+        check(contains(
+                  text,
+                  R"(dbmw_slow_sql_duration_seconds_bucket{data_source="ds-app",fingerprint="12345",le="0.01"} 0)"),
               "histogram bucket le=0.01 cumulative = 0");
-        check(contains(text, R"(dbmw_slow_sql_duration_seconds_bucket{data_source="ds-app",fingerprint="12345",le="0.1"} 7)"),
+        check(contains(
+                  text,
+                  R"(dbmw_slow_sql_duration_seconds_bucket{data_source="ds-app",fingerprint="12345",le="0.1"} 7)"),
               "histogram bucket le=0.1 cumulative = 7");
-        check(contains(text, R"(dbmw_slow_sql_duration_seconds_bucket{data_source="ds-app",fingerprint="12345",le="+Inf"} 7)"),
+        check(contains(
+                  text,
+                  R"(dbmw_slow_sql_duration_seconds_bucket{data_source="ds-app",fingerprint="12345",le="+Inf"} 7)"),
               "histogram +Inf bucket = count = 7");
     }
 

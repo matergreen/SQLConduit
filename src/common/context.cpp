@@ -8,7 +8,6 @@
 #include <vector>
 
 namespace dbmw::common {
-
     namespace {
         bool isHex(char c) noexcept {
             return (c >= '0' && c <= '9') ||
@@ -51,9 +50,9 @@ namespace dbmw::common {
         static std::atomic<bool> warned{false};
         if (!warned.exchange(true)) {
             std::fprintf(stderr,
-                "dbmw: common::ContextScope 栈超过 %zu 层，"
-                "后续构造不再压栈（疑似拦截器内递归调 SQL）。\n",
-                kMaxDepth);
+                         "dbmw: common::ContextScope 栈超过 %zu 层，"
+                         "后续构造不再压栈（疑似拦截器内递归调 SQL）。\n",
+                         kMaxDepth);
         }
     }
 
@@ -101,14 +100,20 @@ namespace dbmw::common {
         if (!copyHex(header, 53, 2, flagsBuf)) return false;
 
         bool allZero = true;
-        for (char c : tmp.traceId) {
-            if (c != '0') { allZero = false; break; }
+        for (char c: tmp.traceId) {
+            if (c != '0') {
+                allZero = false;
+                break;
+            }
         }
         if (allZero) return false;
 
         allZero = true;
-        for (char c : tmp.spanId) {
-            if (c != '0') { allZero = false; break; }
+        for (char c: tmp.spanId) {
+            if (c != '0') {
+                allZero = false;
+                break;
+            }
         }
         if (allZero) return false;
 
@@ -119,9 +124,11 @@ namespace dbmw::common {
     std::string formatTraceparent(const SqlContext &ctx) {
         if (ctx.traceId.size() != 32 || ctx.spanId.size() != 16) return {};
         if (!std::all_of(ctx.traceId.begin(), ctx.traceId.end(), isHex) ||
-            !std::all_of(ctx.spanId.begin(), ctx.spanId.end(), isHex)) return {};
+            !std::all_of(ctx.spanId.begin(), ctx.spanId.end(), isHex))
+            return {};
         if (std::all_of(ctx.traceId.begin(), ctx.traceId.end(), [](char c) { return c == '0'; }) ||
-            std::all_of(ctx.spanId.begin(), ctx.spanId.end(), [](char c) { return c == '0'; })) return {};
+            std::all_of(ctx.spanId.begin(), ctx.spanId.end(), [](char c) { return c == '0'; }))
+            return {};
         std::string out;
         out.reserve(55);
         out.append("00-");
@@ -131,5 +138,4 @@ namespace dbmw::common {
         out.append("-01");
         return out;
     }
-
 }

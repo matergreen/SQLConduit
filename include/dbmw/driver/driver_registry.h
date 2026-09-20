@@ -18,11 +18,11 @@ namespace dbmw::driver {
 
         void registerDriver(const std::string &type, DriverFactoryFn fn);
 
-        bool has(const std::string &type) const;
+        [[nodiscard]] bool has(const std::string &type) const;
 
-        std::unique_ptr<IDriver> create(const std::string &type) const;
+        [[nodiscard]] std::unique_ptr<IDriver> create(const std::string &type) const;
 
-        std::vector<std::string> registeredTypes() const;
+        [[nodiscard]] std::vector<std::string> registeredTypes() const;
 
     private:
         DriverRegistry() = default;

@@ -5,8 +5,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -27,8 +25,13 @@ static int g_failed = 0;
 static int g_passed = 0;
 
 static void check(bool cond, const std::string &name) {
-    if (cond) { ++g_passed; std::cout << "  [PASS] " << name << "\n"; }
-    else { ++g_failed; std::cout << "  [FAIL] " << name << "\n"; }
+    if (cond) {
+        ++g_passed;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        ++g_failed;
+        std::cout << "  [FAIL] " << name << "\n";
+    }
 }
 
 class AsyncMockConnection : public core::IDatabaseConnection {
@@ -59,7 +62,10 @@ public:
     static std::string joined() {
         std::lock_guard<std::mutex> lk(logMtx);
         std::string s;
-        for (auto &x: log) { if (!s.empty()) s += " | "; s += x; }
+        for (auto &x: log) {
+            if (!s.empty()) s += " | ";
+            s += x;
+        }
         return s;
     }
 
@@ -74,8 +80,9 @@ public:
     }
 
     Status ping() override {
-        return open_ ? Status::OK()
-                     : Status::error(common::ErrorCode::PingFailed, "closed");
+        return open_
+                   ? Status::OK()
+                   : Status::error(common::ErrorCode::PingFailed, "closed");
     }
 
     Status query(const std::string &sql, common::ResultSet &out) override {
@@ -150,7 +157,10 @@ public:
     }
 
     void close() override {
-        if (open_) { open_ = false; --alive; }
+        if (open_) {
+            open_ = false;
+            --alive;
+        }
     }
 
     bool isOpen() const override { return open_; }
@@ -186,8 +196,13 @@ public:
 class RejectingCompletionExecutor final : public async::IExecutor {
 public:
     bool tryPost(Task) override { return false; }
-    void postAfter(Task, std::chrono::milliseconds) override {}
-    void shutdown(std::chrono::milliseconds) override {}
+
+    void postAfter(Task, std::chrono::milliseconds) override {
+    }
+
+    void shutdown(std::chrono::milliseconds) override {
+    }
+
     [[nodiscard]] async::ExecutorStats stats() const override { return {}; }
 };
 
@@ -203,21 +218,21 @@ struct CfgFlags {
 
 static std::string buildConfig(const CfgFlags &f) {
     std::string audit = f.auditBlock || f.readOnlyGroup
-        ? R"("sql_audit": { "enabled": true, "action": "block", "block_no_where_dml": true, "enforce_read_only": true },)"
-        : R"("sql_audit": { "enabled": false },)";
+                            ? R"("sql_audit": { "enabled": true, "action": "block", "block_no_where_dml": true, "enforce_read_only": true },)"
+                            : R"("sql_audit": { "enabled": false },)";
     std::string rate = f.rateLimit
-        ? R"("rate_limit": { "enabled": true, "global_qps": 1, "per_fingerprint_qps": 0, "burst": 0, "fingerprint_mode": "off" },)"
-        : R"("rate_limit": { "enabled": false },)";
+                           ? R"("rate_limit": { "enabled": true, "global_qps": 1, "per_fingerprint_qps": 0, "burst": 0, "fingerprint_mode": "off" },)"
+                           : R"("rate_limit": { "enabled": false },)";
     std::string cache = f.cache
-        ? R"("query_cache": { "enabled": true, "ttl_ms": 60000, "max_entries": 100 },)"
-        : R"("query_cache": { "enabled": false },)";
+                            ? R"("query_cache": { "enabled": true, "ttl_ms": 60000, "max_entries": 100 },)"
+                            : R"("query_cache": { "enabled": false },)";
     std::string circuit = f.circuitThreshold > 0
-        ? R"("circuit_breaker": { "failure_threshold": )" + std::to_string(f.circuitThreshold) +
-          R"(, "open_interval_ms": )" + std::to_string(f.circuitOpenMs) + R"( },)"
-        : R"("circuit_breaker": { "failure_threshold": 0 },)";
+                              ? R"("circuit_breaker": { "failure_threshold": )" + std::to_string(f.circuitThreshold) +
+                                R"(, "open_interval_ms": )" + std::to_string(f.circuitOpenMs) + R"( },)"
+                              : R"("circuit_breaker": { "failure_threshold": 0 },)";
     std::string groups = f.readOnlyGroup
-        ? R"( "groups": [ { "name": "ro", "primary": "main", "replicas": [], "read_only": true } ] )"
-        : R"( "groups": [] )";
+                             ? R"( "groups": [ { "name": "ro", "primary": "main", "replicas": [], "read_only": true } ] )"
+                             : R"( "groups": [] )";
     return R"({
   "default_datasource": "main",
   "heartbeat_interval_ms": 5000,
@@ -250,14 +265,14 @@ static bool waitUntil(const std::function<bool()> &pred, int timeoutMs = 5000) {
     return pred();
 }
 
-template <class R>
+template<class R>
 struct AsyncOutcome {
     R result;
     std::chrono::steady_clock::time_point doneAt;
     std::thread::id threadId;
 };
 
-template <class R>
+template<class R>
 static AsyncOutcome<R> awaitResult(std::future<R> &&f, int timeoutMs = 5000) {
     AsyncOutcome<R> o;
     if (f.wait_for(std::chrono::milliseconds(timeoutMs)) == std::future_status::ready) {
@@ -295,8 +310,8 @@ int main() {
         auto out = awaitResult(std::move(fut));
         if (!out.result.status.ok())
             std::cout << "  [DEBUG] A1 query status: code="
-                      << static_cast<int>(out.result.status.code) << " msg="
-                      << out.result.status.message << "\n";
+                    << static_cast<int>(out.result.status.code) << " msg="
+                    << out.result.status.message << "\n";
         check(out.result.status.ok(), "回调式 query 成功");
         check(out.result.rows.rowCount() == 1 &&
               std::get<std::string>(out.result.rows.rows()[0].at("echo")) == "SELECT 1",
@@ -350,10 +365,10 @@ int main() {
         check(markerOut.result.status.ok(), "重试等待期间 marker 正常完成");
         check(markerMs < 100,
               "marker 立即执行（实测 " + std::to_string(markerMs) +
-                  "ms）—— worker 未被退避睡眠占用");
+              "ms）—— worker 未被退避睡眠占用");
         check(retryMs > markerMs,
               "重试整体耗时长于 marker（" + std::to_string(retryMs) + "ms vs " +
-                  std::to_string(markerMs) + "ms，含抖动）");
+              std::to_string(markerMs) + "ms，含抖动）");
     }
 
     std::cout << "== A3. 取消：Running 转发 / Queued 免池 / Done 报错（T8）==\n";
@@ -420,7 +435,7 @@ int main() {
         auto res = awaitResult(std::move(fut), 8000);
         if (res.result.status.code != common::ErrorCode::QueryTimeout)
             std::cout << "  [DEBUG] A4: code=" << static_cast<int>(res.result.status.code)
-                      << " msg=" << res.result.status.message << "\n";
+                    << " msg=" << res.result.status.message << "\n";
         check(res.result.status.code == common::ErrorCode::QueryTimeout,
               "超时后结果为 QueryTimeout");
         check(res.result.status.retryable,
@@ -449,7 +464,7 @@ int main() {
         check(hit.result.status.ok() && AsyncMockConnection::queryCalls == 0 &&
               hit.result.rows.rowCount() == 1 &&
               std::get<std::string>(hit.result.rows.rows()[0].at("echo")) ==
-                  "SELECT cacheable",
+              "SELECT cacheable",
               "第二次异步查询缓存命中，mock 驱动零调用");
 
         AsyncMockConnection::queryCalls = 0;
@@ -516,9 +531,9 @@ int main() {
         if (f1.result.status.code != common::ErrorCode::CircuitOpen
             || AsyncMockConnection::queryCalls != 2)
             std::cout << "  [DEBUG] A6 f1: code="
-                      << static_cast<int>(f1.result.status.code) << " msg="
-                      << f1.result.status.message << " calls="
-                      << AsyncMockConnection::queryCalls.load() << "\n";
+                    << static_cast<int>(f1.result.status.code) << " msg="
+                    << f1.result.status.message << " calls="
+                    << AsyncMockConnection::queryCalls.load() << "\n";
         check(f1.result.status.code == common::ErrorCode::CircuitOpen &&
               AsyncMockConnection::queryCalls == 2,
               "重试途中熔断打开：第一次查询以 CircuitOpen 收尾且恰好 2 次驱动调用");
@@ -579,9 +594,9 @@ int main() {
         std::promise<async::OpResult> wsPr;
         auto wsFut = wsPr.get_future();
         async::withSession([](core::Session &s) {
-            common::ResultSet rs;
-            return s.query("SELECT 1", rs);
-        }, [&](async::OpResult &&r) { wsPr.set_value(std::move(r)); });
+                               common::ResultSet rs;
+                               return s.query("SELECT 1", rs);
+                           }, [&](async::OpResult &&r) { wsPr.set_value(std::move(r)); });
         auto wsOut = awaitResult(std::move(wsFut));
         check(wsOut.result.status.ok() && !AsyncMockConnection::logHas("begin"),
               "withSession 不自动开事务");
@@ -692,7 +707,7 @@ int main() {
     {
         async::setCompletionExecutor(std::make_shared<RejectingCompletionExecutor>());
         const auto caller = std::this_thread::get_id();
-        std::promise<std::pair<common::Status, std::thread::id>> promise;
+        std::promise<std::pair<common::Status, std::thread::id> > promise;
         auto future = promise.get_future();
         async::query("SELECT completion_fallback", [&promise](async::QueryResult &&r) {
             promise.set_value({std::move(r.status), std::this_thread::get_id()});

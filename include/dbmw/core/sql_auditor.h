@@ -20,7 +20,7 @@ namespace dbmw::core {
         static void configure(const config::SqlAuditConfig &cfg);
 
         static common::Status check(const std::string &sql, common::OperationType type,
-                                   bool readOnly = false);
+                                    bool readOnly = false);
 
         struct Stats {
             std::uint64_t checked = 0;

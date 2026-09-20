@@ -22,7 +22,7 @@ namespace dbmw::core {
 
         HeartbeatManager &operator=(const HeartbeatManager &) = delete;
 
-        void addPool(const std::shared_ptr<ConnectionPool>& pool);
+        void addPool(const std::shared_ptr<ConnectionPool> &pool);
 
         void start();
 

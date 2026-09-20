@@ -19,25 +19,29 @@ namespace dbmw::common {
         std::string value;
         bool operator==(const Decimal &other) const { return value == other.value; }
     };
+
     struct Date {
         std::string value;
         bool operator==(const Date &other) const { return value == other.value; }
     };
+
     struct Time {
         std::string value;
         bool operator==(const Time &other) const { return value == other.value; }
     };
+
     struct Uuid {
         std::string value;
         bool operator==(const Uuid &other) const { return value == other.value; }
     };
+
     struct Json {
         std::string value;
         bool operator==(const Json &other) const { return value == other.value; }
     };
 
     using Value = std::variant<std::nullptr_t, bool, std::int64_t, std::uint64_t, double,
-                               Decimal, std::string, Date, Time, Timestamp, Uuid, Json, Blob>;
+        Decimal, std::string, Date, Time, Timestamp, Uuid, Json, Blob>;
 
     class Row {
     public:
@@ -70,6 +74,7 @@ namespace dbmw::common {
         [[nodiscard]] std::vector<Row> &mutableRows() { return rows_; }
         [[nodiscard]] size_t rowCount() const { return rows_.size(); }
         [[nodiscard]] bool empty() const { return rows_.empty(); }
+
         void clear() {
             fields_.clear();
             rows_.clear();
@@ -113,7 +118,11 @@ namespace dbmw::common {
             for (const auto rows: affected) total += rows;
             return total;
         }
-        void clear() { affected.clear(); keys.clear(); }
+
+        void clear() {
+            affected.clear();
+            keys.clear();
+        }
     };
 
     class StreamSource {
@@ -122,7 +131,8 @@ namespace dbmw::common {
 
         explicit StreamSource(ReadFn read, const std::optional<std::uint64_t> totalSize = std::nullopt,
                               const bool isBinary = true)
-            : read_(std::move(read)), totalSize_(totalSize), isBinary_(isBinary) {}
+            : read_(std::move(read)), totalSize_(totalSize), isBinary_(isBinary) {
+        }
 
         explicit StreamSource(std::istream &in, bool isBinary = true);
 

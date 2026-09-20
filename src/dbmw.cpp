@@ -93,7 +93,8 @@ namespace dbmw {
         return ds->query(sql, params, out);
     }
 
-    common::Status DBMW::query(const std::string &dataSource, const std::string &sql, const common::Params &params, common::ResultSet &out) {
+    common::Status DBMW::query(const std::string &dataSource, const std::string &sql, const common::Params &params,
+                               common::ResultSet &out) {
         std::shared_ptr<core::DataSource> ds;
         if (const auto st = resolve(dataSource, ds); !st.ok()) return st;
         return ds->query(sql, params, out);
@@ -105,7 +106,8 @@ namespace dbmw {
         return ds->execute(sql, params, affected);
     }
 
-    common::Status DBMW::execute(const std::string &dataSource, const std::string &sql, const common::Params &params, std::int64_t &affected) {
+    common::Status DBMW::execute(const std::string &dataSource, const std::string &sql, const common::Params &params,
+                                 std::int64_t &affected) {
         std::shared_ptr<core::DataSource> ds;
         if (const auto st = resolve(dataSource, ds); !st.ok()) return st;
         return ds->execute(sql, params, affected);
@@ -284,7 +286,7 @@ namespace dbmw {
     }
 
     common::Status DBMW::removeDataSource(const std::string &name,
-                                           const std::chrono::milliseconds grace) {
+                                          const std::chrono::milliseconds grace) {
         return mgr().removeDataSource(name, grace);
     }
 
@@ -295,7 +297,7 @@ namespace dbmw {
     }
 
     common::Status DBMW::removeGroup(const std::string &name,
-                                      const std::chrono::milliseconds grace) {
+                                     const std::chrono::milliseconds grace) {
         return mgr().removeGroup(name, grace);
     }
 }

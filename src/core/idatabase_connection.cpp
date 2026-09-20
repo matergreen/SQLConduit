@@ -115,8 +115,8 @@ namespace dbmw::core {
     }
 
     common::Status IDatabaseConnection::query(const std::string &sql,
-                                             const common::Params &params,
-                                             common::ResultSet &out) {
+                                              const common::Params &params,
+                                              common::ResultSet &out) {
         if (!allowsLiteralInterpolation()) {
             return common::Status::error(
                 common::ErrorCode::NotSupported,
@@ -193,7 +193,7 @@ namespace dbmw::core {
                 auto rendered = escapeLiteral(limited);
                 if (wasTruncated) {
                     rendered += "/* truncated, original_bytes=" +
-                        std::to_string(blob->size()) + " */";
+                            std::to_string(blob->size()) + " */";
                 }
                 return rendered;
             }
@@ -216,8 +216,7 @@ namespace dbmw::core {
 
     std::string IDatabaseConnection::replacePlaceholders(const std::string &sql,
                                                          const PlaceholderVisitor &visitor,
-                                                         std::size_t &found)
-    {
+                                                         std::size_t &found) {
         std::string out;
         out.reserve(sql.size());
 
@@ -231,10 +230,11 @@ namespace dbmw::core {
                 size_t tagEnd = i + 1;
                 while (tagEnd < n &&
                        (std::isalnum(static_cast<unsigned char>(sql[tagEnd])) ||
-                        sql[tagEnd] == '_')) ++tagEnd;
+                        sql[tagEnd] == '_'))
+                    ++tagEnd;
                 const bool validTag = tagEnd < n && sql[tagEnd] == '$' &&
-                    (tagEnd == i + 1 ||
-                     !std::isdigit(static_cast<unsigned char>(sql[i + 1])));
+                                      (tagEnd == i + 1 ||
+                                       !std::isdigit(static_cast<unsigned char>(sql[i + 1])));
                 if (validTag) {
                     const std::string delimiter = sql.substr(i, tagEnd - i + 1);
                     const size_t close = sql.find(delimiter, tagEnd + 1);

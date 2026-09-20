@@ -11,7 +11,6 @@
 #include <string>
 
 namespace dbmw::core {
-
     struct ExecutionView {
         const std::string &dataSource;
         const std::string &sql;
@@ -37,7 +36,8 @@ namespace dbmw::core {
 
         virtual void afterExecution(const ExecutionView &view) = 0;
 
-        virtual void onRow(const ExecutionView &, common::Row &) {}
+        virtual void onRow(const ExecutionView &, common::Row &) {
+        }
 
         virtual void onCompletion(const ExecutionView &view) = 0;
     };
@@ -47,9 +47,11 @@ namespace dbmw::core {
         InterceptorRegistry() = delete;
 
         static void add(std::shared_ptr<ISqlInterceptor> interceptor);
+
         static void clear();
 
-        using Snapshot = std::vector<std::shared_ptr<ISqlInterceptor>>;
+        using Snapshot = std::vector<std::shared_ptr<ISqlInterceptor> >;
+
         static Snapshot snapshot();
 
         static bool enabled() noexcept;
@@ -60,19 +62,29 @@ namespace dbmw::core {
     namespace detail {
         void runOnRoute(const std::string &dataSource, const std::string &sql,
                         common::OperationType type, common::SqlContext &ctx);
+
         common::Status runBeforeExecution(const ExecutionView &view);
+
         void runAfterExecution(const ExecutionView &view);
+
         void runOnRow(const ExecutionView &view, common::Row &row);
 
         class InterceptorGuard {
         public:
             explicit InterceptorGuard(const ExecutionView &view);
+
             ~InterceptorGuard() noexcept;
+
             InterceptorGuard(const InterceptorGuard &) = delete;
+
             InterceptorGuard &operator=(const InterceptorGuard &) = delete;
+
             InterceptorGuard(InterceptorGuard &&) = delete;
+
             InterceptorGuard &operator=(InterceptorGuard &&) = delete;
+
             [[nodiscard]] bool active() const noexcept { return active_; }
+
         private:
             const ExecutionView &view_;
             bool active_ = false;
@@ -82,7 +94,6 @@ namespace dbmw::core {
 
         std::size_t currentInterceptorDepth() noexcept;
     }
-
 }
 
 #endif

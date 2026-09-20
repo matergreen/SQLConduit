@@ -1,5 +1,7 @@
 #include "dbmw/async/dbmw_async.h"
 #include "dbmw/dbmw.h"
+#include "dbmw/mapping.h"
+#include "dbmw/util.h"
 
 #include <atomic>
 #include <chrono>
@@ -14,6 +16,28 @@
 #include <string>
 #include <thread>
 
+struct PgItem {
+    std::int64_t id = 0;
+    std::string name;
+    std::int64_t qty = 0;
+    double price = 0;
+    bool active = false;
+    dbmw::common::Timestamp createdAt;
+};
+namespace dbmw::mapping {
+    template <> struct RowMapper<PgItem> {
+        static Mapping<PgItem> describe() {
+            return Mapping<PgItem>()
+                .field(&PgItem::id, "id", FieldFlags::PrimaryKey | FieldFlags::Generated)
+                .field(&PgItem::name, "name")
+                .field(&PgItem::qty, "qty")
+                .field(&PgItem::price, "price")
+                .field(&PgItem::active, "active")
+                .field(&PgItem::createdAt, "created_at");
+        }
+    };
+}
+
 namespace {
 
 using dbmw::common::ErrorCode;
@@ -21,6 +45,13 @@ using dbmw::common::Params;
 using dbmw::common::ResultSet;
 using dbmw::common::Status;
 using dbmw::common::Value;
+using dbmw::common::util::CallParam;
+using dbmw::common::util::CallParams;
+using dbmw::common::util::CallResult;
+using dbmw::common::util::Dialect;
+using dbmw::common::util::ParamDirection;
+using dbmw::common::util::RoutineKind;
+using dbmw::common::util::RoutineRef;
 
 int gChecks = 0;
 
@@ -392,6 +423,183 @@ void testCacheAsyncAndObservability(Fixture &f) {
     require(!dbmw::DBMW::recentSlowSql(100).empty(), "recent slow SQL records are empty");
 }
 
+// ----------------------------------------------------------------------------
+// v0.5.x 集成覆盖：实体映射（v0.5.0）+ 脚本执行/存储过程/call/多结果集/异步 util（v0.5.1）
+// 这些功能此前只在单元测试里用合成 ResultSet 验证过，从未接真实驱动跑过。
+// 注意 PG 方言与 MySQL 的差异：
+//   - 实体表名不能带 schema 前缀传给 insertAs（quoteIdentifier 会把 schema.items 整体当单标识符），
+//     故实体映射用 public 下的裸表名。
+//   - PG 函数走 SELECT * FROM fn(...)；INOUT 从首行前 N 列回读，需 returnsRows=true。
+//   - PG 驱动未实现多结果集（supportsMultipleResultSets=false），多结果集断言为 MySQL 专属。
+// ----------------------------------------------------------------------------
+
+void testEntityMapping(Fixture &f) {
+    // 裸名，落在 public：避免 quoteIdentifier 把 schema.items 当作带点单标识符导致 INSERT 失败。
+    const std::string ent = f.schema + "_entity";
+    std::int64_t aff = 0;
+    (void)dbmw::DBMW::execute("DROP TABLE IF EXISTS " + ent, aff);
+    requireOk(dbmw::DBMW::execute(
+        "CREATE TABLE " + ent + " ("
+        "id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, qty BIGINT NOT NULL, "
+        "price DOUBLE PRECISION NOT NULL, active BOOLEAN NOT NULL, "
+        "created_at TIMESTAMPTZ NOT NULL)", aff), "create entity table");
+
+    PgItem item;
+    item.name = "map_item_1";
+    item.qty = 11;
+    item.price = 3.5;
+    item.active = true;
+    item.createdAt = dbmw::common::Timestamp{std::chrono::system_clock::now()};
+    auto ins = dbmw::insertAs<PgItem>(ent, item);
+    require(ins.status.ok(), "insertAs failed: " + ins.status.message);
+    require(ins.affected == 1, "insertAs affected mismatch");
+    // PG 驱动对无 RETURNING 的 INSERT 不自动回填自增键（out.rows 为空 -> lastInsertId()==0）。
+    // 若此处失败，说明是 PG 驱动取键缺口，需给 PG 驱动补 RETURNING 自动追加，而非测试问题。
+    require(item.id > 0, "insertAs did not backfill generated id (PG auto-key gap?)");
+    const std::int64_t id = item.id;
+
+    auto got = dbmw::queryAs<PgItem>(
+        "SELECT id,name,qty,price,active,created_at FROM " + ent + " WHERE id=?",
+        Params{std::int64_t(id)});
+    require(got.status.ok(), "queryAs failed: " + got.status.message);
+    require(got.items.size() == 1, "queryAs wrong row count");
+    if (!got.items.empty()) {
+        require(got.items[0].name == "map_item_1", "mapped name mismatch");
+        require(got.items[0].qty == 11, "mapped qty mismatch");
+        require(std::abs(got.items[0].price - 3.5) < 1e-9, "mapped price mismatch");
+        require(got.items[0].active, "mapped active mismatch");
+    }
+
+    item.qty = 99;
+    auto upd = dbmw::updateAs<PgItem>(ent, item);
+    require(upd.status.ok() && upd.affected == 1, "updateAs failed");
+    auto got2 = dbmw::queryAs<PgItem>(
+        "SELECT id,name,qty,price,active,created_at FROM " + ent + " WHERE id=?",
+        Params{std::int64_t(id)});
+    require(got2.status.ok() && !got2.items.empty() && got2.items[0].qty == 99,
+            "updateAs did not persist");
+
+    PgItem b1; b1.name = "map_batch_1"; b1.qty = 1; b1.price = 1.0; b1.active = true;
+    b1.createdAt = dbmw::common::Timestamp{std::chrono::system_clock::now()};
+    PgItem b2; b2.name = "map_batch_2"; b2.qty = 2; b2.price = 2.0; b2.active = false;
+    b2.createdAt = dbmw::common::Timestamp{std::chrono::system_clock::now()};
+    auto batch = dbmw::insertBatchAs<PgItem>(ent, {b1, b2});
+    require(batch.status.ok(), "insertBatchAs failed: " + batch.status.message);
+    require(batch.batch.totalAffected() == 2, "insertBatchAs affected mismatch");
+
+    std::uint64_t mappedRows = 0;
+    auto each = dbmw::queryEachAs<PgItem>(
+        "SELECT id,name,qty,price,active,created_at FROM " + ent +
+        " WHERE name LIKE 'map_%' ORDER BY id",
+        Params{}, [&](PgItem &&) { return true; }, mappedRows);
+    require(each.ok() && mappedRows >= 3, "queryEachAs mapped count mismatch");
+
+    std::int64_t d = 0;
+    requireOk(dbmw::DBMW::execute("DROP TABLE IF EXISTS " + ent, d), "drop entity table");
+}
+
+void testScriptExecution(Fixture &f) {
+    const std::string script =
+        "INSERT INTO " + f.table + " (name, qty, price, active, created_at) "
+        "VALUES ('script_a',1,1.0,true,now());\n"
+        "INSERT INTO " + f.table + " (name, qty, price, active, created_at) "
+        "VALUES ('script_b',2,2.0,true,now());";
+    std::size_t executed = 0;
+    auto st = dbmw::common::util::runScriptText(script, {}, &executed);
+    require(st.ok(), "runScriptText failed: " + st.message);
+    require(executed == 2, "runScriptText executed count mismatch");
+
+    // 复合块里 BEGIN..END 内的 ';' 不得被拆分：splitSqlScript 第二趟屏蔽 BEGIN..END 整段。
+    const std::string proc =
+        "CREATE PROCEDURE dbmw_it_script_proc() AS $$ BEGIN PERFORM 1; END; $$ LANGUAGE plpgsql";
+    auto procSt = dbmw::common::util::createRoutine(proc);
+    require(procSt.ok(), "createRoutine(procedure) failed: " + procSt.message);
+    std::int64_t dropped = 0;
+    requireOk(dbmw::DBMW::execute("DROP PROCEDURE IF EXISTS dbmw_it_script_proc", dropped),
+              "drop script procedure");
+}
+
+void testRoutinesAndCall(Fixture &f) {
+    // 标量函数：PG 用 SELECT * FROM fn(...) 路径（Dialect::Postgres 自动生成）。
+    require(dbmw::common::util::createRoutine(
+        "CREATE FUNCTION dbmw_it_add(a INT, b INT) RETURNS INT AS $$ SELECT a + b $$ "
+        "LANGUAGE sql").ok(), "createRoutine(function) failed");
+    RoutineRef addRef{"dbmw_it_add", RoutineKind::Function};
+    CallParams addParams{CallParam(ParamDirection::In, std::int64_t(3)),
+                         CallParam(ParamDirection::In, std::int64_t(4))};
+    CallResult addRes;
+    dbmw::common::util::CallOptions addOpts;
+    addOpts.dialect = Dialect::Postgres;
+    addOpts.returnsRows = true;
+    auto addSt = dbmw::common::util::call(addRef, addParams, addRes, addOpts);
+    require(addSt.ok(), "call(function) failed: " + addSt.message);
+    require(!addRes.sets.empty() && !addRes.sets.front().rows().empty(),
+            "function result set missing");
+    if (!addRes.sets.empty() && !addRes.sets.front().rows().empty()) {
+        const auto &v = addRes.sets.front().rows().front().data().begin()->second;
+        require(std::get<std::int64_t>(v) == 7, "function return mismatch");
+    }
+
+    // INOUT 函数：PG 用 INOUT 参数 + RETURNS RECORD；OUT/INOUT 从首行前 N 列回读，需 returnsRows=true。
+    require(dbmw::common::util::createRoutine(
+        "CREATE FUNCTION dbmw_it_swap(INOUT a INT, INOUT b INT) RETURNS RECORD AS $$ "
+        "BEGIN a := a + b; b := a - b; a := a - b; END; $$ LANGUAGE plpgsql").ok(),
+        "createRoutine(function INOUT) failed");
+    RoutineRef swapRef{"dbmw_it_swap", RoutineKind::Function};
+    CallParams io{CallParam(ParamDirection::InOut, std::int64_t(5)),
+                  CallParam(ParamDirection::InOut, std::int64_t(9))};
+    CallResult ioRes;
+    dbmw::common::util::CallOptions ioOpts;
+    ioOpts.dialect = Dialect::Postgres;
+    ioOpts.returnsRows = true;
+    auto ioSt = dbmw::DBMW::withSession([&](dbmw::core::Session &s) {
+        return dbmw::common::util::call(s, swapRef, io, ioRes, ioOpts);
+    });
+    require(ioSt.ok(), "call(function INOUT) failed: " + ioSt.message);
+    require(ioRes.outParams.size() == 2, "INOUT out params count mismatch");
+    if (ioRes.outParams.size() == 2) {
+        require(asInt(ioRes.outParams[0]) == 9, "INOUT a after swap mismatch");
+        require(asInt(ioRes.outParams[1]) == 5, "INOUT b after swap mismatch");
+    }
+
+    // 多结果集：PG 驱动未实现多结果集（supportsMultipleResultSets=false，回退为单结果集），
+    // 故此处仅验证 queryAll 单结果集路径可用；专门的 multi-result-set 断言是 MySQL 专属。
+    std::vector<common::ResultSet> sets;
+    auto mSt = dbmw::DBMW::queryAll("SELECT 1 AS n; SELECT 2 AS n", {}, sets);
+    require(mSt.ok(), "queryAll failed on PG: " + mSt.message);
+    require(!sets.empty(), "queryAll returned no result set on PG");
+
+    std::int64_t d = 0;
+    requireOk(dbmw::DBMW::execute("DROP FUNCTION IF EXISTS dbmw_it_add", d), "drop fn add");
+    requireOk(dbmw::DBMW::execute("DROP FUNCTION IF EXISTS dbmw_it_swap", d), "drop fn swap");
+}
+
+void testAsyncUtil(Fixture &f) {
+    const std::string fn =
+        "CREATE FUNCTION dbmw_it_aadd(a INT, b INT) RETURNS INT AS $$ SELECT a + b $$ LANGUAGE sql";
+    auto fr = dbmw::async::util::createRoutine(fn).get();
+    require(fr.status.ok(), "async createRoutine failed: " + fr.status.message);
+
+    const std::string script =
+        "INSERT INTO " + f.table + " (name, qty, price, active, created_at) "
+        "VALUES ('async_script',1,1.0,true,now());";
+    auto exec = dbmw::async::util::runScriptText(script).get();
+    require(exec.status.ok(), "async runScriptText failed: " + exec.status.message);
+
+    auto mr = dbmw::async::util::callAll(
+        "SELECT dbmw_it_aadd(?, ?)",
+        dbmw::common::Params{std::int64_t(6), std::int64_t(7)}, {}).get();
+    require(mr.status.ok(), "async callAll failed: " + mr.status.message);
+    require(!mr.sets.empty() && !mr.sets.front().rows().empty(), "async callAll set missing");
+    if (!mr.sets.empty() && !mr.sets.front().rows().empty()) {
+        const auto &val = mr.sets.front().rows().front().data().begin()->second;
+        require(std::get<std::int64_t>(val) == 13, "async function return mismatch");
+    }
+
+    std::int64_t d = 0;
+    requireOk(dbmw::DBMW::execute("DROP FUNCTION IF EXISTS dbmw_it_aadd", d), "drop async function");
+}
+
 }
 
 int main() {
@@ -403,6 +611,10 @@ int main() {
         testTransactions(fixture);
         testErrorsLimitsAndCursor(fixture);
         testCacheAsyncAndObservability(fixture);
+        testEntityMapping(fixture);
+        testScriptExecution(fixture);
+        testRoutinesAndCall(fixture);
+        testAsyncUtil(fixture);
         std::cout << "PostgreSQL integration test passed (" << gChecks << " checks)\n";
         return 0;
     } catch (const std::exception &error) {

@@ -1468,13 +1468,13 @@ namespace dbmw::async::util {
 
     inline Task<ExecResult> runScriptTextAsync(std::string sql, common::util::ScriptOptions opts = {}) {
         using Awaiter = async::detail::OpAwaiter<ExecResult>;
-        const common::util::detail::ExecScope scope(opts);
         std::vector<std::string> stmts;
         common::util::splitSqlScript(sql, stmts);
         ExecResult res;
         for (const auto &s: stmts) {
             ExecResult r = co_await Awaiter(
                 [s, opts](typename Awaiter::Callback cb) mutable {
+                    const common::util::detail::ExecScope scope(opts);
                     if (opts.dataSource.empty())
                         async::execute(s, common::Params{}, std::move(cb), async::Options{});
                     else

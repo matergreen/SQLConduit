@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <list>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #ifdef DBMW_ENABLE_POSTGRES
 #include <pqxx/pqxx>
@@ -20,6 +22,39 @@
 namespace dbmw::driver {
 #ifdef DBMW_ENABLE_POSTGRES
     using PgTx = pqxx::transaction<>;
+
+    struct PgTypeInfo {
+        std::string name;
+        char kind = 0;
+        pqxx::oid elem = 0;
+        pqxx::oid base = 0;
+    };
+
+    class PgTypeCache {
+    public:
+        bool load(pqxx::transaction_base &tx);
+
+        void ensureLoaded(pqxx::transaction_base *tx);
+
+        void markStale();
+
+        [[nodiscard]] bool loaded() const { return loaded_; }
+
+        [[nodiscard]] const PgTypeInfo *find(pqxx::oid oid) const;
+
+        [[nodiscard]] const std::vector<std::pair<std::string, pqxx::oid> > *attributes(
+            pqxx::oid oid) const;
+
+        [[nodiscard]] pqxx::oid resolveBase(pqxx::oid oid) const;
+
+        [[nodiscard]] bool isArray(pqxx::oid oid) const;
+
+    private:
+        std::unordered_map<pqxx::oid, PgTypeInfo> types_;
+        std::unordered_map<pqxx::oid, std::vector<std::pair<std::string, pqxx::oid> > > attrs_;
+        bool loaded_ = false;
+        bool stale_ = false;
+    };
 #endif
 
     class PostgresConnection : public core::IDatabaseConnection {
@@ -115,6 +150,12 @@ namespace dbmw::driver {
 
         common::Status cancel() override;
 
+        common::Status refreshTypeCache();
+
+#ifdef DBMW_ENABLE_POSTGRES
+        [[nodiscard]] const PgTypeCache *typeCache() const { return &types_; }
+#endif
+
     private:
         common::Status lastError(const char *where) const;
 
@@ -133,6 +174,7 @@ namespace dbmw::driver {
 #ifdef DBMW_ENABLE_POSTGRES
         std::unique_ptr<pqxx::connection> conn_;
         std::unique_ptr<PgTx> tx_;
+        PgTypeCache types_;
 #endif
     };
 

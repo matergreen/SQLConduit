@@ -1,5 +1,6 @@
 #include "dbmw/driver/postgres_driver.h"
 #include "dbmw/driver/driver_registry.h"
+#include "dbmw/common/pg_types.h"
 
 #include <optional>
 #include <algorithm>
@@ -8,6 +9,8 @@
 #include <utility>
 #include <vector>
 #include <atomic>
+#include <cstdlib>
+#include <stdexcept>
 
 #ifdef DBMW_ENABLE_POSTGRES
 #include <pqxx/pqxx>
@@ -130,41 +133,164 @@ namespace dbmw::driver {
         static constexpr pqxx::oid kFloat4 = 700;
         static constexpr pqxx::oid kFloat8 = 701;
 
+        static constexpr pqxx::oid kPoint = 600;
+        static constexpr pqxx::oid kLseg = 601;
+        static constexpr pqxx::oid kPath = 602;
+        static constexpr pqxx::oid kBox = 603;
+        static constexpr pqxx::oid kPolygon = 604;
+        static constexpr pqxx::oid kLine = 628;
+        static constexpr pqxx::oid kCircle = 718;
+
+        bool parseInt64(const std::string &s, std::int64_t &out) {
+            if (s.empty()) return false;
+            char *end = nullptr;
+            errno = 0;
+            const long long v = std::strtoll(s.c_str(), &end, 10);
+            if (end != s.c_str() + s.size() || errno == ERANGE) return false;
+            out = static_cast<std::int64_t>(v);
+            return true;
+        }
+
+        common::Value valueFromText(const pqxx::oid oid, const std::string &text,
+                                    PgTypeCache *cache, const int depth);
+
+        std::optional<std::string> valueToPgText(const common::Value &v);
+
+        std::string arrayToText(const common::Array &a) {
+            std::vector<std::optional<std::string> > parts;
+            parts.reserve(a.items.size());
+            for (const auto &item: a.items) parts.push_back(valueToPgText(item));
+            return common::pgFormatArray(parts);
+        }
+
+        std::string compositeToText(const common::Composite &c) {
+            std::vector<std::optional<std::string> > parts;
+            parts.reserve(c.fields.size());
+            for (const auto &f: c.fields) parts.push_back(valueToPgText(f.second));
+            return common::pgFormatComposite(parts);
+        }
+
+        std::optional<std::string> valueToPgText(const common::Value &v) {
+            using common::Value;
+            if (std::holds_alternative<std::nullptr_t>(v)) return std::nullopt;
+            if (const auto *x = std::get_if<bool>(&v))
+                return std::string(*x ? "true" : "false");
+            if (const auto *x = std::get_if<std::int64_t>(&v)) return std::to_string(*x);
+            if (const auto *x = std::get_if<std::uint64_t>(&v)) return std::to_string(*x);
+            if (const auto *x = std::get_if<double>(&v)) return common::pgFormatDouble(*x);
+            if (const auto *x = std::get_if<common::Decimal>(&v)) return x->value;
+            if (const auto *x = std::get_if<std::string>(&v)) return *x;
+            if (const auto *x = std::get_if<common::Date>(&v)) return x->value;
+            if (const auto *x = std::get_if<common::Time>(&v)) return x->value;
+            if (const auto *x = std::get_if<common::Timestamp>(&v))
+                return common::timestampToUtcStringMs(*x);
+            if (const auto *x = std::get_if<common::Uuid>(&v)) return x->value;
+            if (const auto *x = std::get_if<common::Json>(&v)) return x->value;
+            if (const auto *x = std::get_if<common::Blob>(&v)) return toByteaHex(*x);
+            if (const auto *x = std::get_if<common::Array>(&v)) return arrayToText(*x);
+            if (const auto *x = std::get_if<common::Composite>(&v)) return compositeToText(*x);
+            return std::nullopt;
+        }
+
+        common::Value valueFromText(const pqxx::oid oid, const std::string &text,
+                                    PgTypeCache *cache, const int depth) {
+            using common::Value;
+            if (depth > 8) return Value{text};
+
+            if (cache) {
+                const pqxx::oid base = cache->resolveBase(oid);
+                if (const PgTypeInfo *info = cache->find(base)) {
+                    if (info->kind == 'c') {
+                        if (const auto *attrs = cache->attributes(base)) {
+                            std::vector<std::optional<std::string> > parts;
+                            if (common::pgParseComposite(text, parts) && parts.size() == attrs->size()) {
+                                common::Composite composite;
+                                composite.fields.reserve(parts.size());
+                                for (std::size_t i = 0; i < parts.size(); ++i) {
+                                    Value item = parts[i]
+                                                     ? valueFromText((*attrs)[i].second, *parts[i],
+                                                                     cache, depth + 1)
+                                                     : Value{nullptr};
+                                    composite.fields.emplace_back((*attrs)[i].first, std::move(item));
+                                }
+                                return Value{std::move(composite)};
+                            }
+                        }
+                    }
+                    if (info->elem != 0 && !info->name.empty() && info->name[0] == '_') {
+                        std::vector<std::optional<std::string> > parts;
+                        if (common::pgParseArray(text, parts)) {
+                            common::Array array;
+                            array.items.reserve(parts.size());
+                            for (auto &part: parts) {
+                                const bool nested = part && part->size() >= 2 &&
+                                                    part->front() == '{' && part->back() == '}';
+                                array.items.push_back(
+                                    part ? valueFromText(nested ? base : info->elem, *part, cache,
+                                                         depth + 1)
+                                         : Value{nullptr});
+                            }
+                            return Value{std::move(array)};
+                        }
+                    }
+                }
+                if (common::pgIsGeometryOid(base)) return Value{common::Json{text}};
+
+                switch (base) {
+                    case kBool:
+                        if (text == "t" || text == "true" || text == "1") return Value{true};
+                        if (text == "f" || text == "false" || text == "0") return Value{false};
+                        return Value{text};
+                    case kInt2:
+                    case kInt4:
+                    case kInt8: {
+                        std::int64_t v = 0;
+                        if (parseInt64(text, v)) return Value{v};
+                        return Value{text};
+                    }
+                    case kFloat4:
+                    case kFloat8: {
+                        double d = 0;
+                        if (common::pgParseDouble(text, d)) return Value{d};
+                        return Value{text};
+                    }
+                    case kNumeric: return Value{common::Decimal{text}};
+                    case kBytea: return Value{parseBytea(text)};
+                    case kDate: return Value{common::Date{text}};
+                    case kTime:
+                    case kTimetz: return Value{common::Time{text}};
+                    case kUuid: return Value{common::Uuid{text}};
+                    case kJson:
+                    case kJsonb: return Value{common::Json{text}};
+                    case kTimestamp:
+                    case kTimestamptz: {
+                        common::Timestamp ts{};
+                        if (common::tryParseTimestamp(text, ts)) return Value{ts};
+                        return Value{text};
+                    }
+                    default:
+                        if (depth == 0 && oid >= 16384 && !cache->find(oid)) cache->markStale();
+                        return Value{text};
+                }
+            }
+
+            return Value{text};
+        }
+
         template<typename Field>
-        common::Value fieldToValue(const Field &f) {
+        common::Value fieldToValue(const Field &f, PgTypeCache *cache) {
             using common::Value;
             if (f.is_null()) return Value{nullptr};
             try {
-                switch (f.type()) {
-                    case kBool: return Value{f.template as<bool>()};
-                    case kInt2:
-                    case kInt4: return Value{static_cast<std::int64_t>(f.template as<int>())};
-                    case kInt8: return Value{static_cast<std::int64_t>(f.template as<long long>())};
-                    case kFloat4:
-                    case kFloat8: return Value{f.template as<double>()};
-                    case kNumeric: return Value{common::Decimal{f.template as<std::string>()}};
-                    case kBytea: return Value{parseBytea(f.template as<std::string>())};
-                    case kDate: return Value{common::Date{f.template as<std::string>()}};
-                    case kTime:
-                    case kTimetz: return Value{common::Time{f.template as<std::string>()}};
-                    case kUuid: return Value{common::Uuid{f.template as<std::string>()}};
-                    case kJson:
-                    case kJsonb: return Value{common::Json{f.template as<std::string>()}};
-                    case kTimestamp:
-                    case kTimestamptz: {
-                        const std::string s = f.template as<std::string>();
-                        common::Timestamp ts{};
-                        if (common::tryParseTimestamp(s, ts)) return Value{ts};
-                        return Value{s};
-                    }
-                    default: return Value{f.template as<std::string>()};
-                }
+                return valueFromText(f.type(), f.template as<std::string>(), cache, 0);
             } catch (...) {
-                return Value{f.template as<std::string>()};
+                return Value{nullptr};
             }
         }
 
-        void fillResultSet(const pqxx::result &r, common::ResultSet &out, int maxRows = 0) {
+        void fillResultSet(const pqxx::result &r, common::ResultSet &out, int maxRows = 0,
+                           PgTypeCache *cache = nullptr, pqxx::transaction_base *tx = nullptr) {
+            if (cache && tx) cache->ensureLoaded(tx);
             if (maxRows > 0 && r.size() > static_cast<pqxx::result::size_type>(maxRows)) {
                 throw std::runtime_error(
                     "result set exceeded max_result_rows ("
@@ -182,7 +308,7 @@ namespace dbmw::driver {
             for (auto const &row: r) {
                 common::Row out_row;
                 for (auto const &field: row) {
-                    out_row.set(field.name(), fieldToValue(field));
+                    out_row.set(field.name(), fieldToValue(field, cache));
                 }
                 out.addRow(std::move(out_row));
             }
@@ -190,7 +316,11 @@ namespace dbmw::driver {
 
         void appendParams(pqxx::params &p, const common::Params &ps) {
             for (const auto &v: ps) {
-                if (std::holds_alternative<std::nullptr_t>(v)) {
+                if (const auto *x = std::get_if<common::Array>(&v)) {
+                    p.append(std::optional<std::string>{arrayToText(*x)});
+                } else if (const auto *x = std::get_if<common::Composite>(&v)) {
+                    p.append(std::optional<std::string>{compositeToText(*x)});
+                } else if (std::holds_alternative<std::nullptr_t>(v)) {
                     p.append(std::optional<std::string>{});
                 } else if (const auto *x = std::get_if<bool>(&v)) {
                     p.append(std::optional<bool>{*x});
@@ -245,7 +375,7 @@ namespace dbmw::driver {
         common::Status streamRows(pqxx::transaction_base &tx, const std::string &sql,
                                   const common::Params &params,
                                   const common::RowCallback &callback,
-                                  std::uint64_t &rows) {
+                                  std::uint64_t &rows, PgTypeCache *cache = nullptr) {
             constexpr const char *kCursor = "dbmw_stream_cursor";
             pqxx::params bound;
             appendParams(bound, params);
@@ -262,7 +392,7 @@ namespace dbmw::driver {
                     for (const auto &source: chunk) {
                         common::Row row;
                         for (const auto &field: source)
-                            row.set(field.name(), fieldToValue(field));
+                            row.set(field.name(), fieldToValue(field, cache));
                         ++rows;
                         if (callback && !callback(row)) {
                             keepGoing = false;
@@ -282,6 +412,98 @@ namespace dbmw::driver {
     }
 
 #ifdef DBMW_ENABLE_POSTGRES
+    bool PgTypeCache::load(pqxx::transaction_base &tx) {
+        types_.clear();
+        attrs_.clear();
+        try {
+            const pqxx::result types = tx.exec(
+                "SELECT t.oid::bigint, t.typname::text, t.typtype::text,"
+                "       t.typelem::bigint, t.typbasetype::bigint"
+                "  FROM pg_catalog.pg_type t");
+            for (auto const &row: types) {
+                PgTypeInfo info;
+                info.name = row[1].as<std::string>();
+                const std::string kind = row[2].as<std::string>("");
+                info.kind = kind.empty() ? '\0' : kind[0];
+                info.elem = static_cast<pqxx::oid>(row[3].as<long long>(0));
+                info.base = static_cast<pqxx::oid>(row[4].as<long long>(0));
+                types_[static_cast<pqxx::oid>(row[0].as<long long>(0))] = std::move(info);
+            }
+
+            const pqxx::result attrs = tx.exec(
+                "SELECT t.oid::bigint, a.attname::text, a.atttypid::bigint"
+                "  FROM pg_catalog.pg_type t"
+                "  JOIN pg_catalog.pg_class c ON c.oid = t.typrelid"
+                "  JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid"
+                " WHERE t.typtype = 'c' AND a.attnum > 0 AND NOT a.attisdropped"
+                " ORDER BY t.oid, a.attnum");
+            for (auto const &row: attrs) {
+                attrs_[static_cast<pqxx::oid>(row[0].as<long long>(0))].emplace_back(
+                    row[1].as<std::string>(), static_cast<pqxx::oid>(row[2].as<long long>(0)));
+            }
+        } catch (...) {
+            loaded_ = true;
+            stale_ = false;
+            return false;
+        }
+        loaded_ = true;
+        stale_ = false;
+        return true;
+    }
+
+    void PgTypeCache::ensureLoaded(pqxx::transaction_base *tx) {
+        if (!tx) return;
+        if (!loaded_ || stale_) load(*tx);
+    }
+
+    void PgTypeCache::markStale() { stale_ = true; }
+
+    const PgTypeInfo *PgTypeCache::find(const pqxx::oid oid) const {
+        const auto it = types_.find(oid);
+        return it == types_.end() ? nullptr : &it->second;
+    }
+
+    const std::vector<std::pair<std::string, pqxx::oid> > *PgTypeCache::attributes(
+        const pqxx::oid oid) const {
+        const auto it = attrs_.find(oid);
+        return it == attrs_.end() ? nullptr : &it->second;
+    }
+
+    pqxx::oid PgTypeCache::resolveBase(const pqxx::oid oid) const {
+        pqxx::oid current = oid;
+        for (int i = 0; i < 8; ++i) {
+            const PgTypeInfo *info = find(current);
+            if (!info || info->base == 0 || info->base == current) return current;
+            current = info->base;
+        }
+        return current;
+    }
+
+    bool PgTypeCache::isArray(const pqxx::oid oid) const {
+        const PgTypeInfo *info = find(resolveBase(oid));
+        return info && info->elem != 0 && !info->name.empty() && info->name[0] == '_';
+    }
+
+    common::Status PostgresConnection::refreshTypeCache() {
+#ifdef DBMW_ENABLE_POSTGRES
+        if (!open_ || !conn_) return notConnected("refreshTypeCache");
+        try {
+            if (tx_) {
+                types_.load(*tx_);
+            } else {
+                PgTx tx{*conn_};
+                types_.load(tx);
+                tx.commit();
+            }
+            return common::Status::OK();
+        } catch (const std::exception &e) {
+            return postgresError(common::ErrorCode::QueryError, "refreshTypeCache", e);
+        }
+#else
+        return common::Status::error(common::ErrorCode::DriverDisabled, "PostgreSQL driver disabled");
+#endif
+    }
+
     class PgCursor : public core::ICursor {
     public:
         explicit PgCursor(PostgresConnection &owner) : owner_(owner) {
@@ -342,7 +564,7 @@ namespace dbmw::driver {
                 for (const auto &source: rows) {
                     common::Row row;
                     for (const auto &field: source)
-                        row.set(field.name(), fieldToValue(field));
+                        row.set(field.name(), fieldToValue(field, &owner_.types_));
                     out.addRow(std::move(row));
                     ++rowsFetched_;
                 }
@@ -506,10 +728,10 @@ namespace dbmw::driver {
         ActiveOperation active(operationMtx_, operationActive_);
         try {
             if (tx_) {
-                fillResultSet(tx_->exec(sql), out, cfg_.max_result_rows);
+                fillResultSet(tx_->exec(sql), out, cfg_.max_result_rows, &types_, tx_.get());
             } else {
                 PgTx tx{*conn_};
-                fillResultSet(tx.exec(sql), out, cfg_.max_result_rows);
+                fillResultSet(tx.exec(sql), out, cfg_.max_result_rows, &types_, &tx);
                 tx.commit();
             }
             return common::Status::OK();
@@ -538,10 +760,10 @@ namespace dbmw::driver {
             pqxx::params pp;
             appendParams(pp, params);
             if (tx_) {
-                fillResultSet(execParams(*tx_, pgSql, pp), out, cfg_.max_result_rows);
+                fillResultSet(execParams(*tx_, pgSql, pp), out, cfg_.max_result_rows, &types_, tx_.get());
             } else {
                 PgTx tx{*conn_};
-                fillResultSet(execParams(tx, pgSql, pp), out, cfg_.max_result_rows);
+                fillResultSet(execParams(tx, pgSql, pp), out, cfg_.max_result_rows, &types_, &tx);
                 tx.commit();
             }
             return common::Status::OK();
@@ -627,9 +849,9 @@ namespace dbmw::driver {
             sql, [](std::size_t i) { return "$" + std::to_string(i + 1); }, found);
         if (found != params.size()) return paramMismatch(params.size(), found);
         try {
-            if (tx_) return streamRows(*tx_, pgSql, params, callback, rows);
+            if (tx_) return streamRows(*tx_, pgSql, params, callback, rows, &types_);
             PgTx tx{*conn_};
-            const auto status = streamRows(tx, pgSql, params, callback, rows);
+            const auto status = streamRows(tx, pgSql, params, callback, rows, &types_);
             if (status.ok()) tx.commit();
             return status;
         } catch (std::exception const &e) {
@@ -666,7 +888,7 @@ namespace dbmw::driver {
                     const pqxx::result r = execParams(transaction, pgSql, bound);
                     out.affected.push_back(static_cast<std::int64_t>(r.affected_rows()));
                     common::GeneratedKeys keys;
-                    fillResultSet(r, keys.rows, 0);
+                    fillResultSet(r, keys.rows, 0, &types_, &transaction);
                     out.keys.push_back(std::move(keys));
                 }
                 return common::Status::OK();
@@ -701,14 +923,16 @@ namespace dbmw::driver {
         ActiveOperation active(operationMtx_, operationActive_);
         try {
             pqxx::result r;
-            if (tx_) r = tx_->exec(sql);
-            else {
-                PgTx w{*conn_};
-                r = w.exec(sql);
-                w.commit();
+            std::unique_ptr<PgTx> owned;
+            pqxx::transaction_base *tx = tx_.get();
+            if (!tx) {
+                owned = std::make_unique<PgTx>(*conn_);
+                tx = owned.get();
             }
+            r = tx->exec(sql);
             affected = static_cast<std::int64_t>(r.affected_rows());
-            fillResultSet(r, out.rows, 0);
+            fillResultSet(r, out.rows, 0, &types_, tx);
+            if (owned) owned->commit();
             return common::Status::OK();
         } catch (const std::exception &e) {
             return postgresError(common::ErrorCode::QueryError, "execute(keys)", e);
@@ -735,14 +959,16 @@ namespace dbmw::driver {
             pqxx::params pp;
             appendParams(pp, params);
             pqxx::result r;
-            if (tx_) r = execParams(*tx_, pgSql, pp);
-            else {
-                PgTx w{*conn_};
-                r = execParams(w, pgSql, pp);
-                w.commit();
+            std::unique_ptr<PgTx> owned;
+            pqxx::transaction_base *tx = tx_.get();
+            if (!tx) {
+                owned = std::make_unique<PgTx>(*conn_);
+                tx = owned.get();
             }
+            r = execParams(*tx, pgSql, pp);
             affected = static_cast<std::int64_t>(r.affected_rows());
-            fillResultSet(r, out.rows, 0);
+            fillResultSet(r, out.rows, 0, &types_, tx);
+            if (owned) owned->commit();
             return common::Status::OK();
         } catch (const std::exception &e) {
             return postgresError(common::ErrorCode::QueryError, "execute(keys)", e);
@@ -831,10 +1057,10 @@ namespace dbmw::driver {
         appendParams(pp, params);
         try {
             if (tx_) {
-                fillResultSet(execPrepared(*tx_, name, pp), out, cfg_.max_result_rows);
+                fillResultSet(execPrepared(*tx_, name, pp), out, cfg_.max_result_rows, &types_, tx_.get());
             } else {
                 PgTx w{*conn_};
-                fillResultSet(execPrepared(w, name, pp), out, cfg_.max_result_rows);
+                fillResultSet(execPrepared(w, name, pp), out, cfg_.max_result_rows, &types_, &w);
                 w.commit();
             }
             return common::Status::OK();

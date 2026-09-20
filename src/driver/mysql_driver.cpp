@@ -485,6 +485,11 @@ namespace dbmw::driver {
                 } else if (const auto *x = std::get_if<std::string>(&v)) {
                     b.buffer_type = MYSQL_TYPE_STRING;
                     setStringParam(st, i, x->data(), x->size());
+                } else if (std::holds_alternative<common::Array>(v) ||
+                           std::holds_alternative<common::Composite>(v)) {
+                    return common::Status::error(
+                        common::ErrorCode::NotSupported,
+                        "MySQL: array/composite parameters are not supported by this driver");
                 } else {
                     b.buffer_type = MYSQL_TYPE_NULL;
                     st.isNull[i] = 1;

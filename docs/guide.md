@@ -1125,6 +1125,85 @@ MySQL 走基类批量循环里的 `mysql_insert_id`。
 
 完整设计（转换矩阵、不变量、M1–M23 测试矩阵）见 `docs/mapping-design-v0.5.0.md`。
 
+## PostgreSQL 数组 / 复合 / 几何类型
+
+PG 的 `ANYARRAY`、行类型与几何类型此前在驱动里一律退化成原始字符串（`{1,2,3}` / `(a,b)` / `(1,2)`）。
+现在 `common::Value` 新增两个备选承载它们，几何类型以 `Json` 承载 **PG 规范文本**。
+
+### Value 的两个新备选
+
+```cpp
+struct Array     { std::vector<Value> items; };                        // 可嵌套
+struct Composite { std::vector<std::pair<std::string, Value>> fields; }; // 保序 + 按名查找
+
+using ValueBase = std::variant<..., Blob, Array, Composite>;
+struct Value : ValueBase { using ValueBase::ValueBase; };
+```
+
+`Value` 从 `variant` **别名改成派生结构体**——这是递归 variant 唯一可行的写法
+（C++17 起 `std::vector<T>` 允许 T 不完整）。既有 `std::get_if<T>(&v)` / `std::holds_alternative<T>(v)` /
+`std::get<T>(v)` 全部照旧工作；**唯一例外是 `std::visit`**，跨标准库实现对派生 variant 的支持不一致，
+请统一用 `common::visitValue(visitor, v)`。
+
+`Composite::find(name)` 返回 `const Value *`，未命中返回 `nullptr`（定义在 `types.cpp`，
+因为 `std::pair<std::string, Value>` 的实例化必须等 `Value` 完整）。
+
+### 读侧行为
+
+| 列类型 | 之前 | 现在 |
+|---|---|---|
+| `INT4[]` / `TEXT[]` | `"{1,2,3}"` 字符串 | `Array`，元素按元素 OID 逐个还原（`int64` / `string` …） |
+| `INT4[][]` 多维 | `"{{1,2},{3,4}}"` | `Array` 嵌套 `Array` |
+| 具名复合类型（`CREATE TYPE ... AS` / 表行类型） | `"(a,b)"` 字符串 | `Composite`，字段名与类型来自 `pg_attribute` |
+| `RECORD`（匿名 `ROW(...)`） | 字符串 | **仍是字符串**——服务器不暴露字段元数据，无法拆 |
+| `point` / `lseg` / `path` / `box` / `polygon` / `line` / `circle` | `"(1,2)"` 字符串 | `Json{ PG 规范文本 }`，配 `PgPoint` 等 7 个结构体解析 |
+| 数组元素为 NULL | 混入字符串 | `nullptr`（`{NULL,a}` 正确区分于 `{,a}` 的空串） |
+
+几何值放 `Json` 而不是新增备选，是为了**能原样写回**：PG 的 `point` 列不接受
+`{"x":1,"y":2}`，只接受 `(1,2)`。需要结构化 JSON 时自行调 `common::pgGeometryToJson(...)`。
+
+### 写侧（参数绑定）
+
+```cpp
+common::Array tags;  tags.items = {Value{"red"}, Value{"blue"}};
+common::Composite addr; addr.fields = {{"city", Value{"Shanghai"}}, {"zip", Value{"200000"}}};
+
+DBMW::execute("INSERT INTO t (tags, addr, pt) VALUES (?, ?, ?)",
+              Params{ Value{tags}, Value{addr},
+                      Value{common::Json{common::pgFormatPoint(common::PgPoint{1, 2})}} }, n);
+```
+
+驱动把 `Array` / `Composite` 渲染成 PG 数组 / 行文本后以 **text 参数**下发，
+由服务端按目标列类型推断——所以 SQL 里**不要**再手工 `::text[]` 强转，
+但脱离列上下文的裸 `SELECT $1` 会被 PG 当成 `text`。MySQL / ODBC 收到 `Array` / `Composite`
+参数直接返回 `NotSupported`，不会静默绑成 NULL。
+
+### mapping 层绑定
+
+| 成员类型 | 绑定目标 |
+|---|---|
+| `std::vector<int>` / `std::vector<std::string>` / … | `Array`（元素逐个走元素转换器） |
+| `std::vector<std::vector<int>>` | 嵌套 `Array` |
+| `std::optional<std::vector<T>>` | NULL → `nullopt` |
+| `common::Array` / `common::Composite` | 原样透传 |
+| `common::PgPoint` / `PgLine` / `PgLseg` / `PgBox` / `PgPath` / `PgPolygon` / `PgCircle` | `Json`（PG 文本），双向 |
+
+7 个几何结构体定义在 `include/dbmw/common/pg_types.h`，配套 `pgParseXxx` / `pgFormatXxx`，
+可脱离驱动单独使用（`src/common/pg_types.cpp` 不链接 libpqxx）。
+
+### OID 元数据缓存
+
+复合类型的 OID 是**运行时分配**的，必须查 `pg_type` / `pg_attribute` 才能知道「这个 OID 有几个字段、
+分别什么类型」。驱动在**每条连接首次产生结果集时**惰性加载全量 `pg_type` + 复合类型字段表并缓存：
+
+- 之后的类型变更不会自动可见。建完类型后请调 `PostgresConnection::refreshTypeCache()`
+  （`IDatabaseConnection` 之外的方法，需要持有具体类型）；
+- 兜底：读到未知且属于用户区间（OID ≥ 16384）的类型时会标记 stale，**下一条语句自动重载一次**；
+- 加载失败不会让查询失败——退化成原始字符串，和改造前一致。
+
+`pg_types.h` 里的文本编解码（数组/复合的元素切分、引号转义、7 种几何语法）不依赖 libpqxx，
+因此有 `tests/dbmw_pg_types_test.cpp` 做纯单元测试，不需要真库。
+
 ## 例程与索引（v0.5.1：函数 / 存储过程 / 索引的生命周期与调用协议）
 
 `dbmw/util.h` 提供 `dbmw::common::util`。它管的是**调用协议**与**生命周期**，

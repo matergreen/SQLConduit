@@ -477,6 +477,11 @@ namespace dbmw::driver {
                     columnSize = static_cast<SQLULEN>(std::max<std::size_t>(1, slot.text.size()));
                     data = const_cast<char *>(slot.text.data());
                     bufferLength = static_cast<SQLLEN>(slot.text.size());
+                } else if (std::holds_alternative<common::Array>(value) ||
+                           std::holds_alternative<common::Composite>(value)) {
+                    return common::Status::error(
+                        common::ErrorCode::NotSupported,
+                        "ODBC: array/composite parameters are not supported by this driver");
                 }
 
         const SQLRETURN rc = SQLBindParameter(

@@ -7,6 +7,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -40,8 +41,41 @@ namespace dbmw::common {
         bool operator==(const Json &other) const { return value == other.value; }
     };
 
-    using Value = std::variant<std::nullptr_t, bool, std::int64_t, std::uint64_t, double,
-        Decimal, std::string, Date, Time, Timestamp, Uuid, Json, Blob>;
+    struct Value;
+
+    struct Array {
+        std::vector<Value> items;
+    };
+
+    struct Composite {
+        std::vector<std::pair<std::string, Value> > fields;
+
+        [[nodiscard]] const Value *find(const std::string &name) const;
+    };
+
+    using ValueBase = std::variant<std::nullptr_t, bool, std::int64_t, std::uint64_t, double,
+        Decimal, std::string, Date, Time, Timestamp, Uuid, Json, Blob, Array, Composite>;
+
+    struct Value : ValueBase {
+        using ValueBase::ValueBase;
+
+        Value() = default;
+    };
+
+    inline bool operator==(const Array &a, const Array &b) { return a.items == b.items; }
+    inline bool operator!=(const Array &a, const Array &b) { return !(a == b); }
+    inline bool operator==(const Composite &a, const Composite &b) { return a.fields == b.fields; }
+    inline bool operator!=(const Composite &a, const Composite &b) { return !(a == b); }
+
+    template<class Visitor>
+    decltype(auto) visitValue(Visitor &&vis, Value &v) {
+        return std::visit(std::forward<Visitor>(vis), static_cast<ValueBase &>(v));
+    }
+
+    template<class Visitor>
+    decltype(auto) visitValue(Visitor &&vis, const Value &v) {
+        return std::visit(std::forward<Visitor>(vis), static_cast<const ValueBase &>(v));
+    }
 
     class Row {
     public:

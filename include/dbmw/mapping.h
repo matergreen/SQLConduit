@@ -2,6 +2,7 @@
 #define DBMW_MAPPING_H
 
 #include "dbmw/common/types.h"
+#include "dbmw/common/pg_types.h"
 #include "dbmw/core/cursor.h"
 #include "dbmw/core/database_manager.h"
 #include "dbmw/dbmw.h"
@@ -111,6 +112,15 @@ namespace dbmw::mapping {
             else if constexpr (std::is_same_v<U, common::Uuid>) return "Uuid";
             else if constexpr (std::is_same_v<U, common::Json>) return "Json";
             else if constexpr (std::is_same_v<U, common::Blob>) return "Blob";
+            else if constexpr (std::is_same_v<U, common::Array>) return "Array";
+            else if constexpr (std::is_same_v<U, common::Composite>) return "Composite";
+            else if constexpr (std::is_same_v<U, common::PgPoint>) return "PgPoint";
+            else if constexpr (std::is_same_v<U, common::PgLine>) return "PgLine";
+            else if constexpr (std::is_same_v<U, common::PgLseg>) return "PgLseg";
+            else if constexpr (std::is_same_v<U, common::PgBox>) return "PgBox";
+            else if constexpr (std::is_same_v<U, common::PgPath>) return "PgPath";
+            else if constexpr (std::is_same_v<U, common::PgPolygon>) return "PgPolygon";
+            else if constexpr (std::is_same_v<U, common::PgCircle>) return "PgCircle";
             else if constexpr (detail::IsOptional<U>::value)
                 return "std::optional<" + TypeName<typename U::value_type>::name() + ">";
             else if constexpr (std::is_enum_v<U>) return "enum";
@@ -133,6 +143,8 @@ namespace dbmw::mapping {
             case 10: return "Uuid";
             case 11: return "Json";
             case 12: return "Blob";
+            case 13: return "Array";
+            case 14: return "Composite";
             default: return "unknown";
         }
     }
@@ -394,6 +406,166 @@ namespace dbmw::mapping {
         }
 
         static common::Value toValue(const common::Blob &in) { return common::Value(in); }
+    };
+
+    template<>
+    struct ValueConverter<common::Array, void> {
+        static common::Status fromValue(const common::Value &v, common::Array &out, FieldFlags) {
+            if (const auto p = std::get_if<common::Array>(&v)) {
+                out = *p;
+                return common::Status::OK();
+            }
+            return typeError("Array", v);
+        }
+
+        static common::Value toValue(const common::Array &in) { return common::Value(in); }
+    };
+
+    template<>
+    struct ValueConverter<common::Composite, void> {
+        static common::Status fromValue(const common::Value &v, common::Composite &out, FieldFlags) {
+            if (const auto p = std::get_if<common::Composite>(&v)) {
+                out = *p;
+                return common::Status::OK();
+            }
+            return typeError("Composite", v);
+        }
+
+        static common::Value toValue(const common::Composite &in) { return common::Value(in); }
+    };
+
+    template<class U>
+    struct ValueConverter<std::vector<U>, void> {
+        static common::Status fromValue(const common::Value &v, std::vector<U> &out,
+                                        const FieldFlags flags) {
+            const auto *array = std::get_if<common::Array>(&v);
+            if (!array) return typeError("std::vector", v);
+            out.clear();
+            out.reserve(array->items.size());
+            for (const auto &item: array->items) {
+                U tmp{};
+                if (const auto s = ValueConverter<U>::fromValue(item, tmp, flags); !s.ok()) return s;
+                out.push_back(std::move(tmp));
+            }
+            return common::Status::OK();
+        }
+
+        static common::Value toValue(const std::vector<U> &in) {
+            common::Array array;
+            array.items.reserve(in.size());
+            for (const auto &item: in) array.items.push_back(ValueConverter<U>::toValue(item));
+            return common::Value(std::move(array));
+        }
+    };
+
+    template<class G>
+    struct PgGeometryTraits;
+
+    template<>
+    struct PgGeometryTraits<common::PgPoint> {
+        static bool parse(const std::string &text, common::PgPoint &out) {
+            return common::pgParsePoint(text, out);
+        }
+
+        static std::string format(const common::PgPoint &v) { return common::pgFormatPoint(v); }
+    };
+
+    template<>
+    struct PgGeometryTraits<common::PgLine> {
+        static bool parse(const std::string &text, common::PgLine &out) {
+            return common::pgParseLine(text, out);
+        }
+
+        static std::string format(const common::PgLine &v) { return common::pgFormatLine(v); }
+    };
+
+    template<>
+    struct PgGeometryTraits<common::PgLseg> {
+        static bool parse(const std::string &text, common::PgLseg &out) {
+            return common::pgParseLseg(text, out);
+        }
+
+        static std::string format(const common::PgLseg &v) { return common::pgFormatLseg(v); }
+    };
+
+    template<>
+    struct PgGeometryTraits<common::PgBox> {
+        static bool parse(const std::string &text, common::PgBox &out) {
+            return common::pgParseBox(text, out);
+        }
+
+        static std::string format(const common::PgBox &v) { return common::pgFormatBox(v); }
+    };
+
+    template<>
+    struct PgGeometryTraits<common::PgPath> {
+        static bool parse(const std::string &text, common::PgPath &out) {
+            return common::pgParsePath(text, out);
+        }
+
+        static std::string format(const common::PgPath &v) { return common::pgFormatPath(v); }
+    };
+
+    template<>
+    struct PgGeometryTraits<common::PgPolygon> {
+        static bool parse(const std::string &text, common::PgPolygon &out) {
+            return common::pgParsePolygon(text, out);
+        }
+
+        static std::string format(const common::PgPolygon &v) { return common::pgFormatPolygon(v); }
+    };
+
+    template<>
+    struct PgGeometryTraits<common::PgCircle> {
+        static bool parse(const std::string &text, common::PgCircle &out) {
+            return common::pgParseCircle(text, out);
+        }
+
+        static std::string format(const common::PgCircle &v) { return common::pgFormatCircle(v); }
+    };
+
+    template<class G>
+    struct PgGeometryConverter {
+        static common::Status fromValue(const common::Value &v, G &out, const FieldFlags flags) {
+            if (const auto p = std::get_if<common::Json>(&v))
+                if (PgGeometryTraits<G>::parse(p->value, out)) return common::Status::OK();
+            if (hasFlag(flags, FieldFlags::Textual))
+                if (const auto p = std::get_if<std::string>(&v))
+                    if (PgGeometryTraits<G>::parse(*p, out)) return common::Status::OK();
+            return typeError(TypeName<G>::name(), v);
+        }
+
+        static common::Value toValue(const G &in) {
+            return common::Value(common::Json{PgGeometryTraits<G>::format(in)});
+        }
+    };
+
+    template<>
+    struct ValueConverter<common::PgPoint, void> : PgGeometryConverter<common::PgPoint> {
+    };
+
+    template<>
+    struct ValueConverter<common::PgLine, void> : PgGeometryConverter<common::PgLine> {
+    };
+
+    template<>
+    struct ValueConverter<common::PgLseg, void> : PgGeometryConverter<common::PgLseg> {
+    };
+
+    template<>
+    struct ValueConverter<common::PgBox, void> : PgGeometryConverter<common::PgBox> {
+    };
+
+    template<>
+    struct ValueConverter<common::PgPath, void> : PgGeometryConverter<common::PgPath> {
+    };
+
+    template<>
+    struct ValueConverter<common::PgPolygon, void> : PgGeometryConverter<common::PgPolygon> {
+    };
+
+    template<>
+    struct ValueConverter<common::PgCircle, void> : PgGeometryConverter<common::PgCircle> {
     };
 
     template<>

@@ -54,6 +54,7 @@ install(TARGETS nlohmann_json EXPORT dbmwTargets)
 
 set(DBMW_SOURCES
     src/common/types.cpp
+    src/common/pg_types.cpp
     src/common/context.cpp
     src/common/observer.cpp
     src/common/sql_analyze.cpp

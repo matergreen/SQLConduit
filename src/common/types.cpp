@@ -122,6 +122,12 @@ namespace dbmw::common {
         }
     }
 
+    const Value *Composite::find(const std::string &name) const {
+        for (const auto &f: fields)
+            if (f.first == name) return &f.second;
+        return nullptr;
+    }
+
     std::string timestampToString(const Timestamp &t) {
         return formatTimestamp(t, false);
     }
@@ -286,6 +292,26 @@ namespace dbmw::common {
             if (p->size() > show) s += "...";
             return s;
         }
+        if (const auto *p = std::get_if<Array>(&v)) {
+            std::string s = "[";
+            for (size_t i = 0; i < p->items.size(); ++i) {
+                if (i) s += ", ";
+                s += valueToString(p->items[i]);
+            }
+            s += ']';
+            return s;
+        }
+        if (const auto *p = std::get_if<Composite>(&v)) {
+            std::string s = "(";
+            for (size_t i = 0; i < p->fields.size(); ++i) {
+                if (i) s += ", ";
+                s += p->fields[i].first;
+                s += '=';
+                s += valueToString(p->fields[i].second);
+            }
+            s += ')';
+            return s;
+        }
         return "?";
     }
 
@@ -321,6 +347,24 @@ namespace dbmw::common {
             std::string s = "X'";
             appendHex(s, *p);
             s += '\'';
+            return s;
+        }
+        if (const auto *p = std::get_if<Array>(&v)) {
+            std::string s = "ARRAY[";
+            for (size_t i = 0; i < p->items.size(); ++i) {
+                if (i) s += ", ";
+                s += escapeLiteralGeneric(p->items[i]);
+            }
+            s += "]";
+            return s;
+        }
+        if (const auto *p = std::get_if<Composite>(&v)) {
+            std::string s = "ROW(";
+            for (size_t i = 0; i < p->fields.size(); ++i) {
+                if (i) s += ", ";
+                s += escapeLiteralGeneric(p->fields[i].second);
+            }
+            s += ")";
             return s;
         }
         if (const auto *p = std::get_if<std::string>(&v)) {
@@ -425,6 +469,8 @@ namespace dbmw::common {
             else if (std::holds_alternative<Timestamp>(v)) sig.push_back('t');
             else if (std::holds_alternative<Uuid>(v)) sig.push_back('g');
             else if (std::holds_alternative<Json>(v)) sig.push_back('j');
+            else if (std::holds_alternative<Array>(v)) sig.push_back('A');
+            else if (std::holds_alternative<Composite>(v)) sig.push_back('C');
             else sig.push_back('x');
         }
         return sig;

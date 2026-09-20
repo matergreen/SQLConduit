@@ -202,60 +202,85 @@ namespace dbmw::core {
             return DatabaseManager::defaultRateLimiter_;
         }
 
+        void appendValueKey(const common::Value &v, std::string &key);
+
         std::string cacheKey(const std::string &sql, const common::Params &params) {
             std::string key = sql;
             key.push_back('\x1e');
             key += std::to_string(params.size());
             for (const auto &param: params) {
                 key.push_back('\x1f');
-                std::visit([&key](const auto &value) {
-                    using T = std::decay_t<decltype(value)>;
-                    if constexpr (std::is_same_v<T, std::nullptr_t>) {
-                        key.push_back('n');
-                    } else if constexpr (std::is_same_v<T, bool>) {
-                        key.push_back('b');
-                        key.push_back(value ? '1' : '0');
-                    } else if constexpr (std::is_same_v<T, std::int64_t>) {
-                        key.push_back('i');
-                        key += std::to_string(value);
-                    } else if constexpr (std::is_same_v<T, std::uint64_t>) {
-                        key.push_back('u');
-                        key += std::to_string(value);
-                    } else if constexpr (std::is_same_v<T, double>) {
-                        std::uint64_t bits = 0;
-                        std::memcpy(&bits, &value, sizeof(bits));
-                        key.push_back('d');
-                        key += std::to_string(bits);
-                    } else if constexpr (std::is_same_v<T, common::Timestamp>) {
-                        key.push_back('t');
-                        key += std::to_string(value.time_since_epoch().count());
-                    } else if constexpr (std::is_same_v<T, std::string>) {
-                        key.push_back('s');
-                        key += std::to_string(value.size());
-                        key.push_back(':');
-                        key += value;
-                    } else if constexpr (std::is_same_v<T, common::Decimal> ||
-                                         std::is_same_v<T, common::Date> ||
-                                         std::is_same_v<T, common::Time> ||
-                                         std::is_same_v<T, common::Uuid> ||
-                                         std::is_same_v<T, common::Json>) {
-                        if constexpr (std::is_same_v<T, common::Decimal>) key.push_back('m');
-                        else if constexpr (std::is_same_v<T, common::Date>) key.push_back('a');
-                        else if constexpr (std::is_same_v<T, common::Time>) key.push_back('o');
-                        else if constexpr (std::is_same_v<T, common::Uuid>) key.push_back('g');
-                        else key.push_back('j');
-                        key += std::to_string(value.value.size());
-                        key.push_back(':');
-                        key += value.value;
-                    } else {
-                        key.push_back('x');
-                        key += std::to_string(value.size());
-                        key.push_back(':');
-                        key.append(reinterpret_cast<const char *>(value.data()), value.size());
-                    }
-                }, param);
+                appendValueKey(param, key);
             }
             return key;
+        }
+
+        void appendValueKey(const common::Value &v, std::string &key) {
+            common::visitValue([&key](const auto &value) {
+                using T = std::decay_t<decltype(value)>;
+                if constexpr (std::is_same_v<T, std::nullptr_t>) {
+                    key.push_back('n');
+                } else if constexpr (std::is_same_v<T, bool>) {
+                    key.push_back('b');
+                    key.push_back(value ? '1' : '0');
+                } else if constexpr (std::is_same_v<T, std::int64_t>) {
+                    key.push_back('i');
+                    key += std::to_string(value);
+                } else if constexpr (std::is_same_v<T, std::uint64_t>) {
+                    key.push_back('u');
+                    key += std::to_string(value);
+                } else if constexpr (std::is_same_v<T, double>) {
+                    std::uint64_t bits = 0;
+                    std::memcpy(&bits, &value, sizeof(bits));
+                    key.push_back('d');
+                    key += std::to_string(bits);
+                } else if constexpr (std::is_same_v<T, common::Timestamp>) {
+                    key.push_back('t');
+                    key += std::to_string(value.time_since_epoch().count());
+                } else if constexpr (std::is_same_v<T, std::string>) {
+                    key.push_back('s');
+                    key += std::to_string(value.size());
+                    key.push_back(':');
+                    key += value;
+                } else if constexpr (std::is_same_v<T, common::Decimal> ||
+                                     std::is_same_v<T, common::Date> ||
+                                     std::is_same_v<T, common::Time> ||
+                                     std::is_same_v<T, common::Uuid> ||
+                                     std::is_same_v<T, common::Json>) {
+                    if constexpr (std::is_same_v<T, common::Decimal>) key.push_back('m');
+                    else if constexpr (std::is_same_v<T, common::Date>) key.push_back('a');
+                    else if constexpr (std::is_same_v<T, common::Time>) key.push_back('o');
+                    else if constexpr (std::is_same_v<T, common::Uuid>) key.push_back('g');
+                    else key.push_back('j');
+                    key += std::to_string(value.value.size());
+                    key.push_back(':');
+                    key += value.value;
+                } else if constexpr (std::is_same_v<T, common::Blob>) {
+                    key.push_back('x');
+                    key += std::to_string(value.size());
+                    key.push_back(':');
+                    key.append(reinterpret_cast<const char *>(value.data()), value.size());
+                } else if constexpr (std::is_same_v<T, common::Array>) {
+                    key.push_back('A');
+                    key += std::to_string(value.items.size());
+                    for (const auto &item: value.items) {
+                        key.push_back('\x1f');
+                        appendValueKey(item, key);
+                    }
+                } else if constexpr (std::is_same_v<T, common::Composite>) {
+                    key.push_back('C');
+                    key += std::to_string(value.fields.size());
+                    for (const auto &field: value.fields) {
+                        key.push_back('\x1f');
+                        key += std::to_string(field.first.size());
+                        key.push_back(':');
+                        key += field.first;
+                        appendValueKey(field.second, key);
+                    }
+                } else {
+                    key.push_back('?');
+                }
+            }, v);
         }
     }
 

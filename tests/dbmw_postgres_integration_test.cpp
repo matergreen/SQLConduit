@@ -1,4 +1,5 @@
 #include "dbmw/async/dbmw_async.h"
+#include "dbmw/common/pg_types.h"
 #include "dbmw/dbmw.h"
 #include "dbmw/mapping.h"
 #include "dbmw/util.h"
@@ -15,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 struct PgItem {
     std::int64_t id = 0;
@@ -25,7 +27,23 @@ struct PgItem {
     dbmw::common::Timestamp createdAt;
 };
 
+struct PgTyped {
+    std::int64_t id = 0;
+    std::vector<std::string> tags;
+    dbmw::common::PgPoint pt;
+};
+
 namespace dbmw::mapping {
+    template<>
+    struct RowMapper<PgTyped> {
+        static Mapping<PgTyped> describe() {
+            return Mapping<PgTyped>()
+                    .field(&PgTyped::id, "id", FieldFlags::PrimaryKey | FieldFlags::Generated)
+                    .field(&PgTyped::tags, "tags")
+                    .field(&PgTyped::pt, "pt");
+        }
+    };
+
     template<>
     struct RowMapper<PgItem> {
         static Mapping<PgItem> describe() {
@@ -191,6 +209,14 @@ namespace {
                           "price DOUBLE PRECISION NOT NULL, active BOOLEAN NOT NULL, payload BYTEA, "
                           "amount NUMERIC(30,9), due_date DATE, local_time TIME, external_id UUID, "
                           "metadata JSONB, created_at TIMESTAMPTZ NOT NULL)", affected), "create table");
+            requireOk(dbmw::DBMW::execute("CREATE TYPE " + schema +
+                                          ".addr AS (city TEXT, zip TEXT)", affected),
+                      "create composite type");
+            requireOk(dbmw::DBMW::execute(
+                          "CREATE TABLE " + schema + ".typed ("
+                          "id BIGSERIAL PRIMARY KEY, tags TEXT[], nums INT[], addr "
+                          + schema + ".addr, pt POINT, bx BOX)", affected),
+                      "create typed table");
         }
     };
 
@@ -581,6 +607,87 @@ namespace {
         requireOk(dbmw::DBMW::execute("DROP FUNCTION IF EXISTS dbmw_it_swap", d), "drop fn swap");
     }
 
+    void testArrayCompositeGeometry(Fixture &f) {
+        const std::string typed = f.schema + ".typed";
+        std::int64_t affected = 0;
+
+        dbmw::common::Array tags;
+        tags.items.push_back(Value{std::string("red")});
+        tags.items.push_back(Value{std::string("blue")});
+
+        dbmw::common::Array nums;
+        nums.items.push_back(Value{std::int64_t(1)});
+        nums.items.push_back(Value{std::int64_t(2)});
+        nums.items.push_back(Value{std::int64_t(3)});
+
+        dbmw::common::Composite addr;
+        addr.fields.emplace_back("city", Value{std::string("Shanghai")});
+        addr.fields.emplace_back("zip", Value{std::string("200000")});
+
+        const std::string pointText = dbmw::common::pgFormatPoint(dbmw::common::PgPoint{1, 2});
+        const std::string boxText = dbmw::common::pgFormatBox(dbmw::common::PgBox{{3, 4}, {1, 2}});
+
+        requireOk(dbmw::DBMW::execute(
+                      "INSERT INTO " + typed + " (tags, nums, addr, pt, bx) VALUES (?, ?, ?, ?, ?)",
+                      Params{Value{tags}, Value{nums}, Value{addr},
+                             Value{dbmw::common::Json{pointText}},
+                             Value{dbmw::common::Json{boxText}}},
+                      affected), "insert array/composite/geometry row");
+        require(affected == 1, "typed insert affected rows mismatch");
+
+        ResultSet rows;
+        requireOk(dbmw::DBMW::query("SELECT tags, nums, addr, pt, bx FROM " + typed, rows),
+                  "read typed row");
+        require(rows.rowCount() == 1, "typed row count mismatch");
+        if (rows.rowCount() != 1) return;
+        const auto &row = rows.rows()[0];
+
+        const auto *readTags = std::get_if<dbmw::common::Array>(&row.at("tags"));
+        require(readTags != nullptr && readTags->items.size() == 2, "TEXT[] surfaced as Array");
+        if (readTags && readTags->items.size() == 2)
+            require(std::get<std::string>(readTags->items[0]) == "red", "tags[0] value mismatch");
+
+        const auto *readNums = std::get_if<dbmw::common::Array>(&row.at("nums"));
+        require(readNums != nullptr && readNums->items.size() == 3 &&
+                std::get<std::int64_t>(readNums->items[0]) == 1, "INT[] surfaced as Array of int64");
+
+        const auto *readAddr = std::get_if<dbmw::common::Composite>(&row.at("addr"));
+        require(readAddr != nullptr && readAddr->fields.size() == 2, "composite surfaced as Composite");
+        if (readAddr) {
+            const auto *city = readAddr->find("city");
+            require(city != nullptr && std::get<std::string>(*city) == "Shanghai",
+                    "composite field city mismatch");
+        }
+
+        const auto *readPoint = std::get_if<dbmw::common::Json>(&row.at("pt"));
+        require(readPoint != nullptr && readPoint->value == pointText, "POINT surfaced as Json text");
+        dbmw::common::PgPoint parsed{};
+        require(readPoint && dbmw::common::pgParsePoint(readPoint->value, parsed) &&
+                parsed.x == 1 && parsed.y == 2, "POINT text parses back to PgPoint");
+
+        ResultSet nested;
+        requireOk(dbmw::DBMW::query("SELECT ARRAY[[1,2],[3,4]] AS m", nested), "nested array query");
+        require(nested.rowCount() == 1, "nested array row missing");
+        if (nested.rowCount() == 1) {
+            const auto *outer = std::get_if<dbmw::common::Array>(&nested.rows()[0].at("m"));
+            require(outer && outer->items.size() == 2 &&
+                    std::holds_alternative<dbmw::common::Array>(outer->items[0]),
+                    "nested array parsed as Array of Array");
+        }
+
+        const auto entities = dbmw::queryAs<PgTyped>("SELECT id, tags, pt FROM " + typed, Params{});
+        requireOk(entities.status, "queryAs<PgTyped>");
+        require(entities.items.size() == 1, "queryAs<PgTyped> row count mismatch");
+        if (entities.items.size() == 1) {
+            require(entities.items[0].tags.size() == 2 && entities.items[0].tags[0] == "red",
+                    "mapping bound std::vector<std::string> from Array");
+            require(entities.items[0].pt == dbmw::common::PgPoint{1, 2},
+                    "mapping bound PgPoint from Json text");
+        }
+
+        requireOk(dbmw::DBMW::execute("DELETE FROM " + typed, affected), "clean typed table");
+    }
+
     void testAsyncUtil(Fixture &f) {
         const std::string fn =
                 "CREATE FUNCTION dbmw_it_aadd(a INT, b INT) RETURNS INT AS $$ SELECT a + b $$ LANGUAGE sql";
@@ -621,6 +728,7 @@ int main() {
         testEntityMapping(fixture);
         testScriptExecution(fixture);
         testRoutinesAndCall(fixture);
+        testArrayCompositeGeometry(fixture);
         testAsyncUtil(fixture);
         std::cout << "PostgreSQL integration test passed (" << gChecks << " checks)\n";
         return 0;

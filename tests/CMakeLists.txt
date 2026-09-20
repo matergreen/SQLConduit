@@ -48,6 +48,9 @@ target_link_libraries(dbmw_raw_session_test PRIVATE dbmw)
 add_executable(dbmw_observer_event_test dbmw_observer_event_test.cpp)
 target_link_libraries(dbmw_observer_event_test PRIVATE dbmw)
 
+add_executable(dbmw_limiter_plugin_test dbmw_limiter_plugin_test.cpp)
+target_link_libraries(dbmw_limiter_plugin_test PRIVATE dbmw)
+
 if(DBMW_BUILD_INTEGRATION_TESTS AND DBMW_ENABLE_POSTGRES)
     add_executable(dbmw_postgres_integration_test dbmw_postgres_integration_test.cpp)
     target_link_libraries(dbmw_postgres_integration_test PRIVATE dbmw)

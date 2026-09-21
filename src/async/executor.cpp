@@ -1,5 +1,5 @@
-#include "dbmw/async/executor.h"
-#include "dbmw/common/logger.h"
+#include "sqlconduit/async/executor.h"
+#include "sqlconduit/common/logger.h"
 
 #include <algorithm>
 #include <atomic>
@@ -11,30 +11,38 @@
 #include <utility>
 #include <vector>
 
-namespace dbmw::async {
-    namespace {
-        class ThreadPoolExecutor final : public IExecutor {
+namespace sqlconduit::async
+{
+    namespace
+    {
+        class ThreadPoolExecutor final : public IExecutor
+        {
         public:
             explicit ThreadPoolExecutor(const int threads, const std::size_t queueSize)
                 : threadCount_(threads > 0
                                    ? static_cast<std::size_t>(threads)
                                    : std::thread::hardware_concurrency()),
-                  queueLimit_(queueSize > 0 ? queueSize : 1) {
+                  queueLimit_(queueSize > 0 ? queueSize : 1)
+            {
                 if (threadCount_ == 0) threadCount_ = 1;
             }
 
-            ~ThreadPoolExecutor() override {
-                if (!stopping_.load(std::memory_order_acquire)) {
+            ~ThreadPoolExecutor() override
+            {
+                if (!stopping_.load(std::memory_order_acquire))
+                {
                     shutdown(std::chrono::milliseconds(0));
                 }
             }
 
-            bool tryPost(Task task) override {
+            bool tryPost(Task task) override
+            {
                 if (!task) return false;
                 std::unique_lock<std::mutex> lk(mtx_);
                 ensureStartedLocked();
                 if (stopping_.load(std::memory_order_relaxed)) return false;
-                if (queue_.size() >= queueLimit_) {
+                if (queue_.size() >= queueLimit_)
+                {
                     ++rejected_;
                     return false;
                 }
@@ -44,7 +52,8 @@ namespace dbmw::async {
                 return true;
             }
 
-            void postAfter(Task task, std::chrono::milliseconds delay) override {
+            void postAfter(Task task, std::chrono::milliseconds delay) override
+            {
                 if (!task) return;
                 std::unique_lock<std::mutex> lk(mtx_);
                 ensureStartedLocked();
@@ -57,7 +66,8 @@ namespace dbmw::async {
                 cvTimer_.notify_one();
             }
 
-            void shutdown(const std::chrono::milliseconds grace) override {
+            void shutdown(const std::chrono::milliseconds grace) override
+            {
                 std::vector<std::thread> workers;
                 std::thread timer;
                 {
@@ -70,13 +80,15 @@ namespace dbmw::async {
                     timer = std::move(timerThread_);
                 }
                 if (timer.joinable()) timer.join();
-                for (auto &w: workers) {
+                for (auto& w : workers)
+                {
                     if (w.joinable()) w.join();
                 }
-                (void) grace;
+                (void)grace;
             }
 
-            [[nodiscard]] ExecutorStats stats() const override {
+            [[nodiscard]] ExecutorStats stats() const override
+            {
                 std::lock_guard<std::mutex> lk(mtx_);
                 ExecutorStats out;
                 out.threads = threadsStarted_ ? threadCount_ : 0;
@@ -90,35 +102,43 @@ namespace dbmw::async {
             }
 
         private:
-            struct DelayedTask {
+            struct DelayedTask
+            {
                 std::chrono::steady_clock::time_point deadline;
                 std::uint64_t seq;
                 Task task;
 
-                bool operator<(const DelayedTask &other) const {
+                bool operator<(const DelayedTask& other) const
+                {
                     if (deadline != other.deadline) return deadline > other.deadline;
                     return seq > other.seq;
                 }
             };
 
-            void ensureStartedLocked() {
+            void ensureStartedLocked()
+            {
                 if (threadsStarted_) return;
                 threadsStarted_ = true;
-                for (std::size_t i = 0; i < threadCount_; ++i) {
+                for (std::size_t i = 0; i < threadCount_; ++i)
+                {
                     workers_.emplace_back([this] { workerLoop(); });
                 }
                 timerThread_ = std::thread([this] { timerLoop(); });
             }
 
-            void workerLoop() {
-                for (;;) {
+            void workerLoop()
+            {
+                for (;;)
+                {
                     Task task;
                     {
                         std::unique_lock<std::mutex> lk(mtx_);
-                        cvWork_.wait(lk, [this] {
+                        cvWork_.wait(lk, [this]
+                        {
                             return stopping_.load(std::memory_order_relaxed) || !queue_.empty();
                         });
-                        if (queue_.empty()) {
+                        if (queue_.empty())
+                        {
                             if (stopping_.load(std::memory_order_relaxed)) return;
                             continue;
                         }
@@ -135,49 +155,63 @@ namespace dbmw::async {
                 }
             }
 
-            void timerLoop() {
-                for (;;) {
+            void timerLoop()
+            {
+                for (;;)
+                {
                     Task task;
                     {
                         std::unique_lock<std::mutex> lk(mtx_);
-                        if (delayed_.empty()) {
-                            cvTimer_.wait(lk, [this] {
+                        if (delayed_.empty())
+                        {
+                            cvTimer_.wait(lk, [this]
+                            {
                                 return stopping_.load(std::memory_order_relaxed)
-                                       || !delayed_.empty();
+                                    || !delayed_.empty();
                             });
                             if (delayed_.empty()
-                                && stopping_.load(std::memory_order_relaxed)) {
+                                && stopping_.load(std::memory_order_relaxed))
+                            {
                                 return;
                             }
                             continue;
                         }
                         const auto next = delayed_.top().deadline;
-                        cvTimer_.wait_until(lk, next, [this, &next] {
+                        cvTimer_.wait_until(lk, next, [this, &next]
+                        {
                             return stopping_.load(std::memory_order_relaxed)
-                                   || delayed_.empty() || delayed_.top().deadline != next;
+                                || delayed_.empty() || delayed_.top().deadline != next;
                         });
-                        if (stopping_.load(std::memory_order_relaxed) && delayed_.empty()) {
+                        if (stopping_.load(std::memory_order_relaxed) && delayed_.empty())
+                        {
                             return;
                         }
                         if (delayed_.empty() || delayed_.top().deadline
-                            > std::chrono::steady_clock::now()) {
+                            > std::chrono::steady_clock::now())
+                        {
                             continue;
                         }
-                        task = std::move(const_cast<DelayedTask &>(delayed_.top()).task);
+                        task = std::move(const_cast<DelayedTask&>(delayed_.top()).task);
                         delayed_.pop();
                     }
                     runGuarded(task);
                 }
             }
 
-            static void runGuarded(const Task &task) {
+            static void runGuarded(const Task& task)
+            {
                 if (!task) return;
-                try {
+                try
+                {
                     task();
-                } catch (const std::exception &e) {
-                    DBMW_LOG_ERROR(std::string("async executor task threw: ") + e.what());
-                } catch (...) {
-                    DBMW_LOG_ERROR("async executor task threw unknown exception");
+                }
+                catch (const std::exception& e)
+                {
+                    SQLCONDUIT_LOG_ERROR(std::string("async executor task threw: ") + e.what());
+                }
+                catch (...)
+                {
+                    SQLCONDUIT_LOG_ERROR("async executor task threw unknown exception");
                 }
             }
 
@@ -201,7 +235,8 @@ namespace dbmw::async {
     }
 
     std::shared_ptr<IExecutor> makeThreadPoolExecutor(const int threads,
-                                                      const std::size_t queueSize) {
+                                                      const std::size_t queueSize)
+    {
         return std::make_shared<ThreadPoolExecutor>(threads, queueSize);
     }
 }

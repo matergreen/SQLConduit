@@ -1,4 +1,4 @@
-# dbmw Detailed Guide
+# SQLConduit Detailed Guide
 
 > 中文版：[guide.md](guide.md) · Quick start: [README_en.md](../README_en.md)
 
@@ -27,7 +27,7 @@ A database connection middleware written in C++17, supporting:
 - **Multiple database types**: built-in **MySQL / PostgreSQL / ODBC (SQL Server · Oracle)** drivers, plus a **driver extension interface** — adding a database only requires implementing `IDriver` and registering it.
 
 > Status: the core layer (config / pool / heartbeat / transaction / parameter binding / facade) is fully implemented
-> and validated by 146 behavioral tests in `tests/dbmw_core_test.cpp` (mock driver, no real database needed).
+> and validated by 146 behavioral tests in `tests/sqlconduit_core_test.cpp` (mock driver, no real database needed).
 >
 > Driver implementation progress:
 > - **MySQL — fully implemented** (libmysqlclient): connection timeout / charset, ping, column-type-aware result mapping,
@@ -48,14 +48,14 @@ A database connection middleware written in C++17, supporting:
 > Prepared statements and generated keys are implemented per driver; large-parameter streaming (`StreamSource`) currently uses a
 > **buffered-degradation** path uniformly across all four drivers (read fully into a `Blob` then bound as a normal parameter), so
 > calling code stays identical — true chunked MySQL `send_long_data` / ODBC `SQLPutData` is a future enhancement.
-> All four drivers are controlled by the `DBMW_ENABLE_*` compile-time switches.
+> All four drivers are controlled by the `SQLCONDUIT_ENABLE_*` compile-time switches.
 
 ---
 
 ## Directory layout
 
 ```
-include/dbmw/
+include/sqlconduit/
   common/    types.h(value/row/resultset/status/error code)  observer.h(observability events)  logger.h(lightweight logging)
   config/    datasource_config.h  config_loader.h(JSON parsing)
   core/      idatabase_connection.h(connection abstraction + streaming/batch defaults)
@@ -63,12 +63,12 @@ include/dbmw/
   driver/    idriver.h  driver_registry.h  driver_factory.h
              mysql_driver.h  postgres_driver.h  odbc_driver.h
   async/     async_types.h(results/Handle)  executor.h(IExecutor/thread pool)
-             dbmw_async.h(async facade)  task.h(coroutine layer, optional C++20)
+             sqlconduit_async.h(async facade)  task.h(coroutine layer, optional C++20)
   mapping.h  (entity mapping layer v0.5.0: header-only, row <-> business entity, read+write)
-  dbmw.h     (public facade)
+  sqlconduit.h     (public facade)
 src/         corresponding implementations
-tests/       dbmw_core_test.cpp  dbmw_async_test.cpp  dbmw_coro_test.cpp(coro=ON)
-             dbmw_mapping_test.cpp(entity mapping)
+tests/       sqlconduit_core_test.cpp  sqlconduit_async_test.cpp  sqlconduit_coro_test.cpp(coro=ON)
+             sqlconduit_mapping_test.cpp(entity mapping)
 config/      datasources.json.example  datasource.yaml.example
 third_party/nlohmann/json.hpp  (vendored single-header, works offline)
 scripts/     setup-wsl.sh
@@ -89,9 +89,9 @@ sudo apt install -y build-essential cmake
 mkdir -p build && cd build
 cmake ..                                   # core layer only
 # Enable drivers example:
-# cmake .. -DDBMW_ENABLE_MYSQL=ON -DDBMW_ENABLE_POSTGRES=ON -DDBMW_ENABLE_ODBC=ON -DDBMW_ENABLE_ORACLE=ON
+# cmake .. -DSQLCONDUIT_ENABLE_MYSQL=ON -DSQLCONDUIT_ENABLE_POSTGRES=ON -DSQLCONDUIT_ENABLE_ODBC=ON -DSQLCONDUIT_ENABLE_ORACLE=ON
 # Enable the coroutine layer (optional; only task.cpp is bumped to C++20):
-# cmake .. -DDBMW_ENABLE_ASYNC_CORO=ON
+# cmake .. -DSQLCONDUIT_ENABLE_ASYNC_CORO=ON
 cmake --build .
 
 ```
@@ -99,8 +99,8 @@ cmake --build .
 Run the tests (optional, no real database needed — uses a mock driver to validate core semantics):
 
 ```bash
-cmake .. -DDBMW_BUILD_TESTS=ON && cmake --build . && ctest --output-on-failure
-# or run directly: ./tests/dbmw_core_test
+cmake .. -DSQLCONDUIT_BUILD_TESTS=ON && cmake --build . && ctest --output-on-failure
+# or run directly: ./tests/sqlconduit_core_test
 ```
 
 You can also run `scripts/setup-wsl.sh` in one shot (installs dependencies and builds per arguments).
@@ -109,7 +109,7 @@ You can also run `scripts/setup-wsl.sh` in one shot (installs dependencies and b
 
 On macOS, dependencies are managed with [Homebrew](https://brew.sh) and the compiler is the system **clang++** (install Xcode Command Line Tools first). Homebrew packages live under `/opt/homebrew` (Apple Silicon) or `/usr/local` (Intel); CMake's default search paths may not cover them, so pass `CMAKE_PREFIX_PATH` explicitly to locate the client libraries.
 
-> **Note**: `DBMW_ENABLE_ODBC` and `DBMW_ENABLE_ORACLE` are both **OFF by default**. Install unixODBC
+> **Note**: `SQLCONDUIT_ENABLE_ODBC` and `SQLCONDUIT_ENABLE_ORACLE` are both **OFF by default**. Install unixODBC
 > (or Instant Client for Oracle) and pass the matching switch only when that driver is needed.
 
 ```bash
@@ -127,46 +127,46 @@ brew install mysql-client libpqxx libpq unixodbc
 mkdir -p build && cd build
 cmake .. \
   -DCMAKE_PREFIX_PATH="$(brew --prefix);$(brew --prefix mysql-client)" \
-  -DDBMW_ENABLE_MYSQL=ON -DDBMW_ENABLE_POSTGRES=ON -DDBMW_ENABLE_ODBC=ON
+  -DSQLCONDUIT_ENABLE_MYSQL=ON -DSQLCONDUIT_ENABLE_POSTGRES=ON -DSQLCONDUIT_ENABLE_ODBC=ON
 # Enable Oracle (directory where Instant Client was extracted):
-#   -DDBMW_ENABLE_ORACLE=ON -DOCI_INCLUDE_DIR=.../sdk/include -DOCI_LIBRARY=.../libclntsh.dylib
+#   -DSQLCONDUIT_ENABLE_ORACLE=ON -DOCI_INCLUDE_DIR=.../sdk/include -DOCI_LIBRARY=.../libclntsh.dylib
 cmake --build . -j"$(sysctl -n hw.ncpu)"
 
 ```
 
-> When enabling only some drivers, drop the corresponding `-DDBMW_ENABLE_*` and remove any uninstalled package from `CMAKE_PREFIX_PATH` (an uninstalled `brew --prefix <pkg>` errors out); the core layer needs no client library and builds with a plain `cmake ..`.
+> When enabling only some drivers, drop the corresponding `-DSQLCONDUIT_ENABLE_*` and remove any uninstalled package from `CMAKE_PREFIX_PATH` (an uninstalled `brew --prefix <pkg>` errors out); the core layer needs no client library and builds with a plain `cmake ..`.
 
 Run the tests (optional, mock driver, no real database needed):
 
 ```bash
-cmake .. -DDBMW_BUILD_TESTS=ON && cmake --build . -j"$(sysctl -n hw.ncpu)" && ctest --output-on-failure
+cmake .. -DSQLCONDUIT_BUILD_TESTS=ON && cmake --build . -j"$(sysctl -n hw.ncpu)" && ctest --output-on-failure
 ```
 
 ## Quick start
 
 ```cpp
-#include "dbmw/dbmw.h"
+#include "sqlconduit/sqlconduit.h"
 
-dbmw::DBMW::init("config/datasources.json");   // load multiple data sources + start heartbeat
+sqlconduit::SQLConduit::init("config/datasources.json");   // load multiple data sources + start heartbeat
 
-dbmw::common::ResultSet rs;
-auto st = dbmw::DBMW::query("SELECT 1", rs);    // default data source
+sqlconduit::common::ResultSet rs;
+auto st = sqlconduit::SQLConduit::query("SELECT 1", rs);    // default data source
 if (st.ok()) { /* use rs */ }
 
 int64_t n = 0;
-dbmw::DBMW::execute("UPDATE t SET c = 1 WHERE id = 2", n); // default data source
+sqlconduit::SQLConduit::execute("UPDATE t SET c = 1 WHERE id = 2", n); // default data source
 
-dbmw::DBMW::shutdown();
+sqlconduit::SQLConduit::shutdown();
 ```
 
-Target a named source: `dbmw::DBMW::query("pg", "SELECT now()", rs);`
+Target a named source: `sqlconduit::SQLConduit::query("pg", "SELECT now()", rs);`
 
 ## Transactions & sessions
 
 `query()` / `execute()` **borrow a fresh connection every time**, so a transaction spanning multiple statements must first pin the connection down:
 
 ```cpp
-auto st = dbmw::DBMW::transaction([](dbmw::core::Session& s) {
+auto st = sqlconduit::SQLConduit::transaction([](sqlconduit::core::Session& s) {
     int64_t n = 0;
     if (auto r = s.execute("UPDATE accounts SET bal = bal - 100 WHERE id = 1", n); !r.ok())
         return r;                       // return failure -> auto rollback
@@ -183,9 +183,9 @@ auto st = dbmw::DBMW::transaction([](dbmw::core::Session& s) {
 Use `?` as a placeholder in SQL and pass parameter values via `common::Params` — **they are not concatenated into the SQL string**:
 
 ```cpp
-dbmw::common::ResultSet rs;
-dbmw::common::Params p{ std::string("O'Brien"), std::int64_t(42) };
-auto st = dbmw::DBMW::query("SELECT * FROM t WHERE name = ? AND age > ?", p, rs);
+sqlconduit::common::ResultSet rs;
+sqlconduit::common::Params p{ std::string("O'Brien"), std::int64_t(42) };
+auto st = sqlconduit::SQLConduit::query("SELECT * FROM t WHERE name = ? AND age > ?", p, rs);
 ```
 
 - PostgreSQL / MySQL / Oracle / ODBC all use **native parameter binding**. Oracle additionally rewrites
@@ -211,33 +211,33 @@ Binding, full-SQL diagnostics, cache keys, and prepared signatures distinguish t
 
 Three high-frequency capabilities that all official drivers ship — but which `IDatabaseConnection` had not yet wrapped — are now unified. None of them break the existing architectural invariants (the gate runs only once at the `DataSource` entry point, the result-cache key is unchanged, and failover / write buffer are never used in transactions).
 
-> Note: the explicit `prepare` / `executePrepared` handle API exists only on `Session` (a handle binds to a concrete connection, which the stateless facade cannot hold across calls); generated keys and large-parameter streaming are available on both `DataSource` (via `DBMW::dataSource()`) and `Session`.
+> Note: the explicit `prepare` / `executePrepared` handle API exists only on `Session` (a handle binds to a concrete connection, which the stateless facade cannot hold across calls); generated keys and large-parameter streaming are available on both `DataSource` (via `SQLConduit::dataSource()`) and `Session`.
 
 ### Prepared statement reuse (connection-level handle cache)
 
-When the driver supports it and `prepared_cache.enabled` is on, `DBMW::query(sql, params)` / `execute(sql, params)` look up an already-compiled handle in the connection's cache keyed by `(normalized SQL + parameter type signature)`; if absent they `prepare` and store it, then run via `executePrepared`. **Fully transparent to the caller, with an unchanged signature** — a hot SQL is prepared only once automatically.
+When the driver supports it and `prepared_cache.enabled` is on, `SQLConduit::query(sql, params)` / `execute(sql, params)` look up an already-compiled handle in the connection's cache keyed by `(normalized SQL + parameter type signature)`; if absent they `prepare` and store it, then run via `executePrepared`. **Fully transparent to the caller, with an unchanged signature** — a hot SQL is prepared only once automatically.
 
 ```cpp
 // Transparent auto-cache: identical to before, no changes needed
-dbmw::common::ResultSet rs;
-dbmw::common::Params p{ std::int64_t(1) };
-auto st = dbmw::DBMW::query("SELECT * FROM t WHERE id = ?", p, rs);
+sqlconduit::common::ResultSet rs;
+sqlconduit::common::Params p{ std::int64_t(1) };
+auto st = sqlconduit::SQLConduit::query("SELECT * FROM t WHERE id = ?", p, rs);
 ```
 
 For fine-grained control on a stable connection, or to reuse one handle across many rows, use the explicit handle API on `Session`:
 
 ```cpp
-auto st = dbmw::DBMW::transaction([](dbmw::core::Session& s) {
-    dbmw::core::PreparedStatementHandle h;
+auto st = sqlconduit::SQLConduit::transaction([](sqlconduit::core::Session& s) {
+    sqlconduit::core::PreparedStatementHandle h;
     // typesSample is only used to infer the parameter type signature (placeholder values suffice, no real data needed)
     if (auto r = s.prepare("INSERT INTO t(a,b) VALUES(?,?)",
-                           dbmw::common::Params{std::int64_t(0), std::string("")}, h); !r.ok())
+                           sqlconduit::common::Params{std::int64_t(0), std::string("")}, h); !r.ok())
         return r;
     int64_t n = 0;
     for (const auto& row : rowsToInsert)
-        if (auto r = s.executePrepared(h, dbmw::common::Params{row.a, row.b}, n); !r.ok())
+        if (auto r = s.executePrepared(h, sqlconduit::common::Params{row.a, row.b}, n); !r.ok())
             return r;
-    return dbmw::common::Status::OK();
+    return sqlconduit::common::Status::OK();
 });
 ```
 
@@ -251,23 +251,23 @@ auto st = dbmw::DBMW::transaction([](dbmw::core::Session& s) {
 `execute` gains an overload that returns the generated columns of the inserted row:
 
 ```cpp
-auto ds = dbmw::DBMW::dataSource();          // default data source (pass a name for a specific one)
+auto ds = sqlconduit::SQLConduit::dataSource();          // default data source (pass a name for a specific one)
 int64_t n = 0;
-dbmw::common::GeneratedKeys keys;
+sqlconduit::common::GeneratedKeys keys;
 
 // MySQL: works out of the box, no SQL change needed
 ds->execute("INSERT INTO t(name) VALUES('x')", n, keys);
 int64_t id = keys.lastInsertId();            // MySQL auto-increment
 
-// PostgreSQL / Oracle / ODBC: returned directly via the SQL's own RETURNING / OUTPUT — dbmw does not append it
+// PostgreSQL / Oracle / ODBC: returned directly via the SQL's own RETURNING / OUTPUT — SQLConduit does not append it
 ds->execute("INSERT INTO t(name) VALUES('x') RETURNING id", n, keys);
 if (!keys.empty()) id = keys.rows[0].asInt64(0);  // take the first column of the RETURNING row
 ```
 
-Unified model: `GeneratedKeys` is always "a result set of the generated columns" — MySQL synthesizes one row / one column via `mysql_insert_id`, while PG/Oracle/ODBC emit directly via `RETURNING`/`OUTPUT`. **dbmw never appends `RETURNING` to the SQL *you* pass in** (that would change semantics and couple to a dialect), so for PG/ODBC to get the auto-increment id, write `RETURNING id` in your SQL yourself; on Oracle it must be written as `RETURNING id INTO :2` (`:1` is already taken by `VALUES(?)`) and the driver parses and reads the `RETURNING ... INTO` output binds. When there is no `RETURNING` and it is not a MySQL auto-increment, `keys.empty()` is true (not an error). Call `keys.clear()` before reusing the same `GeneratedKeys` object, so a retried statement doesn't mistake stale old rows for this run's generated keys.
+Unified model: `GeneratedKeys` is always "a result set of the generated columns" — MySQL synthesizes one row / one column via `mysql_insert_id`, while PG/Oracle/ODBC emit directly via `RETURNING`/`OUTPUT`. **sqlconduit never appends `RETURNING` to the SQL *you* pass in** (that would change semantics and couple to a dialect), so for PG/ODBC to get the auto-increment id, write `RETURNING id` in your SQL yourself; on Oracle it must be written as `RETURNING id INTO :2` (`:1` is already taken by `VALUES(?)`) and the driver parses and reads the `RETURNING ... INTO` output binds. When there is no `RETURNING` and it is not a MySQL auto-increment, `keys.empty()` is true (not an error). Call `keys.clear()` before reusing the same `GeneratedKeys` object, so a retried statement doesn't mistake stale old rows for this run's generated keys.
 
-> That constraint applies only to **caller-supplied SQL**. When dbmw generates the SQL itself
-> (the entity-mapping helpers `insertAs` / `insertBatchAs`), dbmw does complete it per dialect —
+> That constraint applies only to **caller-supplied SQL**. When sqlconduit generates the SQL itself
+> (the entity-mapping helpers `insertAs` / `insertBatchAs`), SQLConduit does complete it per dialect —
 > see the "Write" section. The dividing line: whoever writes the SQL owns it.
 
 ### Large-parameter streaming (StreamSource)
@@ -275,9 +275,9 @@ Unified model: `GeneratedKeys` is always "a result set of the generated columns"
 A huge BLOB/CLOB need not be materialized into memory all at once: wrap a synchronous read callback or a `std::istream` in a `StreamSource`, and the driver pulls bytes in chunks during execution. This is **input-direction** streaming — the opposite of result-set streaming (`queryEach` / cursor); don't confuse the two.
 
 ```cpp
-auto ds = dbmw::DBMW::dataSource();
+auto ds = sqlconduit::SQLConduit::dataSource();
 std::ifstream f("big.bin", std::ios::binary);
-dbmw::common::StreamParams sp{ std::int64_t(1), dbmw::common::StreamSource(f) };
+sqlconduit::common::StreamParams sp{ std::int64_t(1), sqlconduit::common::StreamSource(f) };
 int64_t n = 0;
 ds->execute("INSERT INTO t(id, blob) VALUES(?, ?)", sp, n);   // or query / executeBatch
 ```
@@ -307,15 +307,15 @@ ds->execute("INSERT INTO t(id, blob) VALUES(?, ?)", sp, n);   // or query / exec
 A data source's `query_timeout_ms` maps to PostgreSQL `statement_timeout`, ODBC `SQL_ATTR_QUERY_TIMEOUT`, and the MySQL client read/write timeout; on Oracle it maps to `OCI_ATTR_CALL_TIME` (a server-side call timeout). Independently, `cancel()` issues `OCIBreak` on the in-flight statement. A transaction can additionally set isolation level, read-only, and an overall deadline:
 
 ```cpp
-dbmw::common::TransactionOptions options;
-options.isolation = dbmw::common::IsolationLevel::Serializable;
+sqlconduit::common::TransactionOptions options;
+options.isolation = sqlconduit::common::IsolationLevel::Serializable;
 options.readOnly = false;
 options.timeout = std::chrono::seconds(5);
 
-auto st = dbmw::DBMW::transaction(options, [](dbmw::core::Session& s) {
+auto st = sqlconduit::SQLConduit::transaction(options, [](sqlconduit::core::Session& s) {
     s.savepoint("before_optional_step");
     // ...
-    return dbmw::common::Status::OK();
+    return sqlconduit::common::Status::OK();
 });
 ```
 
@@ -330,18 +330,18 @@ The cancellation path itself is exception-safe: the watchdog thread swallows any
 
 ```cpp
 std::uint64_t rows = 0;
-dbmw::DBMW::queryEach("SELECT * FROM large_table", {},
-    [](const dbmw::common::Row& row) {
+sqlconduit::SQLConduit::queryEach("SELECT * FROM large_table", {},
+    [](const sqlconduit::common::Row& row) {
         // returning false stops early
         return consume(row);
     }, rows);
 
-dbmw::common::ParamBatch batch{
+sqlconduit::common::ParamBatch batch{
     {std::int64_t(1), std::string("a")},
     {std::int64_t(2), std::string("b")}
 };
-dbmw::common::BatchResult result;
-dbmw::DBMW::executeBatch("INSERT INTO t(id, name) VALUES(?, ?)", batch, result);
+sqlconduit::common::BatchResult result;
+sqlconduit::SQLConduit::executeBatch("INSERT INTO t(id, name) VALUES(?, ?)", batch, result);
 ```
 
 **Batch execution is atomic**, with consistent behavior across all four drivers: when the caller has not opened a transaction, the middleware wraps it in one automatically; if any row in the middle fails, the whole batch rolls back and `BatchResult` carries no partial affected-row counts (avoiding a caller mistakenly assuming the earlier rows committed). When the caller is already in a transaction, the outer transaction is reused and the rollback scope is up to the caller.
@@ -354,16 +354,16 @@ dbmw::DBMW::executeBatch("INSERT INTO t(id, name) VALUES(?, ?)", batch, result);
 `query()` borrows a connection, materializes the whole result, and returns it; `queryEach()` streams but still consumes each row in one shot inside the callback. A **cursor** changes the connection lifecycle from "borrow → use → return" into "borrow → pin → fetch N times → close → return": one physical connection (and its transaction on PostgreSQL) is held by the cursor until `close()` or destruction. Suited to "large result set, controlled batch-by-batch consumption, without materializing it all into memory at once."
 
 ```cpp
-dbmw::core::CursorOptions opts;
+sqlconduit::core::CursorOptions opts;
 opts.batch_size = 1000;          // rows prefetched per fetch (or fall back to config default_batch_size)
 opts.auto_transaction = true;    // when no transaction is open, the cursor opens its own to back the statement
 
-std::unique_ptr<dbmw::core::Cursor> cur;
-auto st = dbmw::DBMW::openCursor("SELECT * FROM large_table WHERE k > ?",
-                                 dbmw::common::Params{std::int64_t(0)}, opts, cur);
+std::unique_ptr<sqlconduit::core::Cursor> cur;
+auto st = sqlconduit::SQLConduit::openCursor("SELECT * FROM large_table WHERE k > ?",
+                                 sqlconduit::common::Params{std::int64_t(0)}, opts, cur);
 if (!st.ok()) { /* handle error */ }
 
-dbmw::common::ResultSet batch;
+sqlconduit::common::ResultSet batch;
 while (cur->fetch(0, batch).ok() && cur->hasNext()) {  // fetch(0) = take batch_size rows
     consume(batch);
     batch.clear();
@@ -371,7 +371,7 @@ while (cur->fetch(0, batch).ok() && cur->hasNext()) {  // fetch(0) = take batch_
 cur->close();   // explicitly return the connection; if skipped, it is closed + returned on destruction
 ```
 
-The facade `DBMW::openCursor` has two overloads: default data source, or a named one. Within a transaction/session you can also use `Session::openCursor(...)` (the connection is not additionally occupied and returns with the session). `fetch(n, out)` **appends** at most n rows to `out` (it does not clear, so multiple fetches accumulate the same result set); `n == 0` lets the driver decide by batch_size. `fetchRow` fetches a single row, `close` closes explicitly (idempotent), and `isOpen` / `hasNext` / `rowsFetched` expose state.
+The facade `SQLConduit::openCursor` has two overloads: default data source, or a named one. Within a transaction/session you can also use `Session::openCursor(...)` (the connection is not additionally occupied and returns with the session). `fetch(n, out)` **appends** at most n rows to `out` (it does not clear, so multiple fetches accumulate the same result set); `n == 0` lets the driver decide by batch_size. `fetchRow` fetches a single row, `close` closes explicitly (idempotent), and `isOpen` / `hasNext` / `rowsFetched` expose state.
 
 ### Two binding modes
 
@@ -434,7 +434,7 @@ A cursor passes through `preGate` (audit + rate limit) but **does not enter the 
 }
 ```
 
-Call `DBMW::reload(path, grace)` to atomically load a new config and wait for in-flight operations on the old pool to return.
+Call `SQLConduit::reload(path, grace)` to atomically load a new config and wait for in-flight operations on the old pool to return.
 
 ## Rate limiting, auditing, caching & primary failover
 
@@ -444,7 +444,7 @@ These four capabilities are all **off by default, toggled as a whole**, and pass
 
 Group config `failover.primaries` gives an ordered list of writable candidates (primary auto-pinned to top). The write path picks an **un-open-circuited** candidate in order; when none is available:
 
-dbmw does not perform leader election, leases, or fencing, so automatic write failover is rejected by default. Set `acknowledge_external_fencing=true` only when an external cluster mechanism already guarantees a single writable leader. This flag is an explicit risk acknowledgement; it does not implement fencing.
+SQLConduit does not perform leader election, leases, or fencing, so automatic write failover is rejected by default. Set `acknowledge_external_fencing=true` only when an external cluster mechanism already guarantees a single writable leader. This flag is an explicit risk acknowledgement; it does not implement fencing.
 
 - If `failover.write_buffer` is configured, the write enters a bounded in-memory queue and is replayed by a background flush thread after the primary recovers, immediately returning `Buffered` (**soft degradation**: accepted is not committed; a crash can lose writes and replay can duplicate them). Enabling it requires `acknowledge_data_loss_and_duplicates=true`;
 - Otherwise it returns `CircuitOpen` (marked retryable, to be handled by the upper layer's retry/circuit-breaker).
@@ -502,10 +502,10 @@ Redis-backed centralized limiting, per-tenant quota, constant allow, etc. — ju
 this interface and mount it on the middleware; no call site changes are required:
 
 ```cpp
-#include "dbmw/dbmw.h"
-#include "dbmw/core/rate_limiter.h"
+#include "sqlconduit/sqlconduit.h"
+#include "sqlconduit/core/rate_limiter.h"
 
-class SlidingWindowLimiter : public dbmw::core::IRateLimiter {
+class SlidingWindowLimiter : public sqlconduit::core::IRateLimiter {
 public:
     bool acquire(std::uint64_t fingerprint) override {
         // return true=allow; false=throttled (middleware turns it into RateLimited, retryable=false)
@@ -517,30 +517,30 @@ public:
 
 Two ways to mount it:
 
-- **Global default**: `DBMW::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());`
+- **Global default**: `SQLConduit::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());`
   Any data source that does not explicitly specify a limiter falls back to this default when
   `rate_limit` is not enabled in config.
-  It may be called before or after `DBMW::init()`; a later call immediately updates every existing
+  It may be called before or after `SQLConduit::init()`; a later call immediately updates every existing
   source and group that inherits the default.
 - **Per-source override**: pass a `shared_ptr<IRateLimiter>` to `DataSourceOptions::rate_limiter`
   (or `GroupOptions::rate_limiter`); that source uses your implementation, **taking priority over
   the global default**.
 
 ```cpp
-dbmw::DBMW::init("datasources.json");
+sqlconduit::SQLConduit::init("datasources.json");
 
 // global default: every source without an explicit limiter uses the sliding window
-dbmw::DBMW::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());
+sqlconduit::SQLConduit::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());
 
 // a specific source gets a high-throughput allow implementation (tests / allowlist)
-dbmw::core::DataSourceOptions opts;
-opts.rate_limiter = std::make_shared<dbmw::core::RateLimiter>(100000.0, 0.0, 100000, "off");
+sqlconduit::core::DataSourceOptions opts;
+opts.rate_limiter = std::make_shared<sqlconduit::core::RateLimiter>(100000.0, 0.0, 100000, "off");
 mgr.addDataSource(cfg, opts);
 ```
 
 Priority (high → low): `opts.rate_limiter` (per source) > config `rate_limit` (a `RateLimiter`
 created when either `global_qps` or `per_fingerprint_qps` is enabled) >
-`DBMW::setDefaultRateLimiter` (global default).
+`SQLConduit::setDefaultRateLimiter` (global default).
 The call sites `preGate` / `gateSession` only call `acquire`, so swapping the algorithm is
 completely transparent and non-intrusive to upper layers.
 
@@ -587,22 +587,22 @@ Auditing runs at the `DataSource` entry point for single `query`/`execute` calls
 Mounting takes one line and is globally effective — no call site changes:
 
 ```cpp
-class TenantQuotaInterceptor : public dbmw::core::ISqlInterceptor {
+class TenantQuotaInterceptor : public sqlconduit::core::ISqlInterceptor {
 public:
     void onRoute(const std::string &, const std::string &, common::OperationType,
                  common::SqlContext &ctx) override {
         // e.g. stamp a canary flag based on ctx.tenantId
     }
-    common::Status beforeExecution(const dbmw::core::ExecutionView &view) override {
+    common::Status beforeExecution(const sqlconduit::core::ExecutionView &view) override {
         if (overQuota(view.ctx.tenantId))
             return common::Status::error(common::ErrorCode::SqlBlocked, "tenant over quota");
         return common::Status::OK();
     }
-    void afterExecution(const dbmw::core::ExecutionView &view) override { /* metrics */ }
-    void onCompletion(const dbmw::core::ExecutionView &view) override { /* cleanup */ }
+    void afterExecution(const sqlconduit::core::ExecutionView &view) override { /* metrics */ }
+    void onCompletion(const sqlconduit::core::ExecutionView &view) override { /* cleanup */ }
 };
 
-dbmw::DBMW::addInterceptor(std::make_shared<TenantQuotaInterceptor>());
+sqlconduit::SQLConduit::addInterceptor(std::make_shared<TenantQuotaInterceptor>());
 ```
 
 - Global registry: `core::InterceptorRegistry::add / clear / snapshot / enabled / setEnabled`.
@@ -691,14 +691,14 @@ In `observer.cpp`, slow-SQL aggregation: when a statement is judged slow it is a
 
 ## Dynamic data sources (v0.4.0 M4: add/remove at runtime)
 
-After `DBMW::init` starts, you can still add and remove data sources and groups at runtime — the config is no longer a one-shot snapshot:
+After `SQLConduit::init` starts, you can still add and remove data sources and groups at runtime — the config is no longer a one-shot snapshot:
 
 | Method | Purpose |
 | --- | --- |
-| `DBMW::addDataSource(cfg, opts)` | Register a new leaf data source (build pool + start heartbeat + insert DataSource) |
-| `DBMW::removeDataSource(name, grace=5s)` | Unregister a leaf data source; refused if referenced by a group |
-| `DBMW::addGroup(cfg, opts)` | Register a read-write group (primary + replicas + failover + optional write buffer) |
-| `DBMW::removeGroup(name, grace=5s)` | Unregister a group; stops its write-buffer thread |
+| `SQLConduit::addDataSource(cfg, opts)` | Register a new leaf data source (build pool + start heartbeat + insert DataSource) |
+| `SQLConduit::removeDataSource(name, grace=5s)` | Unregister a leaf data source; refused if referenced by a group |
+| `SQLConduit::addGroup(cfg, opts)` | Register a read-write group (primary + replicas + failover + optional write buffer) |
+| `SQLConduit::removeGroup(name, grace=5s)` | Unregister a group; stops its write-buffer thread |
 
 `opts` uses `core::DataSourceOptions` / `core::GroupOptions`, which control `retry` / `circuit_breaker` / `rate_limiter` / `cursor` / `attach_heartbeat` and `acknowledge_external_fencing` / `acknowledge_data_loss_and_duplicates`. The latter two ack flags mirror `init()` semantics — `addGroup` never silently enables automatic write failover or write buffering; the caller must explicitly opt in.
 
@@ -711,20 +711,20 @@ After `DBMW::init` starts, you can still add and remove data sources and groups 
 - **Grace period**: the grace parameter of `removeDataSource` / `removeGroup` follows the same semantics as `shutdown` — wait for in-flight connections to return, force-close on timeout. `grace=0` returns immediately (the pool is marked closed) — useful for "I want to take it down but don't want to wait".
 
 ```cpp
-dbmw::DBMW::init("datasources.json");                  // startup snapshot
+sqlconduit::SQLConduit::init("datasources.json");                  // startup snapshot
 
-dbmw::core::DataSourceOptions leafOpts;
-dbmw::DBMW::addDataSource(cfg, leafOpts);              // add a pool at runtime
+sqlconduit::core::DataSourceOptions leafOpts;
+sqlconduit::SQLConduit::addDataSource(cfg, leafOpts);              // add a pool at runtime
 
-dbmw::core::GroupOptions grpOpts;
+sqlconduit::core::GroupOptions grpOpts;
 grpOpts.acknowledge_external_fencing = true;          // mandatory: explicit opt-in for write failover
-dbmw::DBMW::addGroup(grp, grpOpts);                    // wire a read-write group at runtime
+sqlconduit::SQLConduit::addGroup(grp, grpOpts);                    // wire a read-write group at runtime
 
-dbmw::DBMW::removeGroup("legacy_grp");                 // remove the group first
-dbmw::DBMW::removeDataSource("legacy_leaf");           // then remove the leaf
+sqlconduit::SQLConduit::removeGroup("legacy_grp");                 // remove the group first
+sqlconduit::SQLConduit::removeDataSource("legacy_leaf");           // then remove the leaf
 ```
 
-Concurrency safety is provided by `mtx_` — multiple threads calling `addDataSource` with different names do not interfere; concurrent same-name calls let the later caller fail gracefully with `ConfigError` — **neither caller** believes it succeeded. See `tests/dbmw_dynamic_test.cpp` for the full concurrent-behavior matrix (79 assertions across 16 scenarios covering add/remove/group/ack/concurrency/grace).
+Concurrency safety is provided by `mtx_` — multiple threads calling `addDataSource` with different names do not interfere; concurrent same-name calls let the later caller fail gracefully with `ConfigError` — **neither caller** believes it succeeded. See `tests/sqlconduit_dynamic_test.cpp` for the full concurrent-behavior matrix (79 assertions across 16 scenarios covering add/remove/group/ack/concurrency/grace).
 
 ## Idempotency declaration (v0.4.0 M5: let the caller decide whether writes may retry)
 
@@ -742,12 +742,12 @@ Using an **enum instead of `bool`** is deliberate: `bool idempotent=false` canno
 // Wrap one request entry point in a ContextScope; the whole call chain
 // (sync / async / transaction) inherits it:
 {
-    dbmw::common::ContextScope scope({.idempotency = dbmw::common::Idempotency::Idempotent});
+    sqlconduit::common::ContextScope scope({.idempotency = sqlconduit::common::Idempotency::Idempotent});
     ds->execute("UPDATE accounts SET status='paid' WHERE id=?", affected); // retries on failure
 }
 
 {
-    dbmw::common::ContextScope scope({.idempotency = dbmw::common::Idempotency::NonIdempotent});
+    sqlconduit::common::ContextScope scope({.idempotency = sqlconduit::common::Idempotency::NonIdempotent});
     ds->execute("UPDATE accounts SET balance=balance-100 WHERE id=?", affected); // never retries
 }
 ```
@@ -758,7 +758,7 @@ Using an **enum instead of `bool`** is deliberate: `bool idempotent=false` canno
 - **The no-retry-inside-transactions invariant (I4)** — transactional statements never enter the retry loop;
 - **Non-retryable errors** (business / constraint violations) still don't retry — the declaration only overrides the "connection-class retryable error" tier.
 
-The async path is identical in source: `async::execute`'s `maxAttempts` reads the stack-top `ContextScope` snapshot taken at submit time (`entryCtx.idempotency`), using the same priority table as the sync `resolveWriteAttempts`. See `tests/dbmw_idempotency_test.cpp` for the behavior matrix (19 assertions across 9 scenarios covering three states × sync/async × reads-unaffected).
+The async path is identical in source: `async::execute`'s `maxAttempts` reads the stack-top `ContextScope` snapshot taken at submit time (`entryCtx.idempotency`), using the same priority table as the sync `resolveWriteAttempts`. See `tests/sqlconduit_idempotency_test.cpp` for the behavior matrix (19 assertions across 9 scenarios covering three states × sync/async × reads-unaffected).
 
 ## Shadow routing (v0.4.0 M6: cut all traffic for a group to a shadow data source)
 
@@ -785,10 +785,10 @@ Replay production traffic for full-stack load testing: redirect reads and writes
 **Triggering**: via SPI (most common — switch by tenant / canary percentage):
 
 ```cpp
-dbmw::DBMW::addInterceptor({
+sqlconduit::SQLConduit::addInterceptor({
     .onRoute = [](const std::string&, const std::string&,
-                  dbmw::common::OperationType,
-                  dbmw::common::SqlContext &ctx) {
+                  sqlconduit::common::OperationType,
+                  sqlconduit::common::SqlContext &ctx) {
         // e.g. cut 1% of traffic to shadow
         if (shouldReplayToShadow(ctx.tenantId)) ctx.shadow = true;
     }
@@ -798,7 +798,7 @@ dbmw::DBMW::addInterceptor({
 Or directly via thread-local `ContextScope` (applies to every call in the same thread/coroutine):
 
 ```cpp
-dbmw::common::ContextScope scope({.shadow = true});
+sqlconduit::common::ContextScope scope({.shadow = true});
 ds->execute("INSERT INTO orders ...", affected);   // lands in shadow_db
 ds->query("SELECT * FROM products ...", rs);        // lands in shadow_db (primary/replica per routing)
 ```
@@ -820,7 +820,7 @@ ds->query("SELECT * FROM products ...", rs);        // lands in shadow_db (prima
 - The shadow source **must not** be a replica of the group;
 - The shadow source **must not** collide with any group name.
 
-Validation runs in `resolveShadows` (after `init()` / `addGroup()`, before externally visible). See `tests/dbmw_shadow_test.cpp` for the full behavior matrix (39 assertions across 10 scenarios covering sync / async / cache / write-buffer / validation branches).
+Validation runs in `resolveShadows` (after `init()` / `addGroup()`, before externally visible). See `tests/sqlconduit_shadow_test.cpp` for the full behavior matrix (39 assertions across 10 scenarios covering sync / async / cache / write-buffer / validation branches).
 
 ## Read-after-write consistency, enhanced (v0.4.0 M8: session-pinned reads)
 
@@ -858,32 +858,32 @@ Validation runs in `resolveShadows` (after `init()` / `addGroup()`, before exter
 Replicas + `read_after_write_ms=0` ⇒ **stale-read risk**. `ConfigLoader` emits a stderr WARN at load time but does not block:
 
 ```
-dbmw WARN: datasource group 'g' has 1 replica(s) but read_after_write_ms=0;
+sqlconduit WARN: datasource group 'g' has 1 replica(s) but read_after_write_ms=0;
 writes-then-reads may be served by replicas and return stale data.
 Set read_after_write_ms > 0 (e.g. 1000) to pin post-write reads to the primary.
 ```
 
-Full behavior matrix in `tests/dbmw_raw_session_test.cpp` (26 assertions / 6 scenarios: sync / async / frame isolation / timestamp fallback / shadow / idempotency / ConfigLoader WARN).
+Full behavior matrix in `tests/sqlconduit_raw_session_test.cpp` (26 assertions / 6 scenarios: sync / async / frame isolation / timestamp fallback / shadow / idempotency / ConfigLoader WARN).
 
 ## Result redaction (v0.4.0 M7: mask result sets per role / tenant)
 
-Compliance scenarios (phone, ID, bank card) require masking result-set fields per role / tenant before the data leaves dbmw. **dbmw ships no masking rules** — that would be making compliance decisions on behalf of the caller. The framework only provides the SPI hook and the I10 guard (redacted results must never enter the cache).
+Compliance scenarios (phone, ID, bank card) require masking result-set fields per role / tenant before the data leaves sqlconduit. **sqlconduit ships no masking rules** — that would be making compliance decisions on behalf of the caller. The framework only provides the SPI hook and the I10 guard (redacted results must never enter the cache).
 
 **Where to mutate**: SPI `afterExecution` (M1 §3.3) receives `view.result` as a mutable `common::ResultSet*`. After your interceptor finishes its redaction, set `view.result->transformed = true` — this is the only signal the framework uses to detect "this row has been redacted".
 
 **Example** (business implements their own `ISqlInterceptor`):
 
 ```cpp
-class MaskingInterceptor : public dbmw::core::ISqlInterceptor {
+class MaskingInterceptor : public sqlconduit::core::ISqlInterceptor {
 public:
     void onRoute(const std::string&, const std::string&,
-                 dbmw::common::OperationType, dbmw::common::SqlContext&) override {}
+                 sqlconduit::common::OperationType, sqlconduit::common::SqlContext&) override {}
 
-    dbmw::common::Status beforeExecution(const dbmw::core::ExecutionView&) override {
-        return dbmw::common::Status::OK();
+    sqlconduit::common::Status beforeExecution(const sqlconduit::core::ExecutionView&) override {
+        return sqlconduit::common::Status::OK();
     }
 
-    void afterExecution(const dbmw::core::ExecutionView &view) override {
+    void afterExecution(const sqlconduit::core::ExecutionView &view) override {
         if (!view.result) return;                  // not a query (write / batch / cursor) — skip
         // Your masking logic: detect sensitive fields by column name / index / value pattern
         for (auto &row : view.result->mutableRows()) {
@@ -894,17 +894,17 @@ public:
         view.result->transformed = true;
     }
 
-    void onRow(const dbmw::core::ExecutionView&, dbmw::common::Row &row) override {
+    void onRow(const sqlconduit::core::ExecutionView&, sqlconduit::common::Row &row) override {
         // queryEach/cursors do not materialize a full ResultSet; mask before delivery.
         if (row.has("phone")) row.set("phone", "***");
     }
 
-    void onCompletion(const dbmw::core::ExecutionView&) override {}
+    void onCompletion(const sqlconduit::core::ExecutionView&) override {}
 };
 
-// Register before DBMW::init:
-dbmw::DBMW::addInterceptor(std::make_shared<MaskingInterceptor>());
-dbmw::core::InterceptorRegistry::setEnabled(true);
+// Register before SQLConduit::init:
+sqlconduit::SQLConduit::addInterceptor(std::make_shared<MaskingInterceptor>());
+sqlconduit::core::InterceptorRegistry::setEnabled(true);
 ```
 
 **The I10 guard's hard constraint**: synchronous queries cache the driver's raw result before applying `afterExecution` to the returned copy; asynchronous cache insertion rejects transformed results:
@@ -919,9 +919,9 @@ dbmw::core::InterceptorRegistry::setEnabled(true);
 
 **The cache-hit path still has to run `afterExecution`** (§9.4 risk row): the cache stores raw data (the guard ensures no `transformed=true` entry ever lands there), so a cache hit must still re-run `afterExecution` to produce the *current* user's view. Sync paths are wrapped by `runWithInterceptors`; async submit constructs a view manually and calls `detail::runAfterExecution(view)` once.
 
-Use `mutableRows()` to rewrite regular query results. Implement `onRow` for `queryEach` and cursors; dbmw does not materialize the entire stream just to apply redaction.
+Use `mutableRows()` to rewrite regular query results. Implement `onRow` for `queryEach` and cursors; SQLConduit does not materialize the entire stream just to apply redaction.
 
-Preserved invariant: **data in interceptor → data out interceptor → cache guard** all hinges solely on the `transformed` flag. See `tests/dbmw_redaction_test.cpp` for the full behavior matrix (38 assertions across 5 scenarios covering sync / async / cache hit / I10 guard / redaction flag).
+Preserved invariant: **data in interceptor → data out interceptor → cache guard** all hinges solely on the `transformed` flag. See `tests/sqlconduit_redaction_test.cpp` for the full behavior matrix (38 assertions across 5 scenarios covering sync / async / cache hit / I10 guard / redaction flag).
 
 ## Async API (v0.2.0: callbacks / futures / coroutines)
 
@@ -931,16 +931,16 @@ The three calling styles share one execution pipeline — governance gates (audi
 { "async": { "enabled": true, "threads": 4, "queue_size": 4096 } }
 ```
 
-`threads` is the worker count (0 = hardware_concurrency); one extra timer thread drives retry backoff and timeout checks. When the queue is full, new operations fail fast with `Overloaded` (explicit backpressure, not implicit queueing). `DBMW::shutdown` rejects new operations, waits for in-flight ones to finish, then stops the executors and the pools.
+`threads` is the worker count (0 = hardware_concurrency); one extra timer thread drives retry backoff and timeout checks. When the queue is full, new operations fail fast with `Overloaded` (explicit backpressure, not implicit queueing). `SQLConduit::shutdown` rejects new operations, waits for in-flight ones to finish, then stops the executors and the pools.
 
 **Callback style (hot path)** — completion callbacks are delivered by the completion executor, never on the caller's stack; the returned `Handle` supports cancellation:
 
 ```cpp
-dbmw::async::Options opts;
+sqlconduit::async::Options opts;
 opts.timeout = std::chrono::milliseconds(2000);   // overall statement deadline
-auto h = dbmw::async::query("SELECT id FROM users WHERE age > ?",
-                            {dbmw::common::Value(std::int64_t(18))},
-    [](dbmw::async::QueryResult &&r) {            // runs on the completion executor; keep it short
+auto h = sqlconduit::async::query("SELECT id FROM users WHERE age > ?",
+                            {sqlconduit::common::Value(std::int64_t(18))},
+    [](sqlconduit::async::QueryResult &&r) {            // runs on the completion executor; keep it short
         if (r.status.ok()) useRows(std::move(r.rows));
     }, opts);
 // To give up mid-flight: h.cancel() — Queued never touches the pool;
@@ -950,73 +950,73 @@ auto h = dbmw::async::query("SELECT id FROM users WHERE age > ?",
 **Future style (convenience)** — no cancellation (use the callback style with a `Handle` if you need it); dropping a future without consuming it is legal:
 
 ```cpp
-auto fut = dbmw::async::execute("UPDATE users SET active = 1 WHERE id = ?",
-                                {dbmw::common::Value(std::int64_t(7))});
+auto fut = sqlconduit::async::execute("UPDATE users SET active = 1 WHERE id = ?",
+                                {sqlconduit::common::Value(std::int64_t(7))});
 auto r = fut.get();   // r.status / r.affected
 ```
 
 **Coroutine style (optional, C++20)** — a lazy `Task` that starts only on `co_await`; destroying an un-awaited task is a safe no-op. Governance / retry / cancellation / timeout are identical to the callback style; coroutines always resume on the completion executor thread:
 
 ```bash
-cmake .. -DDBMW_ENABLE_ASYNC_CORO=ON   # only task.cpp is bumped to C++20; the rest stays C++17
+cmake .. -DSQLCONDUIT_ENABLE_ASYNC_CORO=ON   # only task.cpp is bumped to C++20; the rest stays C++17
 ```
 
 ```cpp
-#include "dbmw/async/task.h"   // the including TU must be compiled as C++20
+#include "sqlconduit/async/task.h"   // the including TU must be compiled as C++20
 
-dbmw::async::Task<void> demo() {
+sqlconduit::async::Task<void> demo() {
     // Hoist parameters to a named local: braced temporaries inside co_await
     // arguments trigger a GCC 13 ICE (see notes below).
-    dbmw::common::Params params;
-    params.push_back(dbmw::common::Value(std::int64_t(18)));
+    sqlconduit::common::Params params;
+    params.push_back(sqlconduit::common::Value(std::int64_t(18)));
 
-    auto q = co_await dbmw::async::queryAsync("SELECT id FROM users WHERE age > ?", params);
+    auto q = co_await sqlconduit::async::queryAsync("SELECT id FROM users WHERE age > ?", params);
     if (q.status.ok()) useRows(std::move(q.rows));
 
-    auto tx = co_await dbmw::async::transactionAsync({}, [](dbmw::core::Session &s) {
+    auto tx = co_await sqlconduit::async::transactionAsync({}, [](sqlconduit::core::Session &s) {
         std::int64_t n = 0;
         return s.execute("UPDATE users SET active = 1", n);  // non-OK rolls back
     });
 }
 
-dbmw::async::run(demo());   // controlled fire-and-forget: the frame destroys itself on completion
+sqlconduit::async::run(demo());   // controlled fire-and-forget: the frame destroys itself on completion
 ```
 
-**Custom executor (asio integration)**: implement `IExecutor::post(std::function<void()>)`, then inject the adapter through `dbmw::async::setExecutor(...)`; completion callbacks and coroutine resumes then run on your event-loop threads.
+**Custom executor (asio integration)**: implement `IExecutor::post(std::function<void()>)`, then inject the adapter through `sqlconduit::async::setExecutor(...)`; completion callbacks and coroutine resumes then run on your event-loop threads.
 
 Constraints and caveats:
 
-- Callbacks and transaction lambdas run on workers: keep them short and thread-safe. **Never call `dbmw::async::*` inside a transaction lambda** — nested async can deadlock on a small pool; use the synchronous `Session` methods directly.
+- Callbacks and transaction lambdas run on workers: keep them short and thread-safe. **Never call `sqlconduit::async::*` inside a transaction lambda** — nested async can deadlock on a small pool; use the synchronous `Session` methods directly.
 - An uncaught exception inside a top-level coroutine started by `run()` terminates the process (never silently swallowed); handle exceptions inside the coroutine or propagate them via `co_await` to an enclosing `try/catch`.
 - Do not write coroutine bodies as lambdas capturing locals — the closure temporary dies before the async operation completes and the captures dangle; use named functions returning `Task`.
 - Known GCC 13 defect: non-trivial braced temporaries directly inside `co_await` arguments (e.g. `{Value(1)}`) trigger an internal compiler error (PR109227 family); hoist parameters into a named local first. GCC 14+ / Clang / MSVC are unaffected.
 
 ## Entity mapping (v0.5.0: row <-> business entity, read and write)
 
-`include/dbmw/mapping.h` is a **header-only** adapter layer: it moves `ResultSet` rows into/out of business structs following a **field declaration the business writes by hand**. This is not an ORM — SQL stays in business code, there is no dirty tracking or lazy loading, and `dbmw.h` plus the engine core stay **untouched**.
+`include/sqlconduit/mapping.h` is a **header-only** adapter layer: it moves `ResultSet` rows into/out of business structs following a **field declaration the business writes by hand**. This is not an ORM — SQL stays in business code, there is no dirty tracking or lazy loading, and `sqlconduit.h` plus the engine core stay **untouched**.
 
 ### Declare once
 
 ```cpp
-#include "dbmw/mapping.h"
+#include "sqlconduit/mapping.h"
 
 struct User {
     std::int64_t id;
     std::string  name;
     std::optional<std::string> email;   // optional receives SQL NULL
-    dbmw::common::Decimal balance;      // high precision preserved, never narrowed to double
+    sqlconduit::common::Decimal balance;      // high precision preserved, never narrowed to double
     std::int64_t created_at;
 };
 
-template <> struct dbmw::mapping::RowMapper<User> {
+template <> struct sqlconduit::mapping::RowMapper<User> {
     static auto describe() {
-        return dbmw::mapping::Mapping<User>()
+        return sqlconduit::mapping::Mapping<User>()
             .field(&User::id,         "id")
             .field(&User::name,       "name")
             .field(&User::email,      "email")
             .field(&User::balance,    "balance")
             .field(&User::created_at, "created_at",
-                   dbmw::mapping::FieldFlags::PrimaryKey);
+                   sqlconduit::mapping::FieldFlags::PrimaryKey);
     }
 };
 ```
@@ -1024,34 +1024,34 @@ template <> struct dbmw::mapping::RowMapper<User> {
 ### Read
 
 ```cpp
-auto r = dbmw::queryAs<User>("SELECT id,name,email,balance,created_at FROM users WHERE age > ?",
-                             {dbmw::common::Value(std::int64_t(18))});
+auto r = sqlconduit::queryAs<User>("SELECT id,name,email,balance,created_at FROM users WHERE age > ?",
+                             {sqlconduit::common::Value(std::int64_t(18))});
 if (r.status.ok()) for (auto &u : r.items) use(u);      // r.items: std::vector<User>
 
-auto one = dbmw::queryOneAs<User>("SELECT * FROM users WHERE id = ?",
-                                  {dbmw::common::Value(std::int64_t(1))});
+auto one = sqlconduit::queryOneAs<User>("SELECT * FROM users WHERE id = ?",
+                                  {sqlconduit::common::Value(std::int64_t(1))});
 // one.value: std::optional<User>; **more than one row is an error**, not a silent first row
 
-dbmw::queryEachAs<User>("SELECT * FROM users", [](User &&u) { use(u); return true; });
+sqlconduit::queryEachAs<User>("SELECT * FROM users", [](User &&u) { use(u); return true; });
 ```
 
-Cursors and in-transaction use work the same way: `dbmw::fetchAs<T>(cursor)`, `dbmw::queryAs<T>(session, sql)`.
+Cursors and in-transaction use work the same way: `sqlconduit::fetchAs<T>(cursor)`, `sqlconduit::queryAs<T>(session, sql)`.
 
 ### Write
 
 ```cpp
-User u{0, "alice", "a@x.com", dbmw::common::Decimal{"12.50"}, now()};
+User u{0, "alice", "a@x.com", sqlconduit::common::Decimal{"12.50"}, now()};
 
-auto p = dbmw::paramsOf(u);                       // entity -> Params (skips Generated/ReadOnly columns)
-auto ins = dbmw::insertSql<User>("users");        // "INSERT INTO \"users\" (...) VALUES (?, ...)"
-auto insM = dbmw::insertSql<User>("users",
-                                  dbmw::common::util::Dialect::MySQL);
+auto p = sqlconduit::paramsOf(u);                       // entity -> Params (skips Generated/ReadOnly columns)
+auto ins = sqlconduit::insertSql<User>("users");        // "INSERT INTO \"users\" (...) VALUES (?, ...)"
+auto insM = sqlconduit::insertSql<User>("users",
+                                  sqlconduit::common::util::Dialect::MySQL);
                                                  // "INSERT INTO `users` (...) VALUES (?, ...)"
-auto upd = dbmw::updateSql<User>("users");        // "UPDATE \"users\" SET ... WHERE \"id\" = ?"
+auto upd = sqlconduit::updateSql<User>("users");        // "UPDATE \"users\" SET ... WHERE \"id\" = ?"
 
-auto k = dbmw::insertAs("users", u);              // executes + back-fills the generated key
-auto n = dbmw::updateAs("users", u);              // located by PrimaryKey
-auto b = dbmw::insertBatchAs("users", std::vector<User>{...});
+auto k = sqlconduit::insertAs("users", u);              // executes + back-fills the generated key
+auto n = sqlconduit::updateAs("users", u);              // located by PrimaryKey
+auto b = sqlconduit::insertBatchAs("users", std::vector<User>{...});
 ```
 
 **Identifiers are quoted per dialect.** `insertSql<T>(table)` / `updateSql<T>(table)` without a
@@ -1105,13 +1105,13 @@ A type mismatch or NULL landing in a non-`optional` member is an **error** (`Err
 
 - **Query cache**: only the raw `ResultSet` is cached, mapping runs after a hit — entities never enter the cache.
 - **Redaction**: mapping happens after `afterExecution`, so entities see redacted values.
-- **Async**: `dbmw::async::queryAs<T>` ships in callback / future / coroutine form; mapping runs on the **completion-delivery thread** (a worker by default, the `io_context` thread when asio is injected), so mapping must stay cheap — use streaming `queryEachAs` for large result sets.
+- **Async**: `sqlconduit::async::queryAs<T>` ships in callback / future / coroutine form; mapping runs on the **completion-delivery thread** (a worker by default, the `io_context` thread when asio is injected), so mapping must stay cheap — use streaming `queryEachAs` for large result sets.
 
 ## Oracle driver (OCI)
 
 Oracle uses the official **OCI** (Oracle Call Interface) rather than ODBC, gated by
-`DBMW_ENABLE_ORACLE`. Identifiers are quoted with **double quotes** like PostgreSQL, and are
-**not case-folded** — Oracle folds unquoted identifiers to upper case, so dbmw always quotes them,
+`SQLCONDUIT_ENABLE_ORACLE`. Identifiers are quoted with **double quotes** like PostgreSQL, and are
+**not case-folded** — Oracle folds unquoted identifiers to upper case, so sqlconduit always quotes them,
 meaning you must write the same casing in SQL that you used at `CREATE TABLE` time.
 
 ### Dependency & build
@@ -1125,7 +1125,7 @@ unzip instantclient-basiclite-linux.x64-*.zip -d /opt/oracle
 unzip instantclient-sdk-linux.x64-*.zip      -d /opt/oracle
 echo /opt/oracle/instantclient_* > /etc/ld.so.conf.d/oracle-instantclient.conf && ldconfig
 
-cmake .. -DDBMW_ENABLE_ORACLE=ON \
+cmake .. -DSQLCONDUIT_ENABLE_ORACLE=ON \
   -DOCI_INCLUDE_DIR=/opt/oracle/instantclient_21_12/sdk/include \
   -DOCI_LIBRARY=/opt/oracle/instantclient_21_12/libclntsh.so
 ```
@@ -1162,7 +1162,7 @@ datasources:
 ```
 
 Connection targets have a fixed precedence: `extra.connection_string` > `dsn` > a generated Oracle
-Net descriptor. The first two are passed to OCI unchanged, so dbmw cannot safely add `tls` settings;
+Net descriptor. The first two are passed to OCI unchanged, so SQLConduit cannot safely add `tls` settings;
 put TCPS and certificate verification in that value or the Oracle Net client configuration. Combining
 either form with a `tls` block is rejected instead of silently ignoring security settings. Generated
 descriptors require exactly one of `oracle.service_name` and `oracle.sid`. The legacy `database` field
@@ -1267,14 +1267,14 @@ The public call model uses `common::CallParam` to describe `In` / `Out` / `InOut
 REF CURSOR result sets together:
 
 ```cpp
-using namespace dbmw::common;
+using namespace sqlconduit::common;
 CallParams params{
     CallParam{Value{std::int64_t(7)}},
     CallParam::out(ValueType::String, 1024),
     CallParam::refCursor()
 };
 CallOutput result;
-auto status = dbmw::DBMW::call("BEGIN report_pkg.run(?, ?, ?); END;", params, result);
+auto status = sqlconduit::SQLConduit::call("BEGIN report_pkg.run(?, ?, ?); END;", params, result);
 // result.outParams[0] is the scalar OUT; result.sets[0] is the REF CURSOR
 ```
 
@@ -1307,7 +1307,7 @@ be developed":
   oversized text use `OCIBindArrayOfStruct` plus one `OCIStmtExecute`, with per-iteration counts from
   `OCI_ATTR_DML_ROW_COUNT_ARRAY`. Generated-key, LOB, oversized-value, and older-client cases safely
   fall back to the transactional per-row implementation. A failure rolls back the whole array DML
-  when dbmw owns the transaction; caller-owned transactions remain under caller control.
+  when SQLConduit owns the transaction; caller-owned transactions remain under caller control.
 - **Now implemented**: `makeDropRoutineSql(..., ifExists=true)` uses an anonymous PL/SQL block and
   suppresses only ORA-04043 (object does not exist); every other error is re-raised. With
   `ifExists=false`, it emits a strict plain `DROP`.
@@ -1318,13 +1318,13 @@ be developed":
   is never actually invoked.
 
 The type layer in `oracle_types.h` does not depend on the OCI headers, so
-`tests/dbmw_oracle_types_test.cpp` runs as a pure unit test with no Instant Client. Only
-`tests/dbmw_oracle_integration_test.cpp` needs a real database (connect info via the
-`DBMW_TEST_ORACLE_*` environment variables).
+`tests/sqlconduit_oracle_types_test.cpp` runs as a pure unit test with no Instant Client. Only
+`tests/sqlconduit_oracle_integration_test.cpp` needs a real database (connect info via the
+`SQLCONDUIT_TEST_ORACLE_*` environment variables).
 
 ## Routines and indexes (v0.5.1: lifecycle and call protocol for functions / procedures / indexes)
 
-`dbmw/util.h` provides `dbmw::common::util`. It owns the **call protocol** and the **lifecycle**;
+`sqlconduit/util.h` provides `sqlconduit::common::util`. It owns the **call protocol** and the **lifecycle**;
 it does **not** translate SQL dialects — routine bodies (`BEGIN ... END` / `$$ ... $$` / `AS ...`)
 are written by the application in the target dialect.
 
@@ -1352,7 +1352,7 @@ Asking a PostgreSQL procedure for a result set yields `NotSupported` (PG procedu
 result set; use a function). Oracle procedures with a result set or OUT parameters also yield
 `NotSupported` (they need `REF CURSOR` / `DBMS_OUTPUT` binding, which does not line up with the
 other dialects); scalar functions go through `DUAL`, table functions through `TABLE()`.
-Oracle has no native `CREATE ... IF EXISTS`. For a drop with `ifExists=true`, dbmw wraps `DROP` in
+Oracle has no native `CREATE ... IF EXISTS`. For a drop with `ifExists=true`, sqlconduit wraps `DROP` in
 anonymous PL/SQL and suppresses only ORA-04043; every other database error is returned normally.
 
 ### Create / drop
@@ -1400,7 +1400,7 @@ util::call(proc, params, r);
 
 // OUT / INOUT — the Session overload is required
 params.emplace_back(util::CallParam{util::ParamDirection::Out, common::Value(std::int64_t(0))});
-DBMW::transaction("my", [&](core::Session &s) { return util::call(s, proc, params, r); });
+SQLConduit::transaction("my", [&](core::Session &s) { return util::call(s, proc, params, r); });
 // r.outParams[0] is the OUT value
 
 // affected rows only: returnsRows = false
@@ -1411,10 +1411,10 @@ util::call(proc, params, r, o);
 
 | Dialect | OUT | INOUT | Mechanism / limit |
 |---|---|---|---|
-| MySQL | ✅ needs `Session` | ✅ needs `Session` | `CALL p(?, @dbmw_out_1)` then `SELECT @dbmw_out_1` on the same connection; INOUT also runs `SET @dbmw_out_0 = ?` first |
+| MySQL | ✅ needs `Session` | ✅ needs `Session` | `CALL p(?, @sqlconduit_out_1)` then `SELECT @sqlconduit_out_1` on the same connection; INOUT also runs `SET @sqlconduit_out_0 = ?` first |
 | PostgreSQL (function) | ✅ pool path | ✅ pool path | The values are the leading N columns of the `SELECT * FROM f(...)` result row |
 | PostgreSQL (procedure) | ❌ | ❌ | PG's `CALL` does not hand OUT values to the client → `NotSupported` |
-| SQL Server | ❌ | ❌ | Requires `DECLARE @var <type>` first; dbmw cannot infer the type → `NotSupported` |
+| SQL Server | ❌ | ❌ | Requires `DECLARE @var <type>` first; SQLConduit cannot infer the type → `NotSupported` |
 
 The async path has no connection affinity, so `SELECT @var` may land on a different connection —
 **OUT / INOUT are not supported there**. Use `async::util::callAll()` (callback / future /
@@ -1497,7 +1497,7 @@ Full SQL, slow SQL, and pool metrics are configured via `observability`; full pa
     "stats_report": {
       "enabled": true,
       "interval_ms": 60000,
-      "file": "logs/dbmw_stats.log",
+      "file": "logs/sqlconduit_stats.log",
       "format": "text",
       "include_pool": true,
       "include_slow_sql": true,
@@ -1512,21 +1512,21 @@ Full SQL, slow SQL, and pool metrics are configured via `observability`; full pa
 `sql_log.mode="full"` renders parameters in the actual driver dialect, but is still for diagnostics only — database execution continues to use native parameter binding. Strings and BLOBs may contain passwords, tokens, or personal data, and only enter the log after the corresponding `include_*_values` is explicitly turned on; both SQL and individual parameters have length caps.
 
 ```cpp
-dbmw::DBMW::setObserver([](const dbmw::common::OperationEvent& event) {
+sqlconduit::SQLConduit::setObserver([](const sqlconduit::common::OperationEvent& event) {
     // event: data source, operation type, duration, structured status, row count, and SQL fingerprint.
     // When neither SQL logging nor slow SQL is enabled, by default it still carries no SQL or parameters.
 });
 
-auto topSlow = dbmw::DBMW::slowSqlStats(20, "main");       // sorted by average duration
-auto recent = dbmw::DBMW::recentSlowSql(50, "main");      // sorted by most recent
-dbmw::DBMW::clearSlowSqlStats();
+auto topSlow = sqlconduit::SQLConduit::slowSqlStats(20, "main");       // sorted by average duration
+auto recent = sqlconduit::SQLConduit::recentSlowSql(50, "main");      // sorted by most recent
+sqlconduit::SQLConduit::clearSlowSqlStats();
 
-dbmw::core::ConnectionPool::Stats stats;
-if (dbmw::DBMW::poolStats(stats, "app")) {
+sqlconduit::core::ConnectionPool::Stats stats;
+if (sqlconduit::SQLConduit::poolStats(stats, "app")) {
     // min/max, utilization(), idle/borrowed/waiting, high-water marks, borrow-wait duration, eviction counts, etc.
 }
 
-auto physicalPools = dbmw::DBMW::allPoolStats();
+auto physicalPools = sqlconduit::SQLConduit::allPoolStats();
 ```
 
 Slow SQL uses parameterized-template fingerprint aggregation, with fixed capacity and a duration histogram to bound memory. Observer exceptions are isolated and do not change the database operation result. A group's `poolStats` aggregates its members, while `allPoolStats` returns every physical pool — handy for locating a specific primary or replica.
@@ -1536,11 +1536,11 @@ Slow SQL uses parameterized-template fingerprint aggregation, with fixed capacit
 `OperationEvent` and `SlowSqlRecord` carry two fields `traceId` and `spanId` (W3C `traceparent` shape: 32 / 16 lowercase hex), auto-injected by `Observability::emitSql` from `ContextScope::current()` as the very first thing it does:
 
 ```cpp
-#include "dbmw/common/context.h"
-dbmw::common::SqlContext ctx;
+#include "sqlconduit/common/context.h"
+sqlconduit::common::SqlContext ctx;
 ctx.traceId = "4bf92f3577b34da6a3ce929d0e0e4736";     // 32 hex
 ctx.spanId  = "00f067aa0ba902b7";                       // 16 hex (optional)
-dbmw::common::ContextScope scope(ctx);
+sqlconduit::common::ContextScope scope(ctx);
 
 ds.execute("UPDATE t SET v = ? WHERE id = ?", ...);
 // When the event hits the observer / sql_log / slow-Sql path, event.traceId / spanId are already filled.
@@ -1563,13 +1563,13 @@ ds.execute("UPDATE t SET v = ? WHERE id = ?", ...);
 **W3C `traceparent` parse and format**:
 
 ```cpp
-auto ctxOpt = dbmw::common::parseTraceparent(
+auto ctxOpt = sqlconduit::common::parseTraceparent(
     "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
 // Validation: length must be exactly 55; version must be `00`; trace-id must not be all 0;
 // trace-id / span-id must be valid hex. Invalid returns std::nullopt; business decides
 // whether to drop or fall back.
 
-auto parent = dbmw::common::formatTraceparent(traceId, spanId);
+auto parent = sqlconduit::common::formatTraceparent(traceId, spanId);
 // Strict 55 bytes: `00-<32 hex>-<16 hex>-<01 flags>` (flags default to 01 = sampled).
 ```
 
@@ -1589,13 +1589,13 @@ second event stream:
 | `transformed`| observeSql forwards `ResultSet*`; emitSql reads `result->transformed` | SPI mutated / clipped / redacted the result set | Even failures must be flagged — compliance asks "did the redaction path itself misbehave" |
 
 ```cpp
-dbmw::common::SqlContext ctx;
+sqlconduit::common::SqlContext ctx;
 ctx.tenantId = "t-acme";
 ctx.shadow   = true;            // this tenant routes to the shadow DB
-dbmw::common::ContextScope scope(ctx);
+sqlconduit::common::ContextScope scope(ctx);
 
 // SPI afterExecution sets view.result->transformed = true above
-dbmw::DBMW::setObserver([](const dbmw::common::OperationEvent &event) {
+sqlconduit::SQLConduit::setObserver([](const sqlconduit::common::OperationEvent &event) {
     if (event.shadow && event.status.ok()) {
         shadowQps[event.dataSource]++;
     }
@@ -1623,7 +1623,7 @@ dbmw::DBMW::setObserver([](const dbmw::common::OperationEvent &event) {
   tolerance) vs production; redaction failures deserve a dedicated alert, because part
   of the data may already have hit logs / the network even when the transaction failed.
 
-Tests: `tests/dbmw_observer_event_test.cpp` (22 assertions / 8 scenarios — incl.
+Tests: `tests/sqlconduit_observer_event_test.cpp` (22 assertions / 8 scenarios — incl.
 failed events must still carry both flags, because alert attribution needs them).
 
 ### Metrics export (Prometheus text adapter)
@@ -1635,14 +1635,14 @@ or sidecar's responsibility. This section shows how to feed the data source to t
 #### 1. Register a pool metrics observer
 
 ```cpp
-#include "dbmw/common/observer.h"
+#include "sqlconduit/common/observer.h"
 
 // DatabaseManager::init() already calls setPoolMetricsCollector(this { return allPoolStats(); }),
 // so the collector is normally already in place. Override it only if you have a different source.
-dbmw::common::Observability::setPoolMetricsObserver(
-    [](const dbmw::common::PoolMetricsEvent &e) {
+sqlconduit::common::Observability::setPoolMetricsObserver(
+    [](const sqlconduit::common::PoolMetricsEvent &e) {
         // e is delivered every StatsReportConfig.interval_ms (or call samplePoolMetrics() on demand).
-        const auto text = dbmw::exporters::toPrometheusText(e, {});
+        const auto text = sqlconduit::exporters::toPrometheusText(e, {});
         // text feeds your Prometheus scraper (pushgateway / HTTP handler).
     });
 ```
@@ -1650,27 +1650,27 @@ dbmw::common::Observability::setPoolMetricsObserver(
 Alternatively, skip the observer and pull on demand:
 
 ```cpp
-const auto pools = dbmw::common::Observability::samplePoolMetrics();
+const auto pools = sqlconduit::common::Observability::samplePoolMetrics();
 ```
 
 #### 2. Prometheus text format
 
 ```cpp
-const auto pools = dbmw::common::Observability::samplePoolMetrics();
-const auto slow  = dbmw::common::Observability::slowSqlStats(100);
-const auto text  = dbmw::exporters::toPrometheusText(pools, slow);
+const auto pools = sqlconduit::common::Observability::samplePoolMetrics();
+const auto slow  = sqlconduit::common::Observability::slowSqlStats(100);
+const auto text  = sqlconduit::exporters::toPrometheusText(pools, slow);
 
-// Key metric names (default prefix="dbmw"):
-//   dbmw_pool_connections{data_source="app",state=...}
-//   dbmw_pool_connections_idle / _borrowed / _max / _min
-//   dbmw_pool_utilization_ratio{data_source="..."}
-//   dbmw_pool_waiting{data_source="..."}
-//   dbmw_pool_borrow_requests_total / _successes / _timeouts / _wait_seconds_total
-//   dbmw_pool_connections_created_total / _closed_total
-//   dbmw_pool_validation_failures_total / _leak_warnings_total
-//   dbmw_slow_sql_count{data_source="...",fingerprint="..."}
-//   dbmw_slow_sql_errors / _timeouts / _duration_seconds_sum / _max
-//   dbmw_slow_sql_duration_seconds_bucket{...,le="0.01|0.1|1|+Inf"}
+// Key metric names (default prefix="sqlconduit"):
+//   sqlconduit_pool_connections{data_source="app",state=...}
+//   sqlconduit_pool_connections_idle / _borrowed / _max / _min
+//   sqlconduit_pool_utilization_ratio{data_source="..."}
+//   sqlconduit_pool_waiting{data_source="..."}
+//   sqlconduit_pool_borrow_requests_total / _successes / _timeouts / _wait_seconds_total
+//   sqlconduit_pool_connections_created_total / _closed_total
+//   sqlconduit_pool_validation_failures_total / _leak_warnings_total
+//   sqlconduit_slow_sql_count{data_source="...",fingerprint="..."}
+//   sqlconduit_slow_sql_errors / _timeouts / _duration_seconds_sum / _max
+//   sqlconduit_slow_sql_duration_seconds_bucket{...,le="0.01|0.1|1|+Inf"}
 ```
 
 #### 3. Important constraints
@@ -1721,11 +1721,11 @@ const auto text  = dbmw::exporters::toPrometheusText(pools, slow);
 
 ## Installation & downstream integration
 
-dbmw can be installed as a CMake package; downstream uses `find_package(dbmw)` directly (nlohmann/json ships with the package, no separate `find_package` needed):
+SQLConduit can be installed as a CMake package; downstream uses `find_package(sqlconduit)` directly (nlohmann/json ships with the package, no separate `find_package` needed):
 
 ```bash
 mkdir -p build && cd build
-cmake .. -DDBMW_ENABLE_POSTGRES=ON   # enable drivers as needed
+cmake .. -DSQLCONDUIT_ENABLE_POSTGRES=ON   # enable drivers as needed
 cmake --build .
 cmake --install . --prefix /usr/local
 ```
@@ -1737,41 +1737,41 @@ cmake_minimum_required(VERSION 3.16)
 project(my_app LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 
-find_package(dbmw REQUIRED)
+find_package(sqlconduit REQUIRED)
 
 add_executable(my_app main.cpp)
-target_link_libraries(my_app PRIVATE dbmw::dbmw)
+target_link_libraries(my_app PRIVATE sqlconduit::sqlconduit)
 ```
 
-`dbmw::dbmw`'s PUBLIC dependency (`dbmw::nlohmann_json`) is pulled in automatically with the package. Be sure to call
-`DBMW::shutdown()` before exit, to reclaim the pool and heartbeat threads.
+`sqlconduit::sqlconduit`'s PUBLIC dependency (`sqlconduit::nlohmann_json`) is pulled in automatically with the package. Be sure to call
+`SQLConduit::shutdown()` before exit, to reclaim the pool and heartbeat threads.
 
 ### Non-CMake projects (pkg-config)
 
-A `dbmw.pc` is generated on install:
+A `sqlconduit.pc` is generated on install:
 
 ```bash
-g++ main.cpp $(pkg-config --cflags --libs dbmw) -o my_app
+g++ main.cpp $(pkg-config --cflags --libs sqlconduit) -o my_app
 ```
 
 ### Driver client libraries (must read)
 
-When a driver is enabled, the installed package contains **only** `libdbmw.a` and the headers — **not** the corresponding database client library (libpqxx / libmysqlclient / unixODBC / OCI). Because dbmw is a static library, these client libraries must be provided by the downstream project, otherwise linking fails with undefined symbols:
+When a driver is enabled, the installed package contains **only** `libsqlconduit.a` and the headers — **not** the corresponding database client library (libpqxx / libmysqlclient / unixODBC / OCI). Because SQLConduit is a static library, these client libraries must be provided by the downstream project, otherwise linking fails with undefined symbols:
 
 - Enable MySQL → downstream `apt install default-libmysqlclient-dev` and link `-lmysqlclient`
 - Enable PG     → downstream install `libpqxx-dev libpq-dev`, link `-lpqxx -lpq`
 - Enable ODBC   → downstream install `unixodbc-dev`, link `-lodbc`
 - Enable Oracle → downstream install Instant Client (Basic Lite + SDK), link `-lclntsh`
 
-Neither `find_package(dbmw)` nor `dbmw.pc` auto-appends these links (a static library + pure path dependencies cannot propagate across packages).
+Neither `find_package(sqlconduit)` nor `sqlconduit.pc` auto-appends these links (a static library + pure path dependencies cannot propagate across packages).
 
 > **Expected behavior (out-of-the-box notes)**
-> - `DBMW_ENABLE_*` are all OFF by default; a driver not enabled at compile time returns `DriverDisabled` on call.
-> - Call `DBMW::shutdown()` before process exit to reclaim the pool and heartbeat threads.
+> - `SQLCONDUIT_ENABLE_*` are all OFF by default; a driver not enabled at compile time returns `DriverDisabled` on call.
+> - Call `SQLConduit::shutdown()` before process exit to reclaim the pool and heartbeat threads.
 
 ## Extending a new database type
 
-1. Add `xxx_driver.h/.cpp` under `include/dbmw/driver/`, implementing `IDatabaseConnection` and `IDriver` in the style of `MySQLConnection`.
+1. Add `xxx_driver.h/.cpp` under `include/sqlconduit/driver/`, implementing `IDatabaseConnection` and `IDriver` in the style of `MySQLConnection`.
 2. In the `.cpp`, call `DriverRegistry::instance().registerDriver("xxx", ...)`.
 3. (Optional) Register it in `registerBuiltinDrivers()` of `driver_factory.cpp`, or register on your own at startup.
 4. Set `type` to `"xxx"` in the JSON config and it will be recognized.

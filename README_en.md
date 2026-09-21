@@ -1,8 +1,8 @@
-# dbmw — C++ Database Connection Middleware
+# SQLConduit — C++ Database Connection Middleware
 
 > [中文](README.md) · [Detailed guide](docs/guide_en.md)
 
-dbmw gives C++ applications a unified database access layer. The same API works with MySQL,
+SQLConduit gives C++ applications a unified database access layer. The same API works with MySQL,
 PostgreSQL, Oracle, and ODBC databases while the middleware centrally manages connection pooling,
 parameter binding, transactions, timeouts, routing, and runtime metrics.
 
@@ -25,17 +25,17 @@ the required driver:
 
 ```bash
 cmake -S . -B build \
-  -DDBMW_ENABLE_POSTGRES=ON
+  -DSQLCONDUIT_ENABLE_POSTGRES=ON
 cmake --build build -j
 ```
 
 Available switches:
 
-- `DBMW_ENABLE_MYSQL=ON`: MySQL; requires libmysqlclient;
-- `DBMW_ENABLE_POSTGRES=ON`: PostgreSQL; requires libpqxx and libpq;
-- `DBMW_ENABLE_ORACLE=ON`: Oracle; requires OCI (Oracle Instant Client, Basic + SDK);
-- `DBMW_ENABLE_ODBC=ON`: ODBC databases such as SQL Server; requires unixODBC;
-- `DBMW_ENABLE_ASYNC_CORO=ON`: enable the C++20 coroutine API.
+- `SQLCONDUIT_ENABLE_MYSQL=ON`: MySQL; requires libmysqlclient;
+- `SQLCONDUIT_ENABLE_POSTGRES=ON`: PostgreSQL; requires libpqxx and libpq;
+- `SQLCONDUIT_ENABLE_ORACLE=ON`: Oracle; requires OCI (Oracle Instant Client, Basic + SDK);
+- `SQLCONDUIT_ENABLE_ODBC=ON`: ODBC databases such as SQL Server; requires unixODBC;
+- `SQLCONDUIT_ENABLE_ASYNC_CORO=ON`: enable the C++20 coroutine API.
 
 See the [detailed build instructions](docs/guide_en.md#building-wsl--linux) for Linux and macOS.
 
@@ -79,27 +79,27 @@ and validation. Complete templates are available for
 Use `?` placeholders. Values are bound natively by the driver:
 
 ```cpp
-#include "dbmw/dbmw.h"
+#include "sqlconduit/sqlconduit.h"
 
 #include <cstdint>
 #include <string>
 
 int main() {
-    auto status = dbmw::DBMW::init("config/datasources.json");
+    auto status = sqlconduit::SQLConduit::init("config/datasources.json");
     if (!status.ok()) return 1;
 
-    dbmw::common::ResultSet rows;
-    dbmw::common::Params params{std::int64_t(42)};
-    status = dbmw::DBMW::query(
+    sqlconduit::common::ResultSet rows;
+    sqlconduit::common::Params params{std::int64_t(42)};
+    status = sqlconduit::SQLConduit::query(
         "SELECT id, name FROM users WHERE id = ?", params, rows);
 
     std::int64_t affected = 0;
     if (status.ok()) {
-        status = dbmw::DBMW::execute(
+        status = sqlconduit::SQLConduit::execute(
             "UPDATE users SET last_seen = now() WHERE id = ?", params, affected);
     }
 
-    dbmw::DBMW::shutdown();
+    sqlconduit::SQLConduit::shutdown();
     return status.ok() ? 0 : 1;
 }
 ```
@@ -107,7 +107,7 @@ int main() {
 Pass a data-source name as the first argument to target a specific source:
 
 ```cpp
-dbmw::DBMW::query("analytics", "SELECT count(*) FROM events", rows);
+sqlconduit::SQLConduit::query("analytics", "SELECT count(*) FROM events", rows);
 ```
 
 ### 4. Transactions
@@ -116,7 +116,7 @@ Use `transaction()` to keep multiple statements on one connection. A successful 
 committed; a returned error or exception is rolled back automatically:
 
 ```cpp
-auto status = dbmw::DBMW::transaction([](dbmw::core::Session &session) {
+auto status = sqlconduit::SQLConduit::transaction([](sqlconduit::core::Session &session) {
     std::int64_t affected = 0;
     auto result = session.execute(
         "UPDATE accounts SET balance = balance - ? WHERE id = ?",
@@ -131,12 +131,12 @@ auto status = dbmw::DBMW::transaction([](dbmw::core::Session &session) {
 
 ### 5. Entity mapping (optional)
 
-`dbmw/mapping.h` is a header-only adapter layer that moves data between a `ResultSet` and your
+`sqlconduit/mapping.h` is a header-only adapter layer that moves data between a `ResultSet` and your
 structs, following a field declaration you write by hand. It is not an ORM — SQL stays in your
 code and the engine core is untouched:
 
 ```cpp
-#include "dbmw/mapping.h"
+#include "sqlconduit/mapping.h"
 
 struct User {
     std::int64_t id;
@@ -144,16 +144,16 @@ struct User {
     std::optional<std::string> email;   // receives SQL NULL
 };
 
-template <> struct dbmw::mapping::RowMapper<User> {
+template <> struct sqlconduit::mapping::RowMapper<User> {
     static auto describe() {
-        return dbmw::mapping::Mapping<User>()
-            .field(&User::id,    "id", dbmw::mapping::FieldFlags::PrimaryKey)
+        return sqlconduit::mapping::Mapping<User>()
+            .field(&User::id,    "id", sqlconduit::mapping::FieldFlags::PrimaryKey)
             .field(&User::name,  "name")
             .field(&User::email, "email");
     }
 };
 
-auto r = dbmw::queryAs<User>("SELECT id, name, email FROM users WHERE id = ?",
+auto r = sqlconduit::queryAs<User>("SELECT id, name, email FROM users WHERE id = ?",
                              {std::int64_t(42)});
 if (r.status.ok() && !r.items.empty()) use(r.items[0]);
 ```
@@ -162,16 +162,16 @@ Type mismatches and NULL landing in a non-`optional` member yield `MappingError`
 values). Missing columns are skipped by default and extra columns ignored; each can be tightened via
 `.missingColumns(...)` / `.extraColumns(...)`. The write direction offers `paramsOf` / `insertSql` /
 `updateSql` / `insertAs` / `updateAs` / `insertBatchAs`, including generated-key back-fill. On the
-async side, `dbmw::async::queryAs<T>` comes in callback / future / coroutine form.
+async side, `sqlconduit::async::queryAs<T>` comes in callback / future / coroutine form.
 
-### 5.x Routines and indexes (`dbmw/util.h`)
+### 5.x Routines and indexes (`sqlconduit/util.h`)
 
 `common::util` owns the **call protocol and the lifecycle** — it does not translate SQL dialects, so
 routine bodies are written by the application in the target dialect.
 
 ```cpp
-#include "dbmw/util.h"
-namespace util = dbmw::common::util;
+#include "sqlconduit/util.h"
+namespace util = sqlconduit::common::util;
 
 util::CreateRoutineOptions o;
 o.dataSource = "main";
@@ -203,7 +203,7 @@ util::call(proc, params, r);   // r.sets / r.rowCount() / r.affected
 // OUT / INOUT: the Session overload is required (the session variable must be read
 // back on the same connection)
 params.emplace_back(util::CallParam{util::ParamDirection::Out, common::Value(std::int64_t(0))});
-DBMW::transaction("my", [&](core::Session &s) { return util::call(s, proc, params, r); });
+SQLConduit::transaction("my", [&](core::Session &s) { return util::call(s, proc, params, r); });
 // r.outParams[0] is the OUT value
 ```
 
@@ -244,30 +244,30 @@ return a `Handle` that can report state or cancel the remaining script.
 ### 6. Run tests
 
 ```bash
-cmake -S . -B build -DDBMW_BUILD_TESTS=ON
+cmake -S . -B build -DSQLCONDUIT_BUILD_TESTS=ON
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
 Live integration tests support PostgreSQL, MySQL, Oracle, and SQL Server (ODBC). Provide
-connection details through the `DBMW_TEST_PG_*`, `DBMW_TEST_MYSQL_*`, `DBMW_TEST_ORACLE_*`, and
-`DBMW_TEST_ODBC_*` environment variables:
+connection details through the `SQLCONDUIT_TEST_PG_*`, `SQLCONDUIT_TEST_MYSQL_*`, `SQLCONDUIT_TEST_ORACLE_*`, and
+`SQLCONDUIT_TEST_ODBC_*` environment variables:
 
 ```bash
 cmake -S . -B build \
-  -DDBMW_ENABLE_POSTGRES=ON \
-  -DDBMW_ENABLE_MYSQL=ON \
-  -DDBMW_ENABLE_ODBC=ON \
-  -DDBMW_ENABLE_ORACLE=ON \
-  -DDBMW_BUILD_TESTS=ON \
-  -DDBMW_BUILD_INTEGRATION_TESTS=ON
+  -DSQLCONDUIT_ENABLE_POSTGRES=ON \
+  -DSQLCONDUIT_ENABLE_MYSQL=ON \
+  -DSQLCONDUIT_ENABLE_ODBC=ON \
+  -DSQLCONDUIT_ENABLE_ORACLE=ON \
+  -DSQLCONDUIT_BUILD_TESTS=ON \
+  -DSQLCONDUIT_BUILD_INTEGRATION_TESTS=ON
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
 ## Detailed documentation
 
-See the [dbmw detailed guide](docs/guide_en.md) for connection pooling, asynchronous APIs,
+See the [SQLConduit detailed guide](docs/guide_en.md) for connection pooling, asynchronous APIs,
 entity mapping, routines and scripts, PostgreSQL types, cursors, failover, observability,
 configuration, and driver extensions.
 See the [changelog](CHANGELOG.md) for release highlights.

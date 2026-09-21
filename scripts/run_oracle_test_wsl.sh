@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -uo pipefail
-SRC=/mnt/d/chiang/dbmw
-PW="${DBMW_TEST_ORACLE_PASSWORD:-Dbmw!Test123}"
+SRC=/mnt/d/chiang/sqlconduit
+PW="${SQLCONDUIT_TEST_ORACLE_PASSWORD:-SqlConduit!Test123}"
 IMAGE=container-registry.oracle.com/database/free:latest
-BUILD=/root/dbmw/build-it
+BUILD=/root/sqlconduit/build-it
 CLNT=/opt/oracle_client
 
 echo "==> sync source from $SRC (excluding build dir)"
-mkdir -p /root/dbmw
-tar -cf - -C "$SRC" CMakeLists.txt src include tests cmake | tar -xf - -C /root/dbmw
+mkdir -p /root/sqlconduit
+tar -cf - -C "$SRC" CMakeLists.txt src include tests cmake | tar -xf - -C /root/sqlconduit
 
 echo "==> ensure image $IMAGE"
 docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "==> pulling $IMAGE"; docker pull "$IMAGE"; }
@@ -38,23 +38,23 @@ ls "$CLNT/home/lib/libclntsh.so"* || { echo "libclntsh.so MISSING"; exit 1; }
 ls "$CLNT/home/rdbms/public/oci.h" || { echo "oci.h MISSING"; exit 1; }
 
 echo "==> reconfigure + build with Oracle=ON"
-cd /root/dbmw
+cd /root/sqlconduit
 cmake -S . -B "$BUILD" -G "Unix Makefiles" \
-  -DDBMW_ENABLE_MYSQL=OFF -DDBMW_ENABLE_POSTGRES=OFF \
-  -DDBMW_ENABLE_ODBC=ON -DDBMW_ENABLE_ORACLE=ON \
-  -DDBMW_BUILD_TESTS=ON -DDBMW_BUILD_INTEGRATION_TESTS=ON \
+  -DSQLCONDUIT_ENABLE_MYSQL=OFF -DSQLCONDUIT_ENABLE_POSTGRES=OFF \
+  -DSQLCONDUIT_ENABLE_ODBC=ON -DSQLCONDUIT_ENABLE_ORACLE=ON \
+  -DSQLCONDUIT_BUILD_TESTS=ON -DSQLCONDUIT_BUILD_INTEGRATION_TESTS=ON \
   -DOCI_INCLUDE_DIR="$CLNT/home/rdbms/public" \
   -DOCI_LIBRARY="$CLNT/home/lib/libclntsh.so" >/tmp/cmake_ora.log 2>&1 && echo CMAKE_OK || { echo CMAKE_FAIL; tail -25 /tmp/cmake_ora.log; exit 1; }
 cmake --build "$BUILD" -j"$(nproc)" >/tmp/build_ora.log 2>&1 && echo BUILD_OK || { echo BUILD_FAIL; tail -40 /tmp/build_ora.log; exit 1; }
 
-export DBMW_TEST_ORACLE_HOST=127.0.0.1
-export DBMW_TEST_ORACLE_PORT=1521
-export DBMW_TEST_ORACLE_USER=system
-export DBMW_TEST_ORACLE_SERVICE=FREEPDB1
-export DBMW_TEST_ORACLE_PASSWORD="$PW"
+export SQLCONDUIT_TEST_ORACLE_HOST=127.0.0.1
+export SQLCONDUIT_TEST_ORACLE_PORT=1521
+export SQLCONDUIT_TEST_ORACLE_USER=system
+export SQLCONDUIT_TEST_ORACLE_SERVICE=FREEPDB1
+export SQLCONDUIT_TEST_ORACLE_PASSWORD="$PW"
 export ORACLE_HOME="$CLNT/home"
 export LD_LIBRARY_PATH="$CLNT/home/lib:$LD_LIBRARY_PATH"
 cd "$BUILD/tests"
-echo "==> run dbmw_oracle_integration_test"
-./dbmw_oracle_integration_test 2>&1
+echo "==> run sqlconduit_oracle_integration_test"
+./sqlconduit_oracle_integration_test 2>&1
 echo "ORACLE_TEST_EXIT=$?"

@@ -1,8 +1,8 @@
-#include "dbmw/async/dbmw_async.h"
-#include "dbmw/common/context.h"
-#include "dbmw/common/logger.h"
-#include "dbmw/core/interceptor.h"
-#include "dbmw/dbmw.h"
+#include "sqlconduit/async/sqlconduit_async.h"
+#include "sqlconduit/common/context.h"
+#include "sqlconduit/common/logger.h"
+#include "sqlconduit/core/interceptor.h"
+#include "sqlconduit/sqlconduit.h"
 
 #include <algorithm>
 #include <atomic>
@@ -15,8 +15,10 @@
 #include <utility>
 #include <vector>
 
-namespace dbmw::async {
-    namespace {
+namespace sqlconduit::async
+{
+    namespace
+    {
         std::mutex gMtx;
         std::condition_variable gDrainCv;
         std::shared_ptr<IExecutor> gExecutor;
@@ -25,12 +27,15 @@ namespace dbmw::async {
         std::atomic<bool> gStopping{false};
         std::atomic<std::int64_t> gDefaultTimeoutMs{0};
 
-        class CompletionFallback final {
+        class CompletionFallback final
+        {
         public:
-            CompletionFallback() : worker_([this] { run(); }) {
+            CompletionFallback() : worker_([this] { run(); })
+            {
             }
 
-            ~CompletionFallback() {
+            ~CompletionFallback()
+            {
                 {
                     std::lock_guard<std::mutex> lk(mtx_);
                     stopping_ = true;
@@ -39,7 +44,8 @@ namespace dbmw::async {
                 if (worker_.joinable()) worker_.join();
             }
 
-            void post(std::function<void()> task) {
+            void post(std::function<void()> task)
+            {
                 {
                     std::lock_guard<std::mutex> lk(mtx_);
                     queue_.push_back(std::move(task));
@@ -48,8 +54,10 @@ namespace dbmw::async {
             }
 
         private:
-            void run() {
-                for (;;) {
+            void run()
+            {
+                for (;;)
+                {
                     std::function<void()> task;
                     {
                         std::unique_lock<std::mutex> lk(mtx_);
@@ -62,89 +70,114 @@ namespace dbmw::async {
                 }
             }
 
-            static void guardedRun(const std::function<void()> &task) {
-                try {
+            static void guardedRun(const std::function<void()>& task)
+            {
+                try
+                {
                     if (task) task();
-                } catch (const std::exception &e) {
-                    DBMW_LOG_ERROR(std::string("async completion callback threw: ") + e.what());
-                } catch (...) {
-                    DBMW_LOG_ERROR("async completion callback threw an unknown exception");
+                }
+                catch (const std::exception& e)
+                {
+                    SQLCONDUIT_LOG_ERROR(std::string("async completion callback threw: ") + e.what());
+                }
+                catch (...)
+                {
+                    SQLCONDUIT_LOG_ERROR("async completion callback threw an unknown exception");
                 }
             }
 
             std::mutex mtx_;
             std::condition_variable cv_;
-            std::deque<std::function<void()> > queue_;
+            std::deque<std::function<void()>> queue_;
             bool stopping_ = false;
             std::thread worker_;
         };
 
-        CompletionFallback &completionFallback() {
+        CompletionFallback& completionFallback()
+        {
             static CompletionFallback dispatcher;
             return dispatcher;
         }
 
-        std::shared_ptr<IExecutor> workerExecutor() {
+        std::shared_ptr<IExecutor> workerExecutor()
+        {
             std::lock_guard<std::mutex> lk(gMtx);
             return gExecutor;
         }
 
-        std::shared_ptr<IExecutor> completionExecutor() {
+        std::shared_ptr<IExecutor> completionExecutor()
+        {
             std::lock_guard<std::mutex> lk(gMtx);
             return gCompletion;
         }
 
-        void registryAdd() {
+        void registryAdd()
+        {
             std::lock_guard<std::mutex> lk(gMtx);
             ++gInFlight;
         }
 
-        void registryRemove() {
+        void registryRemove()
+        {
             std::lock_guard<std::mutex> lk(gMtx);
             if (gInFlight > 0) --gInFlight;
             gDrainCv.notify_all();
         }
 
-        void postOrRun(const std::shared_ptr<IExecutor> &ex, const std::function<void()> &task) {
+        void postOrRun(const std::shared_ptr<IExecutor>& ex, const std::function<void()>& task)
+        {
             if (ex && ex->tryPost(task)) return;
             task();
         }
 
-        void postCompletion(const std::shared_ptr<IExecutor> &ex,
-                            const std::function<void()> &task) {
+        void postCompletion(const std::shared_ptr<IExecutor>& ex,
+                            const std::function<void()>& task)
+        {
             if (ex && ex->tryPost(task)) return;
             completionFallback().post(task);
         }
 
-        core::AsyncIo makePoolIo(const std::shared_ptr<IExecutor> &ex) {
+        core::AsyncIo makePoolIo(const std::shared_ptr<IExecutor>& ex)
+        {
             core::AsyncIo io;
-            io.post = [ex](std::function<void()> task) {
+            io.post = [ex](std::function<void()> task)
+            {
                 postOrRun(ex, std::move(task));
             };
-            io.deliver = [ex](const std::function<void()> &task) {
+            io.deliver = [ex](const std::function<void()>& task)
+            {
                 postOrRun(ex, task);
             };
             return io;
         }
 
-        template<class F>
-        void guarded(F &&f) {
-            try {
+        template <class F>
+        void guarded(F&& f)
+        {
+            try
+            {
                 f();
-            } catch (const std::exception &e) {
-                DBMW_LOG_ERROR(std::string("async engine step threw: ") + e.what());
-            } catch (...) {
-                DBMW_LOG_ERROR("async engine step threw an unknown exception");
+            }
+            catch (const std::exception& e)
+            {
+                SQLCONDUIT_LOG_ERROR(std::string("async engine step threw: ") + e.what());
+            }
+            catch (...)
+            {
+                SQLCONDUIT_LOG_ERROR("async engine step threw an unknown exception");
             }
         }
 
-        std::shared_ptr<core::DataSource> resolve(const std::string &name) {
-            return DBMW::dataSource(name);
+        std::shared_ptr<core::DataSource> resolve(const std::string& name)
+        {
+            return SQLConduit::dataSource(name);
         }
     }
 
-    namespace detail {
-        struct OpState {
+    namespace detail
+    {
+        struct OpState
+        {
             std::atomic<Handle::State> state{Handle::State::Queued};
             std::atomic<bool> userCancelled{false};
             std::atomic<bool> timedOut{false};
@@ -152,17 +185,20 @@ namespace dbmw::async {
             std::atomic<bool> finished{false};
 
             std::mutex sessionMtx;
-            core::Session *pinnedSession = nullptr;
+            core::Session* pinnedSession = nullptr;
         };
 
-        namespace {
-            enum class RetryMode {
+        namespace
+        {
+            enum class RetryMode
+            {
                 ReadRetries,
                 WriteRetries,
                 Single
             };
 
-            struct StatementPolicy {
+            struct StatementPolicy
+            {
                 bool isWrite = false;
                 RetryMode retry = RetryMode::Single;
                 bool cacheable = false;
@@ -170,11 +206,12 @@ namespace dbmw::async {
                 bool allowWriteBuffer = false;
             };
 
-            template<class R>
-            struct StatementOp {
+            template <class R>
+            struct StatementOp
+            {
                 std::shared_ptr<OpState> op;
                 std::shared_ptr<core::DataSource> root;
-                std::vector<std::shared_ptr<core::DataSource> > targets;
+                std::vector<std::shared_ptr<core::DataSource>> targets;
                 std::size_t targetIdx = 0;
                 int attempt = 0;
                 std::chrono::milliseconds borrowTimeout{-1};
@@ -183,76 +220,87 @@ namespace dbmw::async {
                 common::Params params;
                 std::string cacheKey;
 
-                std::function<void(core::Session &, R &)> attemptFn;
+                std::function<void(core::Session&, R&)> attemptFn;
                 std::function<std::function<common::Status()>(
-                    const std::shared_ptr<core::DataSource> &primary)> bufferedMaker;
-                std::function<void(R &&)> cb;
+                    const std::shared_ptr<core::DataSource>& primary)> bufferedMaker;
+                std::function<void(R&&)> cb;
 
                 StatementPolicy policy;
 
                 common::SqlContext entryCtx;
             };
 
-            struct SessionOp {
+            struct SessionOp
+            {
                 std::shared_ptr<OpState> op;
                 std::shared_ptr<core::DataSource> root;
                 bool transactional = true;
                 common::TransactionOptions txOpts;
                 core::SessionFn fn;
-                std::function<void(OpResult &&)> cb;
+                std::function<void(OpResult&&)> cb;
                 std::chrono::milliseconds borrowTimeout{-1};
 
                 common::SqlContext entryCtx;
             };
         }
 
-        class AsyncEngine {
+        class AsyncEngine
+        {
         public:
             AsyncEngine() = delete;
 
-            template<class R>
-            static void deliverResult(std::function<void(R &&)> cb, R result) {
+            template <class R>
+            static void deliverResult(std::function<void(R&&)> cb, R result)
+            {
                 auto resultBox = std::make_shared<R>(std::move(result));
-                auto cbBox = std::make_shared<std::function<void(R &&)> >(std::move(cb));
-                postCompletion(completionExecutor(), [resultBox, cbBox] {
+                auto cbBox = std::make_shared<std::function<void(R&&)>>(std::move(cb));
+                postCompletion(completionExecutor(), [resultBox, cbBox]
+                {
                     (*cbBox)(std::move(*resultBox));
                 });
             }
 
-            static Handle doneHandle() {
+            static Handle doneHandle()
+            {
                 auto op = std::make_shared<OpState>();
                 op->state.store(Handle::State::Done);
                 op->finished.store(true);
                 return Handle(std::move(op));
             }
 
-            template<class R>
-            static Handle failNow(std::function<void(R &&)> cb, common::Status st) {
+            template <class R>
+            static Handle failNow(std::function<void(R&&)> cb, common::Status st)
+            {
                 R r;
                 r.status = std::move(st);
                 deliverResult(std::move(cb), std::move(r));
                 return doneHandle();
             }
 
-            template<class R>
-            static void finishStatement(const std::shared_ptr<StatementOp<R> > &ctx, R result) {
-                const auto &op = ctx->op;
+            template <class R>
+            static void finishStatement(const std::shared_ptr<StatementOp<R>>& ctx, R result)
+            {
+                const auto& op = ctx->op;
                 bool expected = false;
                 if (!op->finished.compare_exchange_strong(expected, true)) return;
 
-                common::Status &st = result.status;
-                if (op->timedOut.load()) {
+                common::Status& st = result.status;
+                if (op->timedOut.load())
+                {
                     auto timeout = common::Status::error(
                         common::ErrorCode::QueryTimeout,
                         "statement exceeded async timeout");
                     timeout.retryable = true;
-                    if (!op->cancelDelivered.load()) {
+                    if (!op->cancelDelivered.load())
+                    {
                         timeout.message +=
-                                " (could not cancel; driver may not support it - "
-                                "timeout is best-effort)";
+                            " (could not cancel; driver may not support it - "
+                            "timeout is best-effort)";
                     }
                     st = std::move(timeout);
-                } else if (op->userCancelled.load()) {
+                }
+                else if (op->userCancelled.load())
+                {
                     st = common::Status::error(
                         common::ErrorCode::Cancelled,
                         st.ok()
@@ -270,13 +318,16 @@ namespace dbmw::async {
                 deliverResult(std::move(ctx->cb), std::move(result));
             }
 
-            static void armTimeout(const std::shared_ptr<OpState> &op,
-                                   const std::chrono::milliseconds timeout) {
-                workerExecutor()->postAfter([op] {
-                    guarded([&] {
+            static void armTimeout(const std::shared_ptr<OpState>& op,
+                                   const std::chrono::milliseconds timeout)
+            {
+                workerExecutor()->postAfter([op]
+                {
+                    guarded([&]
+                    {
                         if (op->finished.load()) return;
                         op->timedOut.store(true);
-                        core::Session *s = nullptr;
+                        core::Session* s = nullptr;
                         {
                             std::lock_guard<std::mutex> lk(op->sessionMtx);
                             s = op->pinnedSession;
@@ -286,44 +337,52 @@ namespace dbmw::async {
                 }, timeout);
             }
 
-            template<class R>
+            template <class R>
             static Handle submitStatement(
-                const std::shared_ptr<core::DataSource> &root, const std::string &sql,
-                const common::Params &params, const common::OperationType gateType,
-                const StatementPolicy &policy,
-                std::function<void(core::Session &, R &)> attemptFn,
+                const std::shared_ptr<core::DataSource>& root, const std::string& sql,
+                const common::Params& params, const common::OperationType gateType,
+                const StatementPolicy& policy,
+                std::function<void(core::Session&, R&)> attemptFn,
                 std::function<std::function<common::Status()>(
-                    const std::shared_ptr<core::DataSource> &primary)> bufferedMaker,
-                std::function<void(R &&)> cb, const Options &opts) {
-                if (!cb) {
-                    return failNow<R>([](R &&) {
+                    const std::shared_ptr<core::DataSource>& primary)> bufferedMaker,
+                std::function<void(R&&)> cb, const Options& opts)
+            {
+                if (!cb)
+                {
+                    return failNow<R>([](R&&)
+                                      {
                                       },
                                       common::Status::error(common::ErrorCode::ConfigError,
                                                             "null callback"));
                 }
-                if (!root) {
+                if (!root)
+                {
                     return failNow<R>(std::move(cb),
                                       common::Status::error(common::ErrorCode::ConfigError,
                                                             "datasource not found"));
                 }
                 const auto ex = workerExecutor();
-                if (!ex) {
+                if (!ex)
+                {
                     return failNow<R>(std::move(cb),
                                       common::Status::error(
                                           common::ErrorCode::ConfigError,
-                                          "async not enabled: call DBMW::init first "
+                                          "async not enabled: call SQLConduit::init first "
                                           "or async::setExecutor"));
                 }
-                if (gStopping.load()) {
+                if (gStopping.load())
+                {
                     return failNow<R>(std::move(cb),
                                       common::Status::error(common::ErrorCode::PoolClosed,
-                                                            "dbmw is shutting down"));
+                                                            "SQLConduit is shutting down"));
                 }
 
-                if (const auto g = root->preGate(sql, gateType); !g.ok()) {
+                if (const auto g = root->preGate(sql, gateType); !g.ok())
+                {
                     return failNow<R>(std::move(cb), g);
                 }
-                if (root->isCircuitOpen()) {
+                if (root->isCircuitOpen())
+                {
                     return failNow<R>(std::move(cb),
                                       common::Status::error(
                                           common::ErrorCode::CircuitOpen,
@@ -332,13 +391,16 @@ namespace dbmw::async {
 
                 common::SqlContext routeCtx = common::ContextScope::current();
                 core::detail::runOnRoute(root->name(), sql, gateType, routeCtx);
-                std::vector<std::shared_ptr<core::DataSource> > targets;
+                std::vector<std::shared_ptr<core::DataSource>> targets;
                 {
                     const common::ContextScope scope(routeCtx);
-                    if (policy.isWrite) {
+                    if (policy.isWrite)
+                    {
                         targets = root->writeTargets();
                         if (targets.empty() && !root->primary_) targets.push_back(root);
-                    } else {
+                    }
+                    else
+                    {
                         auto t = root->readTarget();
                         if (!t) t = root;
                         targets.push_back(t);
@@ -348,7 +410,7 @@ namespace dbmw::async {
                     }
                 }
 
-                auto ctx = std::make_shared<StatementOp<R> >();
+                auto ctx = std::make_shared<StatementOp<R>>();
                 ctx->op = std::make_shared<OpState>();
                 ctx->root = root;
                 ctx->targets = std::move(targets);
@@ -361,11 +423,14 @@ namespace dbmw::async {
                 ctx->policy = policy;
                 ctx->entryCtx = std::move(routeCtx);
 
-                if (policy.cacheable) {
-                    if constexpr (std::is_same_v<R, QueryResult>) {
+                if (policy.cacheable)
+                {
+                    if constexpr (std::is_same_v<R, QueryResult>)
+                    {
                         common::ResultSet cached;
                         std::string key;
-                        if (ctx->targets.front()->cacheLookup(sql, params, cached, key)) {
+                        if (ctx->targets.front()->cacheLookup(sql, params, cached, key))
+                        {
                             QueryResult r;
                             r.status = common::Status::OK();
                             r.rows = std::move(cached);
@@ -397,7 +462,8 @@ namespace dbmw::async {
                                              gDefaultTimeoutMs.load(std::memory_order_relaxed));
                 if (timeout > std::chrono::milliseconds(0)) armTimeout(ctx->op, timeout);
 
-                if (!ex->tryPost([ctx] { step1Statement(ctx); })) {
+                if (!ex->tryPost([ctx] { step1Statement(ctx); }))
+                {
                     R r;
                     r.status = common::Status::error(
                         common::ErrorCode::Overloaded,
@@ -408,15 +474,18 @@ namespace dbmw::async {
                 return handle;
             }
 
-            template<class R>
-            static void step1Statement(const std::shared_ptr<StatementOp<R> > &ctx) {
-                guarded([&] {
-                    const auto &op = ctx->op;
+            template <class R>
+            static void step1Statement(const std::shared_ptr<StatementOp<R>>& ctx)
+            {
+                guarded([&]
+                {
+                    const auto& op = ctx->op;
                     Handle::State expected = Handle::State::Queued;
                     op->state.compare_exchange_strong(expected, Handle::State::Running);
 
                     if (op->finished.load()) return;
-                    if (op->userCancelled.load()) {
+                    if (op->userCancelled.load())
+                    {
                         R r;
                         r.status = common::Status::error(
                             common::ErrorCode::Cancelled,
@@ -425,7 +494,8 @@ namespace dbmw::async {
                         return;
                     }
 
-                    if (ctx->targetIdx >= ctx->targets.size()) {
+                    if (ctx->targetIdx >= ctx->targets.size())
+                    {
                         R r;
                         r.status = common::Status::error(
                             common::ErrorCode::CircuitOpen,
@@ -439,7 +509,8 @@ namespace dbmw::async {
                     const auto target = ctx->targets[ctx->targetIdx];
                     ++ctx->attempt;
 
-                    if (const auto gate = target->beforeAttempt(); !gate.ok()) {
+                    if (const auto gate = target->beforeAttempt(); !gate.ok())
+                    {
                         R r;
                         r.status = gate;
                         ctx->attempt = std::numeric_limits<int>::max();
@@ -448,7 +519,8 @@ namespace dbmw::async {
                     }
 
                     const auto pool = target->pool();
-                    if (!pool) {
+                    if (!pool)
+                    {
                         R r;
                         r.status = common::Status::error(
                             common::ErrorCode::PoolClosed,
@@ -460,25 +532,30 @@ namespace dbmw::async {
                     pool->borrowAsync(ctx->borrowTimeout, makePoolIo(workerExecutor()),
                                       [ctx, target](std::unique_ptr<
                                                         core::ConnectionPool::Handle> h,
-                                                    common::Status st) {
+                                                    common::Status st)
+                                      {
                                           step2Statement(ctx, target, std::move(h),
                                                          std::move(st));
                                       });
                 });
             }
 
-            template<class R>
-            static void step2Statement(const std::shared_ptr<StatementOp<R> > &ctx,
-                                       const std::shared_ptr<core::DataSource> &target,
+            template <class R>
+            static void step2Statement(const std::shared_ptr<StatementOp<R>>& ctx,
+                                       const std::shared_ptr<core::DataSource>& target,
                                        std::unique_ptr<core::ConnectionPool::Handle> h,
-                                       common::Status borrowStatus) {
-                guarded([&] {
-                    const auto &op = ctx->op;
+                                       common::Status borrowStatus)
+            {
+                guarded([&]
+                {
+                    const auto& op = ctx->op;
                     if (op->finished.load()) return;
 
-                    if (!h) {
+                    if (!h)
+                    {
                         target->afterAttempt(borrowStatus);
-                        handleAttemptFailure(ctx, [&] {
+                        handleAttemptFailure(ctx, [&]
+                        {
                             R r;
                             r.status = std::move(borrowStatus);
                             return r;
@@ -486,7 +563,8 @@ namespace dbmw::async {
                         return;
                     }
 
-                    if (op->userCancelled.load()) {
+                    if (op->userCancelled.load())
+                    {
                         R r;
                         r.status = common::Status::error(common::ErrorCode::Cancelled,
                                                          "operation cancelled before execution");
@@ -501,14 +579,19 @@ namespace dbmw::async {
                     }
 
                     R r;
-                    try {
+                    try
+                    {
                         common::ContextScope scope(ctx->entryCtx);
                         ctx->attemptFn(*session, r);
-                    } catch (const std::exception &e) {
+                    }
+                    catch (const std::exception& e)
+                    {
                         r.status = common::Status::error(
                             common::ErrorCode::Unknown,
                             std::string("async attempt threw: ") + e.what());
-                    } catch (...) {
+                    }
+                    catch (...)
+                    {
                         r.status = common::Status::error(
                             common::ErrorCode::Unknown,
                             "async attempt threw an unknown exception");
@@ -520,14 +603,18 @@ namespace dbmw::async {
                     }
                     target->afterAttempt(r.status);
 
-                    if (r.status.ok()) {
-                        if (ctx->policy.isWrite && !ctx->entryCtx.shadow) {
+                    if (r.status.ok())
+                    {
+                        if (ctx->policy.isWrite && !ctx->entryCtx.shadow)
+                        {
                             ctx->root->markWrite();
                             ctx->entryCtx.wroteInThisRequest = true;
                         }
                         if (!ctx->entryCtx.shadow) target->afterAttempt(r.status);
-                        if (ctx->policy.cacheable && !ctx->entryCtx.shadow) {
-                            if constexpr (std::is_same_v<R, QueryResult>) {
+                        if (ctx->policy.cacheable && !ctx->entryCtx.shadow)
+                        {
+                            if constexpr (std::is_same_v<R, QueryResult>)
+                            {
                                 if (!ctx->cacheKey.empty())
                                     target->cacheStore(ctx->cacheKey, r.rows);
                             }
@@ -539,14 +626,16 @@ namespace dbmw::async {
                 });
             }
 
-            template<class R>
-            static void handleAttemptFailure(const std::shared_ptr<StatementOp<R> > &ctx,
-                                             R r) {
-                const auto &op = ctx->op;
+            template <class R>
+            static void handleAttemptFailure(const std::shared_ptr<StatementOp<R>>& ctx,
+                                             R r)
+            {
+                const auto& op = ctx->op;
                 if (op->finished.load()) return;
-                const auto &st = r.status;
+                const auto& st = r.status;
 
-                if (op->userCancelled.load()) {
+                if (op->userCancelled.load())
+                {
                     finishStatement(ctx, std::move(r));
                     return;
                 }
@@ -557,7 +646,8 @@ namespace dbmw::async {
 
                 if (st.retryable && target
                     && ctx->attempt < maxAttempts(ctx->policy, *target,
-                                                  ctx->entryCtx.idempotency)) {
+                                                  ctx->entryCtx.idempotency))
+                {
                     const auto delay = target->retryDelay(ctx->attempt);
                     scheduleNext(ctx, delay);
                     return;
@@ -566,12 +656,14 @@ namespace dbmw::async {
                 const bool transferable = ctx->policy.isWrite
                                               ? core::DataSource::safeToFailoverWrite(st)
                                               : (st.retryable || st.connectionBroken ||
-                                                 st.code == common::ErrorCode::CircuitOpen);
+                                                  st.code == common::ErrorCode::CircuitOpen);
                 bool rowsOk = true;
-                if (ctx->policy.fallbackOnlyIfNoRows) {
+                if (ctx->policy.fallbackOnlyIfNoRows)
+                {
                     if constexpr (std::is_same_v<R, EachResult>) rowsOk = r.rows == 0;
                 }
-                if (transferable && rowsOk && ctx->targetIdx + 1 < ctx->targets.size()) {
+                if (transferable && rowsOk && ctx->targetIdx + 1 < ctx->targets.size())
+                {
                     ++ctx->targetIdx;
                     ctx->attempt = 0;
                     scheduleNext(ctx, std::chrono::milliseconds(0));
@@ -582,9 +674,11 @@ namespace dbmw::async {
                     && !ctx->entryCtx.shadow
                     && ctx->root->primary_
                     && ctx->root->writeBuffer_ && ctx->root->writeBuffer_->enabled()
-                    && ctx->bufferedMaker) {
+                    && ctx->bufferedMaker)
+                {
                     if (ctx->root->writeBuffer_->enqueue(ctx->bufferedMaker(
-                        ctx->root->primary_))) {
+                        ctx->root->primary_)))
+                    {
                         auto accepted = common::Status::error(
                             common::ErrorCode::Buffered,
                             "group '" + ctx->root->name()
@@ -598,79 +692,92 @@ namespace dbmw::async {
                 finishStatement(ctx, std::move(r));
             }
 
-            template<class R>
-            static void scheduleNext(const std::shared_ptr<StatementOp<R> > &ctx,
-                                     const std::chrono::milliseconds delay) {
+            template <class R>
+            static void scheduleNext(const std::shared_ptr<StatementOp<R>>& ctx,
+                                     const std::chrono::milliseconds delay)
+            {
                 const auto ex = workerExecutor();
-                if (!ex || gStopping.load()) {
+                if (!ex || gStopping.load())
+                {
                     R r;
                     r.status = common::Status::error(common::ErrorCode::PoolClosed,
-                                                     "dbmw is shutting down");
+                                                     "SQLConduit is shutting down");
                     finishStatement(ctx, std::move(r));
                     return;
                 }
                 ex->postAfter([ctx] { step1Statement(ctx); }, delay);
             }
 
-            static int maxAttempts(const StatementPolicy &policy,
-                                   const core::DataSource &target,
-                                   const common::Idempotency idem) {
+            static int maxAttempts(const StatementPolicy& policy,
+                                   const core::DataSource& target,
+                                   const common::Idempotency idem)
+            {
                 if (idem == common::Idempotency::NonIdempotent
-                    && policy.retry == RetryMode::WriteRetries) {
+                    && policy.retry == RetryMode::WriteRetries)
+                {
                     return 1;
                 }
                 if (idem == common::Idempotency::Idempotent
-                    && policy.retry == RetryMode::WriteRetries) {
+                    && policy.retry == RetryMode::WriteRetries)
+                {
                     return std::max(1, target.retry_.max_attempts);
                 }
-                switch (policy.retry) {
-                    case RetryMode::ReadRetries:
-                        return std::max(1, target.retry_.max_attempts);
-                    case RetryMode::WriteRetries:
-                        return target.retry_.retry_writes
-                                   ? std::max(1, target.retry_.max_attempts)
-                                   : 1;
-                    case RetryMode::Single:
-                        return 1;
+                switch (policy.retry)
+                {
+                case RetryMode::ReadRetries:
+                    return std::max(1, target.retry_.max_attempts);
+                case RetryMode::WriteRetries:
+                    return target.retry_.retry_writes
+                               ? std::max(1, target.retry_.max_attempts)
+                               : 1;
+                case RetryMode::Single:
+                    return 1;
                 }
                 return 1;
             }
 
             static Handle submitSessionOp(std::shared_ptr<core::DataSource> root,
                                           const bool transactional,
-                                          const common::TransactionOptions &txOpts,
-                                          const core::SessionFn &fn,
-                                          std::function<void(OpResult &&)> cb,
-                                          const Options &opts) {
-                if (!cb) {
-                    return failNow<OpResult>([](OpResult &&) {
+                                          const common::TransactionOptions& txOpts,
+                                          const core::SessionFn& fn,
+                                          std::function<void(OpResult&&)> cb,
+                                          const Options& opts)
+            {
+                if (!cb)
+                {
+                    return failNow<OpResult>([](OpResult&&)
+                                             {
                                              },
                                              common::Status::error(
                                                  common::ErrorCode::ConfigError,
                                                  "null callback"));
                 }
-                if (!root) {
+                if (!root)
+                {
                     return failNow<OpResult>(std::move(cb),
                                              common::Status::error(
                                                  common::ErrorCode::ConfigError,
                                                  "datasource not found"));
                 }
                 const auto ex = workerExecutor();
-                if (!ex) {
+                if (!ex)
+                {
                     return failNow<OpResult>(std::move(cb),
                                              common::Status::error(
                                                  common::ErrorCode::ConfigError,
-                                                 "async not enabled: call DBMW::init first "
+                                                 "async not enabled: call SQLConduit::init first "
                                                  "or async::setExecutor"));
                 }
-                if (gStopping.load()) {
+                if (gStopping.load())
+                {
                     return failNow<OpResult>(std::move(cb),
                                              common::Status::error(
                                                  common::ErrorCode::PoolClosed,
-                                                 "dbmw is shutting down"));
+                                                 "SQLConduit is shutting down"));
                 }
 
-                if (const auto g = root->gateSession(); !g.ok()) {
+                if (const auto g = root->gateSession(); !g.ok())
+                {
                     return failNow<OpResult>(std::move(cb), g);
                 }
 
@@ -686,7 +793,8 @@ namespace dbmw::async {
 
                 registryAdd();
                 const Handle handle(ctx->op);
-                if (!ex->tryPost([ctx] { runSessionOp(ctx); })) {
+                if (!ex->tryPost([ctx] { runSessionOp(ctx); }))
+                {
                     OpResult r;
                     r.status = common::Status::error(
                         common::ErrorCode::Overloaded,
@@ -700,14 +808,17 @@ namespace dbmw::async {
                 return handle;
             }
 
-            static void runSessionOp(const std::shared_ptr<SessionOp> &ctx) {
-                guarded([&] {
-                    const auto &op = ctx->op;
+            static void runSessionOp(const std::shared_ptr<SessionOp>& ctx)
+            {
+                guarded([&]
+                {
+                    const auto& op = ctx->op;
                     Handle::State expected = Handle::State::Queued;
                     op->state.compare_exchange_strong(expected, Handle::State::Running);
 
                     if (op->finished.load()) return;
-                    if (op->userCancelled.load()) {
+                    if (op->userCancelled.load())
+                    {
                         op->finished.store(true);
                         op->state.store(Handle::State::Done);
                         registryRemove();
@@ -719,22 +830,30 @@ namespace dbmw::async {
                     }
 
                     common::Status st;
-                    try {
+                    try
+                    {
                         common::ContextScope scope(ctx->entryCtx);
-                        if (ctx->transactional) {
+                        if (ctx->transactional)
+                        {
                             st = ctx->root->transactionInternal(
                                 ctx->txOpts, ctx->fn, ctx->borrowTimeout,
                                 ctx->root->readOnly_);
-                        } else {
+                        }
+                        else
+                        {
                             st = ctx->root->withSessionInternal(
                                 ctx->fn, ctx->borrowTimeout, nullptr,
                                 ctx->root->readOnly_);
                         }
-                    } catch (const std::exception &e) {
+                    }
+                    catch (const std::exception& e)
+                    {
                         st = common::Status::error(
                             common::ErrorCode::Unknown,
                             std::string("async session op threw: ") + e.what());
-                    } catch (...) {
+                    }
+                    catch (...)
+                    {
                         st = common::Status::error(
                             common::ErrorCode::Unknown,
                             "async session op threw an unknown exception");
@@ -750,21 +869,24 @@ namespace dbmw::async {
             }
 
             static common::Status bufferedReplayExecute(
-                const std::shared_ptr<core::DataSource> &primary,
-                const std::string &sql, const common::Params &params) {
+                const std::shared_ptr<core::DataSource>& primary,
+                const std::string& sql, const common::Params& params)
+            {
                 std::int64_t ignored = 0;
                 return primary->executeUngated(sql, params, ignored);
             }
 
             static common::Status bufferedReplayBatch(
-                const std::shared_ptr<core::DataSource> &primary,
-                const std::string &sql, const common::ParamBatch &batch) {
+                const std::shared_ptr<core::DataSource>& primary,
+                const std::string& sql, const common::ParamBatch& batch)
+            {
                 common::BatchResult ignored;
                 return primary->executeBatchUngated(sql, batch, ignored);
             }
         };
 
-        void initEngine(const config::AsyncConfig &cfg) {
+        void initEngine(const config::AsyncConfig& cfg)
+        {
             std::lock_guard<std::mutex> lk(gMtx);
             gStopping.store(false);
             gDefaultTimeoutMs.store(
@@ -776,13 +898,15 @@ namespace dbmw::async {
             gCompletion = gExecutor;
         }
 
-        void drainAndStop(const std::chrono::milliseconds grace) {
+        void drainAndStop(const std::chrono::milliseconds grace)
+        {
             gStopping.store(true);
 
             {
                 std::unique_lock<std::mutex> lk(gMtx);
                 const auto deadline = std::chrono::steady_clock::now() + grace;
-                while (gInFlight > 0) {
+                while (gInFlight > 0)
+                {
                     if (gDrainCv.wait_until(lk, deadline) == std::cv_status::timeout) break;
                 }
             }
@@ -799,32 +923,38 @@ namespace dbmw::async {
             if (main && main != completion) main->shutdown(grace);
         }
 
-        std::size_t inFlight() {
+        std::size_t inFlight()
+        {
             std::lock_guard<std::mutex> lk(gMtx);
             return gInFlight;
         }
     }
 
-    Handle::State Handle::state() const {
+    Handle::State Handle::state() const
+    {
         if (control_ && control_->state) return control_->state();
         if (!s_) return State::Done;
         return s_->state.load(std::memory_order_acquire);
     }
 
-    common::Status Handle::cancel() const {
+    common::Status Handle::cancel() const
+    {
         if (control_ && control_->cancel) return control_->cancel();
-        if (!s_) {
+        if (!s_)
+        {
             return common::Status::error(common::ErrorCode::ConfigError,
                                          "invalid handle (default-constructed or moved-from)");
         }
         const auto st = s_->state.load(std::memory_order_acquire);
-        if (st == State::Done) {
+        if (st == State::Done)
+        {
             return common::Status::error(common::ErrorCode::QueryError,
                                          "operation already finished");
         }
         s_->userCancelled.store(true, std::memory_order_release);
-        if (st == State::Running) {
-            core::Session *s = nullptr;
+        if (st == State::Running)
+        {
+            core::Session* s = nullptr;
             {
                 std::lock_guard<std::mutex> lk(s_->sessionMtx);
                 s = s_->pinnedSession;
@@ -835,159 +965,187 @@ namespace dbmw::async {
         return common::Status::OK();
     }
 
-    Handle query(const std::string &sql, QueryCallback cb, const Options opts) {
+    Handle query(const std::string& sql, QueryCallback cb, const Options opts)
+    {
         return query(std::string(), sql, std::move(cb), opts);
     }
 
-    Handle query(const std::string &sql, const common::Params &params,
-                 QueryCallback cb, const Options opts) {
+    Handle query(const std::string& sql, const common::Params& params,
+                 QueryCallback cb, const Options opts)
+    {
         return query(std::string(), sql, params, std::move(cb), opts);
     }
 
-    Handle query(const std::string &dataSource, const std::string &sql,
-                 QueryCallback cb, const Options opts) {
+    Handle query(const std::string& dataSource, const std::string& sql,
+                 QueryCallback cb, const Options opts)
+    {
         return query(dataSource, sql, common::Params{}, std::move(cb), opts);
     }
 
-    Handle query(const std::string &dataSource, const std::string &sql,
-                 const common::Params &params, QueryCallback cb, const Options opts) {
+    Handle query(const std::string& dataSource, const std::string& sql,
+                 const common::Params& params, QueryCallback cb, const Options opts)
+    {
         detail::StatementPolicy policy;
         policy.isWrite = false;
         policy.retry = detail::RetryMode::ReadRetries;
         policy.cacheable = true;
         return detail::AsyncEngine::submitStatement<QueryResult>(
             resolve(dataSource), sql, params, common::OperationType::Query, policy,
-            [sql, params](const core::Session &s, QueryResult &r) {
+            [sql, params](const core::Session& s, QueryResult& r)
+            {
                 if (params.empty()) r.status = s.query(sql, r.rows);
                 else r.status = s.query(sql, params, r.rows);
             },
             {}, std::move(cb), opts);
     }
 
-    Handle queryAll(const std::string &sql, MultiQueryCallback cb, const Options opts) {
+    Handle queryAll(const std::string& sql, MultiQueryCallback cb, const Options opts)
+    {
         return queryAll(std::string(), sql, std::move(cb), opts);
     }
 
-    Handle queryAll(const std::string &sql, const common::Params &params,
-                    MultiQueryCallback cb, const Options opts) {
+    Handle queryAll(const std::string& sql, const common::Params& params,
+                    MultiQueryCallback cb, const Options opts)
+    {
         return queryAll(std::string(), sql, params, std::move(cb), opts);
     }
 
-    Handle queryAll(const std::string &dataSource, const std::string &sql,
-                    MultiQueryCallback cb, const Options opts) {
+    Handle queryAll(const std::string& dataSource, const std::string& sql,
+                    MultiQueryCallback cb, const Options opts)
+    {
         return queryAll(dataSource, sql, common::Params{}, std::move(cb), opts);
     }
 
-    Handle queryAll(const std::string &dataSource, const std::string &sql,
-                    const common::Params &params, MultiQueryCallback cb, const Options opts) {
+    Handle queryAll(const std::string& dataSource, const std::string& sql,
+                    const common::Params& params, MultiQueryCallback cb, const Options opts)
+    {
         detail::StatementPolicy policy;
         policy.isWrite = false;
         policy.retry = detail::RetryMode::ReadRetries;
         policy.cacheable = false;
         return detail::AsyncEngine::submitStatement<MultiQueryResult>(
             resolve(dataSource), sql, params, common::OperationType::Query, policy,
-            [sql, params](const core::Session &s, MultiQueryResult &r) {
+            [sql, params](const core::Session& s, MultiQueryResult& r)
+            {
                 r.status = s.queryAll(sql, params, r.sets);
             },
             {}, std::move(cb), opts);
     }
 
-    Handle execute(const std::string &sql, ExecCallback cb, const Options opts) {
+    Handle execute(const std::string& sql, ExecCallback cb, const Options opts)
+    {
         return execute(std::string(), sql, std::move(cb), opts);
     }
 
-    Handle execute(const std::string &sql, const common::Params &params,
-                   ExecCallback cb, const Options opts) {
+    Handle execute(const std::string& sql, const common::Params& params,
+                   ExecCallback cb, const Options opts)
+    {
         return execute(std::string(), sql, params, std::move(cb), opts);
     }
 
-    Handle execute(const std::string &dataSource, const std::string &sql,
-                   ExecCallback cb, const Options opts) {
+    Handle execute(const std::string& dataSource, const std::string& sql,
+                   ExecCallback cb, const Options opts)
+    {
         return execute(dataSource, sql, common::Params{}, std::move(cb), opts);
     }
 
-    Handle execute(const std::string &dataSource, const std::string &sql,
-                   const common::Params &params, ExecCallback cb, const Options opts) {
+    Handle execute(const std::string& dataSource, const std::string& sql,
+                   const common::Params& params, ExecCallback cb, const Options opts)
+    {
         detail::StatementPolicy policy;
         policy.isWrite = true;
         policy.retry = detail::RetryMode::WriteRetries;
         policy.allowWriteBuffer = true;
         return detail::AsyncEngine::submitStatement<ExecResult>(
             resolve(dataSource), sql, params, common::OperationType::Execute, policy,
-            [sql, params](const core::Session &s, ExecResult &r) {
+            [sql, params](const core::Session& s, ExecResult& r)
+            {
                 if (params.empty()) r.status = s.execute(sql, r.affected);
                 else r.status = s.execute(sql, params, r.affected);
             },
-            [sql, params](const std::shared_ptr<core::DataSource> &primary) {
+            [sql, params](const std::shared_ptr<core::DataSource>& primary)
+            {
                 return std::function<common::Status()>(
-                    [primary, sql, params] {
+                    [primary, sql, params]
+                    {
                         return detail::AsyncEngine::bufferedReplayExecute(primary, sql, params);
                     });
             },
             std::move(cb), opts);
     }
 
-    Handle execute(const std::string &sql, const common::Params &params,
-                   ExecKeysCallback cb, const Options opts) {
+    Handle execute(const std::string& sql, const common::Params& params,
+                   ExecKeysCallback cb, const Options opts)
+    {
         return execute(std::string(), sql, params, std::move(cb), opts);
     }
 
-    Handle execute(const std::string &dataSource, const std::string &sql,
-                   const common::Params &params, ExecKeysCallback cb, const Options opts) {
+    Handle execute(const std::string& dataSource, const std::string& sql,
+                   const common::Params& params, ExecKeysCallback cb, const Options opts)
+    {
         detail::StatementPolicy policy;
         policy.isWrite = true;
         policy.retry = detail::RetryMode::WriteRetries;
         policy.allowWriteBuffer = false;
         return detail::AsyncEngine::submitStatement<ExecKeysResult>(
             resolve(dataSource), sql, params, common::OperationType::Execute, policy,
-            [sql, params](const core::Session &s, ExecKeysResult &r) {
+            [sql, params](const core::Session& s, ExecKeysResult& r)
+            {
                 if (params.empty()) r.status = s.execute(sql, r.affected, r.keys);
                 else r.status = s.execute(sql, params, r.affected, r.keys);
             },
             {}, std::move(cb), opts);
     }
 
-    Handle queryEach(const std::string &sql, const common::Params &params,
-                     const common::RowCallback &rowCb, EachCallback done,
-                     const Options opts) {
+    Handle queryEach(const std::string& sql, const common::Params& params,
+                     const common::RowCallback& rowCb, EachCallback done,
+                     const Options opts)
+    {
         return queryEach(std::string(), sql, params, rowCb, std::move(done), opts);
     }
 
-    Handle queryEach(const std::string &dataSource, const std::string &sql,
-                     const common::Params &params, const common::RowCallback &rowCb,
-                     EachCallback done, const Options opts) {
+    Handle queryEach(const std::string& dataSource, const std::string& sql,
+                     const common::Params& params, const common::RowCallback& rowCb,
+                     EachCallback done, const Options opts)
+    {
         detail::StatementPolicy policy;
         policy.isWrite = false;
         policy.retry = detail::RetryMode::Single;
         policy.fallbackOnlyIfNoRows = true;
         return detail::AsyncEngine::submitStatement<EachResult>(
             resolve(dataSource), sql, params, common::OperationType::Stream, policy,
-            [sql, params, rowCb](const core::Session &s, EachResult &r) {
+            [sql, params, rowCb](const core::Session& s, EachResult& r)
+            {
                 r.status = s.queryEach(sql, params, rowCb, r.rows);
             },
             {}, std::move(done), opts);
     }
 
-    Handle executeBatch(const std::string &sql, const common::ParamBatch &batch,
-                        BatchCallback cb, const Options opts) {
+    Handle executeBatch(const std::string& sql, const common::ParamBatch& batch,
+                        BatchCallback cb, const Options opts)
+    {
         return executeBatch(std::string(), sql, batch, std::move(cb), opts);
     }
 
-    Handle executeBatch(const std::string &dataSource, const std::string &sql,
-                        const common::ParamBatch &batch, BatchCallback cb,
-                        const Options opts) {
+    Handle executeBatch(const std::string& dataSource, const std::string& sql,
+                        const common::ParamBatch& batch, BatchCallback cb,
+                        const Options opts)
+    {
         detail::StatementPolicy policy;
         policy.isWrite = true;
         policy.retry = detail::RetryMode::Single;
         policy.allowWriteBuffer = true;
         return detail::AsyncEngine::submitStatement<BatchResult>(
             resolve(dataSource), sql, {}, common::OperationType::Batch, policy,
-            [sql, batch](const core::Session &s, BatchResult &r) {
+            [sql, batch](const core::Session& s, BatchResult& r)
+            {
                 r.status = s.executeBatch(sql, batch, r.batch);
             },
-            [sql, batch](const std::shared_ptr<core::DataSource> &primary) {
+            [sql, batch](const std::shared_ptr<core::DataSource>& primary)
+            {
                 return std::function<common::Status()>(
-                    [primary, sql, batch] {
+                    [primary, sql, batch]
+                    {
                         return detail::AsyncEngine::bufferedReplayBatch(
                             primary, sql, batch);
                     });
@@ -995,157 +1153,180 @@ namespace dbmw::async {
             std::move(cb), opts);
     }
 
-    Handle transaction(const core::SessionFn &fn, OpCallback cb, const Options opts) {
+    Handle transaction(const core::SessionFn& fn, OpCallback cb, const Options opts)
+    {
         return detail::AsyncEngine::submitSessionOp(
             resolve(std::string()), true, common::TransactionOptions{}, fn,
             std::move(cb), opts);
     }
 
-    Handle transaction(const std::string &dataSource, const core::SessionFn &fn,
-                       OpCallback cb, const Options opts) {
+    Handle transaction(const std::string& dataSource, const core::SessionFn& fn,
+                       OpCallback cb, const Options opts)
+    {
         return detail::AsyncEngine::submitSessionOp(
             resolve(dataSource), true, common::TransactionOptions{}, fn,
             std::move(cb), opts);
     }
 
-    Handle transaction(const common::TransactionOptions &txOpts, const core::SessionFn &fn,
-                       OpCallback cb, const Options opts) {
+    Handle transaction(const common::TransactionOptions& txOpts, const core::SessionFn& fn,
+                       OpCallback cb, const Options opts)
+    {
         return detail::AsyncEngine::submitSessionOp(
             resolve(std::string()), true, txOpts, fn, std::move(cb), opts);
     }
 
-    Handle transaction(const std::string &dataSource, const common::TransactionOptions &txOpts,
-                       const core::SessionFn &fn, OpCallback cb, const Options opts) {
+    Handle transaction(const std::string& dataSource, const common::TransactionOptions& txOpts,
+                       const core::SessionFn& fn, OpCallback cb, const Options opts)
+    {
         return detail::AsyncEngine::submitSessionOp(
             resolve(dataSource), true, txOpts, fn, std::move(cb), opts);
     }
 
-    Handle withSession(const core::SessionFn &fn, OpCallback cb, const Options opts) {
+    Handle withSession(const core::SessionFn& fn, OpCallback cb, const Options opts)
+    {
         return detail::AsyncEngine::submitSessionOp(
             resolve(std::string()), false, common::TransactionOptions{}, fn,
             std::move(cb), opts);
     }
 
-    Handle withSession(const std::string &dataSource, const core::SessionFn &fn,
-                       OpCallback cb, const Options opts) {
+    Handle withSession(const std::string& dataSource, const core::SessionFn& fn,
+                       OpCallback cb, const Options opts)
+    {
         return detail::AsyncEngine::submitSessionOp(
             resolve(dataSource), false, common::TransactionOptions{}, fn,
             std::move(cb), opts);
     }
 
-    namespace {
-        template<class R>
-        std::future<R> makeFuturePair(std::shared_ptr<std::promise<R> > &promiseOut) {
-            auto promise = std::make_shared<std::promise<R> >();
+    namespace
+    {
+        template <class R>
+        std::future<R> makeFuturePair(std::shared_ptr<std::promise<R>>& promiseOut)
+        {
+            auto promise = std::make_shared<std::promise<R>>();
             auto future = promise->get_future();
             promiseOut = promise;
             return future;
         }
     }
 
-    std::future<QueryResult> query(const std::string &sql) {
-        std::shared_ptr<std::promise<QueryResult> > p;
+    std::future<QueryResult> query(const std::string& sql)
+    {
+        std::shared_ptr<std::promise<QueryResult>> p;
         auto f = makeFuturePair(p);
-        query(sql, QueryCallback([p](QueryResult &&r) { p->set_value(std::move(r)); }),
+        query(sql, QueryCallback([p](QueryResult&& r) { p->set_value(std::move(r)); }),
               {});
         return f;
     }
 
-    std::future<QueryResult> query(const std::string &sql, const common::Params &params) {
+    std::future<QueryResult> query(const std::string& sql, const common::Params& params)
+    {
         return query(std::string(), sql, params);
     }
 
-    std::future<QueryResult> query(const std::string &dataSource, const std::string &sql,
-                                   const common::Params &params) {
-        std::shared_ptr<std::promise<QueryResult> > p;
+    std::future<QueryResult> query(const std::string& dataSource, const std::string& sql,
+                                   const common::Params& params)
+    {
+        std::shared_ptr<std::promise<QueryResult>> p;
         auto f = makeFuturePair(p);
         query(dataSource, sql, params,
-              QueryCallback([p](QueryResult &&r) { p->set_value(std::move(r)); }), {});
+              QueryCallback([p](QueryResult&& r) { p->set_value(std::move(r)); }), {});
         return f;
     }
 
-    std::future<ExecResult> execute(const std::string &sql) {
+    std::future<ExecResult> execute(const std::string& sql)
+    {
         return execute(sql, common::Params{});
     }
 
-    std::future<ExecResult> execute(const std::string &sql, const common::Params &params) {
+    std::future<ExecResult> execute(const std::string& sql, const common::Params& params)
+    {
         return execute(std::string(), sql, params);
     }
 
-    std::future<ExecResult> execute(const std::string &dataSource, const std::string &sql,
-                                    const common::Params &params) {
-        std::shared_ptr<std::promise<ExecResult> > p;
+    std::future<ExecResult> execute(const std::string& dataSource, const std::string& sql,
+                                    const common::Params& params)
+    {
+        std::shared_ptr<std::promise<ExecResult>> p;
         auto f = makeFuturePair(p);
         execute(dataSource, sql, params,
-                ExecCallback([p](ExecResult &&r) { p->set_value(std::move(r)); }), {});
+                ExecCallback([p](ExecResult&& r) { p->set_value(std::move(r)); }), {});
         return f;
     }
 
-    std::future<ExecKeysResult> executeKeys(const std::string &sql,
-                                            const common::Params &params) {
+    std::future<ExecKeysResult> executeKeys(const std::string& sql,
+                                            const common::Params& params)
+    {
         return executeKeys(std::string(), sql, params);
     }
 
-    std::future<ExecKeysResult> executeKeys(const std::string &dataSource,
-                                            const std::string &sql,
-                                            const common::Params &params) {
-        std::shared_ptr<std::promise<ExecKeysResult> > p;
+    std::future<ExecKeysResult> executeKeys(const std::string& dataSource,
+                                            const std::string& sql,
+                                            const common::Params& params)
+    {
+        std::shared_ptr<std::promise<ExecKeysResult>> p;
         auto f = makeFuturePair(p);
         execute(dataSource, sql, params,
-                ExecKeysCallback([p](ExecKeysResult &&r) { p->set_value(std::move(r)); }),
+                ExecKeysCallback([p](ExecKeysResult&& r) { p->set_value(std::move(r)); }),
                 {});
         return f;
     }
 
-    std::future<EachResult> queryEach(const std::string &sql, const common::Params &params,
-                                      const common::RowCallback &rowCb) {
-        std::shared_ptr<std::promise<EachResult> > p;
+    std::future<EachResult> queryEach(const std::string& sql, const common::Params& params,
+                                      const common::RowCallback& rowCb)
+    {
+        std::shared_ptr<std::promise<EachResult>> p;
         auto f = makeFuturePair(p);
         queryEach(std::string(), sql, params, rowCb,
-                  EachCallback([p](EachResult &&r) { p->set_value(std::move(r)); }), {});
+                  EachCallback([p](EachResult&& r) { p->set_value(std::move(r)); }), {});
         return f;
     }
 
-    std::future<BatchResult> executeBatch(const std::string &sql,
-                                          const common::ParamBatch &batch) {
-        std::shared_ptr<std::promise<BatchResult> > p;
+    std::future<BatchResult> executeBatch(const std::string& sql,
+                                          const common::ParamBatch& batch)
+    {
+        std::shared_ptr<std::promise<BatchResult>> p;
         auto f = makeFuturePair(p);
         executeBatch(std::string(), sql, batch,
-                     BatchCallback([p](BatchResult &&r) { p->set_value(std::move(r)); }),
+                     BatchCallback([p](BatchResult&& r) { p->set_value(std::move(r)); }),
                      {});
         return f;
     }
 
-    std::future<OpResult> transaction(const core::SessionFn &fn) {
-        std::shared_ptr<std::promise<OpResult> > p;
+    std::future<OpResult> transaction(const core::SessionFn& fn)
+    {
+        std::shared_ptr<std::promise<OpResult>> p;
         auto f = makeFuturePair(p);
         transaction(std::string(), fn,
-                    OpCallback([p](OpResult &&r) { p->set_value(std::move(r)); }), {});
+                    OpCallback([p](OpResult&& r) { p->set_value(std::move(r)); }), {});
         return f;
     }
 
-    std::future<OpResult> transaction(const std::string &dataSource,
-                                      const common::TransactionOptions &txOpts,
-                                      const core::SessionFn &fn) {
-        std::shared_ptr<std::promise<OpResult> > p;
+    std::future<OpResult> transaction(const std::string& dataSource,
+                                      const common::TransactionOptions& txOpts,
+                                      const core::SessionFn& fn)
+    {
+        std::shared_ptr<std::promise<OpResult>> p;
         auto f = makeFuturePair(p);
         transaction(dataSource, txOpts, fn,
-                    OpCallback([p](OpResult &&r) { p->set_value(std::move(r)); }), {});
+                    OpCallback([p](OpResult&& r) { p->set_value(std::move(r)); }), {});
         return f;
     }
 
-    void setExecutor(std::shared_ptr<IExecutor> ex) {
+    void setExecutor(std::shared_ptr<IExecutor> ex)
+    {
         std::lock_guard<std::mutex> lk(gMtx);
         gExecutor = std::move(ex);
         if (!gCompletion) gCompletion = gExecutor;
     }
 
-    void setCompletionExecutor(std::shared_ptr<IExecutor> ex) {
+    void setCompletionExecutor(std::shared_ptr<IExecutor> ex)
+    {
         std::lock_guard<std::mutex> lk(gMtx);
         gCompletion = std::move(ex);
     }
 
-    ExecutorStats stats() {
+    ExecutorStats stats()
+    {
         const auto ex = workerExecutor();
         return ex ? ex->stats() : ExecutorStats{};
     }

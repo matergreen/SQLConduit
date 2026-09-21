@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-PW="${DBMW_TEST_ODBC_PASSWORD:-Dbmw!Test123}"
+PW="${SQLCONDUIT_TEST_ODBC_PASSWORD:-SqlConduit!Test123}"
 IMAGE=mcr.microsoft.com/mssql/server:2022-latest
 
 echo "==> ensure image $IMAGE"
@@ -23,14 +23,14 @@ done
 if [ "$READY" != "1" ]; then echo "MSSQL NOT READY"; docker logs mssql | tail -25; exit 1; fi
 echo "MSSQL READY"
 
-export DBMW_TEST_ODBC_HOST=127.0.0.1
-export DBMW_TEST_ODBC_PORT=1433
-export DBMW_TEST_ODBC_USER=sa
-export DBMW_TEST_ODBC_PASSWORD="$PW"
-export DBMW_TEST_ODBC_DATABASE=master
-export DBMW_TEST_ODBC_DRIVER=FreeTDS
+export SQLCONDUIT_TEST_ODBC_HOST=127.0.0.1
+export SQLCONDUIT_TEST_ODBC_PORT=1433
+export SQLCONDUIT_TEST_ODBC_USER=sa
+export SQLCONDUIT_TEST_ODBC_PASSWORD="$PW"
+export SQLCONDUIT_TEST_ODBC_DATABASE=master
+export SQLCONDUIT_TEST_ODBC_DRIVER=FreeTDS
 
-cd /root/dbmw/build-it/tests
-echo "==> run dbmw_odbc_integration_test"
-./dbmw_odbc_integration_test 2>&1
+cd /root/sqlconduit/build-it/tests
+echo "==> run sqlconduit_odbc_integration_test"
+./sqlconduit_odbc_integration_test 2>&1
 echo "ODBC_TEST_EXIT=$?"

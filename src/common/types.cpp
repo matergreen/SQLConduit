@@ -1,4 +1,4 @@
-#include "dbmw/common/types.h"
+#include "sqlconduit/common/types.h"
 
 #include <algorithm>
 #include <array>
@@ -11,42 +11,46 @@
 #include <variant>
 #include <vector>
 
-namespace dbmw::common {
-    const char *errorCodeToString(const ErrorCode c) {
-        switch (c) {
-            case ErrorCode::Ok: return "Ok";
-            case ErrorCode::ConfigError: return "ConfigError";
-            case ErrorCode::ConnectionFailed: return "ConnectionFailed";
-            case ErrorCode::QueryError: return "QueryError";
-            case ErrorCode::QueryTimeout: return "QueryTimeout";
-            case ErrorCode::Cancelled: return "Cancelled";
-            case ErrorCode::ConstraintViolation: return "ConstraintViolation";
-            case ErrorCode::Deadlock: return "Deadlock";
-            case ErrorCode::PingFailed: return "PingFailed";
-            case ErrorCode::TxError: return "TxError";
-            case ErrorCode::PoolExhausted: return "PoolExhausted";
-            case ErrorCode::PoolClosed: return "PoolClosed";
-            case ErrorCode::CircuitOpen: return "CircuitOpen";
-            case ErrorCode::NotConnected: return "NotConnected";
-            case ErrorCode::DriverDisabled: return "DriverDisabled";
-            case ErrorCode::UnknownDriver: return "UnknownDriver";
-            case ErrorCode::NotSupported: return "NotSupported";
-            case ErrorCode::RateLimited: return "RateLimited";
-            case ErrorCode::SqlBlocked: return "SqlBlocked";
-            case ErrorCode::Buffered: return "Buffered";
-            case ErrorCode::CursorClosed: return "CursorClosed";
-            case ErrorCode::CursorLimit: return "CursorLimit";
-            case ErrorCode::CursorError: return "CursorError";
-            case ErrorCode::Unknown: break;
-            case ErrorCode::Overloaded: return "Overloaded";
-            case ErrorCode::MappingError: return "MappingError";
-            case ErrorCode::IoError: return "IoError";
+namespace sqlconduit::common
+{
+    const char* errorCodeToString(const ErrorCode c)
+    {
+        switch (c)
+        {
+        case ErrorCode::Ok: return "Ok";
+        case ErrorCode::ConfigError: return "ConfigError";
+        case ErrorCode::ConnectionFailed: return "ConnectionFailed";
+        case ErrorCode::QueryError: return "QueryError";
+        case ErrorCode::QueryTimeout: return "QueryTimeout";
+        case ErrorCode::Cancelled: return "Cancelled";
+        case ErrorCode::ConstraintViolation: return "ConstraintViolation";
+        case ErrorCode::Deadlock: return "Deadlock";
+        case ErrorCode::PingFailed: return "PingFailed";
+        case ErrorCode::TxError: return "TxError";
+        case ErrorCode::PoolExhausted: return "PoolExhausted";
+        case ErrorCode::PoolClosed: return "PoolClosed";
+        case ErrorCode::CircuitOpen: return "CircuitOpen";
+        case ErrorCode::NotConnected: return "NotConnected";
+        case ErrorCode::DriverDisabled: return "DriverDisabled";
+        case ErrorCode::UnknownDriver: return "UnknownDriver";
+        case ErrorCode::NotSupported: return "NotSupported";
+        case ErrorCode::RateLimited: return "RateLimited";
+        case ErrorCode::SqlBlocked: return "SqlBlocked";
+        case ErrorCode::Buffered: return "Buffered";
+        case ErrorCode::CursorClosed: return "CursorClosed";
+        case ErrorCode::CursorLimit: return "CursorLimit";
+        case ErrorCode::CursorError: return "CursorError";
+        case ErrorCode::Unknown: break;
+        case ErrorCode::Overloaded: return "Overloaded";
+        case ErrorCode::MappingError: return "MappingError";
+        case ErrorCode::IoError: return "IoError";
         }
         return "Unknown";
     }
 
     Status Status::databaseError(const ErrorCode fallback, std::string msg,
-                                 std::string state, const std::int64_t vendorCode) {
+                                 std::string state, const std::int64_t vendorCode)
+    {
         Status status = Status::error(fallback, std::move(msg));
         status.sqlState = std::move(state);
         status.nativeCode = vendorCode;
@@ -54,25 +58,39 @@ namespace dbmw::common {
         const std::string sqlClass = status.sqlState.size() >= 2
                                          ? status.sqlState.substr(0, 2)
                                          : std::string();
-        if (status.sqlState == "HYT00" || status.sqlState == "HYT01") {
+        if (status.sqlState == "HYT00" || status.sqlState == "HYT01")
+        {
             status.code = ErrorCode::QueryTimeout;
             status.retryable = true;
-        } else if (status.sqlState == "57014") {
-            if (status.message.find("timeout") != std::string::npos) {
+        }
+        else if (status.sqlState == "57014")
+        {
+            if (status.message.find("timeout") != std::string::npos)
+            {
                 status.code = ErrorCode::QueryTimeout;
                 status.retryable = true;
-            } else {
+            }
+            else
+            {
                 status.code = ErrorCode::Cancelled;
             }
-        } else if (status.sqlState == "HY008") {
+        }
+        else if (status.sqlState == "HY008")
+        {
             status.code = ErrorCode::Cancelled;
-        } else if (status.sqlState == "40001" || status.sqlState == "40P01" ||
-                   sqlClass == "40") {
+        }
+        else if (status.sqlState == "40001" || status.sqlState == "40P01" ||
+            sqlClass == "40")
+        {
             status.code = ErrorCode::Deadlock;
             status.retryable = true;
-        } else if (sqlClass == "23") {
+        }
+        else if (sqlClass == "23")
+        {
             status.code = ErrorCode::ConstraintViolation;
-        } else if (sqlClass == "08") {
+        }
+        else if (sqlClass == "08")
+        {
             status.connectionBroken = true;
             status.retryable = true;
             if (fallback == ErrorCode::QueryError || fallback == ErrorCode::TxError)
@@ -81,8 +99,10 @@ namespace dbmw::common {
         return status;
     }
 
-    namespace {
-        std::tm toTm(const Timestamp &t, long long &fracNs, const bool utc) {
+    namespace
+    {
+        std::tm toTm(const Timestamp& t, long long& fracNs, const bool utc)
+        {
             const auto secs = std::chrono::floor<std::chrono::seconds>(t.time_since_epoch());
             fracNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
                 t.time_since_epoch() - secs).count();
@@ -98,13 +118,15 @@ namespace dbmw::common {
             return tm;
         }
 
-        std::string formatTimestamp(const Timestamp &t, bool withMillis, bool utc = false) {
+        std::string formatTimestamp(const Timestamp& t, bool withMillis, bool utc = false)
+        {
             long long fracNs = 0;
             const std::tm tm = toTm(t, fracNs, utc);
             char buf[32] = {0};
             std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
             std::string s(buf);
-            if (withMillis) {
+            if (withMillis)
+            {
                 const long long ms = (fracNs / 1000000LL) % 1000LL;
                 std::ostringstream os;
                 os << '.' << std::setw(3) << std::setfill('0') << ms;
@@ -113,44 +135,54 @@ namespace dbmw::common {
             return s;
         }
 
-        void appendHex(std::string &out, const Blob &b) {
-            static const char *kHex = "0123456789ABCDEF";
-            for (std::uint8_t byte: b) {
+        void appendHex(std::string& out, const Blob& b)
+        {
+            static const char* kHex = "0123456789ABCDEF";
+            for (std::uint8_t byte : b)
+            {
                 out.push_back(kHex[(byte >> 4) & 0x0F]);
                 out.push_back(kHex[byte & 0x0F]);
             }
         }
     }
 
-    const Value *Composite::find(const std::string &name) const {
-        for (const auto &f: fields)
+    const Value* Composite::find(const std::string& name) const
+    {
+        for (const auto& f : fields)
             if (f.first == name) return &f.second;
         return nullptr;
     }
 
-    const Value *TypedComposite::find(const std::string &name) const {
-        for (const auto &f: fields)
+    const Value* TypedComposite::find(const std::string& name) const
+    {
+        for (const auto& f : fields)
             if (f.first == name) return &f.second;
         return nullptr;
     }
 
-    std::string timestampToString(const Timestamp &t) {
+    std::string timestampToString(const Timestamp& t)
+    {
         return formatTimestamp(t, false);
     }
 
-    std::string timestampToStringMs(const Timestamp &t) {
+    std::string timestampToStringMs(const Timestamp& t)
+    {
         return formatTimestamp(t, true);
     }
 
-    std::string timestampToUtcStringMs(const Timestamp &t) {
+    std::string timestampToUtcStringMs(const Timestamp& t)
+    {
         return formatTimestamp(t, true, true) + "+00";
     }
 
-    bool tryParseTimestamp(const std::string &s, Timestamp &out) {
-        auto readInt = [&](size_t &i, const int width, int &val) -> bool {
+    bool tryParseTimestamp(const std::string& s, Timestamp& out)
+    {
+        auto readInt = [&](size_t& i, const int width, int& val) -> bool
+        {
             if (i + static_cast<size_t>(width) > s.size()) return false;
             val = 0;
-            for (int k = 0; k < width; ++k) {
+            for (int k = 0; k < width; ++k)
+            {
                 const char c = s[i + static_cast<size_t>(k)];
                 if (c < '0' || c > '9') return false;
                 val = val * 10 + (c - '0');
@@ -169,7 +201,8 @@ namespace dbmw::common {
         ++i;
         if (!readInt(i, 2, d)) return false;
 
-        if (i < s.size() && (s[i] == ' ' || s[i] == 'T')) {
+        if (i < s.size() && (s[i] == ' ' || s[i] == 'T'))
+        {
             ++i;
             if (!readInt(i, 2, h)) return false;
             if (i >= s.size() || s[i] != ':') return false;
@@ -181,18 +214,22 @@ namespace dbmw::common {
         }
 
         long long fracNs = 0;
-        if (i < s.size() && s[i] == '.') {
+        if (i < s.size() && s[i] == '.')
+        {
             ++i;
             long long v = 0;
             int digits = 0;
-            while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
-                if (digits < 9) {
+            while (i < s.size() && s[i] >= '0' && s[i] <= '9')
+            {
+                if (digits < 9)
+                {
                     v = v * 10 + (s[i] - '0');
                     ++digits;
                 }
                 ++i;
             }
-            while (digits < 9) {
+            while (digits < 9)
+            {
                 v *= 10;
                 ++digits;
             }
@@ -201,11 +238,15 @@ namespace dbmw::common {
 
         bool hasExplicitZone = false;
         int offsetSeconds = 0;
-        if (i < s.size()) {
-            if (s[i] == 'Z' || s[i] == 'z') {
+        if (i < s.size())
+        {
+            if (s[i] == 'Z' || s[i] == 'z')
+            {
                 hasExplicitZone = true;
                 ++i;
-            } else if (s[i] == '+' || s[i] == '-') {
+            }
+            else if (s[i] == '+' || s[i] == '-')
+            {
                 hasExplicitZone = true;
                 const int sign = s[i++] == '+' ? 1 : -1;
                 int oh = 0, om = 0;
@@ -218,7 +259,8 @@ namespace dbmw::common {
         }
         if (i != s.size()) return false;
 
-        const auto leap = [](int year) {
+        const auto leap = [](int year)
+        {
             return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
         };
         static constexpr int monthDays[] = {
@@ -227,11 +269,13 @@ namespace dbmw::common {
         };
         if (mo < 1 || mo > 12 || d < 1 ||
             d > monthDays[mo - 1] + (mo == 2 && leap(y) ? 1 : 0) ||
-            h < 0 || h > 23 || mi < 0 || mi > 59 || se < 0 || se > 59 || y < 1900) {
+            h < 0 || h > 23 || mi < 0 || mi > 59 || se < 0 || se > 59 || y < 1900)
+        {
             return false;
         }
 
-        if (hasExplicitZone) {
+        if (hasExplicitZone)
+        {
             int civilYear = y;
             const unsigned civilMonth = static_cast<unsigned>(mo);
             civilYear -= civilMonth <= 2;
@@ -239,14 +283,14 @@ namespace dbmw::common {
             const unsigned yoe = static_cast<unsigned>(civilYear - era * 400);
             const unsigned shiftedMonth = civilMonth > 2 ? civilMonth - 3 : civilMonth + 9;
             const unsigned doy = (153 * shiftedMonth + 2) / 5
-                                 + static_cast<unsigned>(d) - 1;
+                + static_cast<unsigned>(d) - 1;
             const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
             const std::int64_t days = static_cast<std::int64_t>(era) * 146097
-                                      + static_cast<std::int64_t>(doe) - 719468;
+                + static_cast<std::int64_t>(doe) - 719468;
             const std::int64_t seconds = days * 86400 + h * 3600 + mi * 60 + se
-                                         - offsetSeconds;
+                - offsetSeconds;
             out = Timestamp{} + std::chrono::duration_cast<Timestamp::duration>(
-                      std::chrono::seconds(seconds) + std::chrono::nanoseconds(fracNs));
+                std::chrono::seconds(seconds) + std::chrono::nanoseconds(fracNs));
             return true;
         }
 
@@ -262,37 +306,41 @@ namespace dbmw::common {
         if (tt == static_cast<std::time_t>(-1)) return false;
 
         out = std::chrono::system_clock::from_time_t(tt)
-              + std::chrono::duration_cast<Timestamp::duration>(
-                  std::chrono::nanoseconds(fracNs));
+            + std::chrono::duration_cast<Timestamp::duration>(
+                std::chrono::nanoseconds(fracNs));
         return true;
     }
 
-    std::string valueToString(const Value &v) {
+    std::string valueToString(const Value& v)
+    {
         if (std::holds_alternative<std::nullptr_t>(v)) return "NULL";
-        if (const auto *p = std::get_if<bool>(&v)) return *p ? "true" : "false";
-        if (const auto *p = std::get_if<std::int64_t>(&v)) return std::to_string(*p);
-        if (const auto *p = std::get_if<std::uint64_t>(&v)) return std::to_string(*p);
-        if (const auto *p = std::get_if<double>(&v)) {
+        if (const auto* p = std::get_if<bool>(&v)) return *p ? "true" : "false";
+        if (const auto* p = std::get_if<std::int64_t>(&v)) return std::to_string(*p);
+        if (const auto* p = std::get_if<std::uint64_t>(&v)) return std::to_string(*p);
+        if (const auto* p = std::get_if<double>(&v))
+        {
             std::ostringstream os;
             os << std::setprecision(17) << *p;
             return os.str();
         }
-        if (const auto *p = std::get_if<Decimal>(&v)) return p->value;
-        if (const auto *p = std::get_if<std::string>(&v)) return *p;
-        if (const auto *p = std::get_if<Date>(&v)) return p->value;
-        if (const auto *p = std::get_if<Time>(&v)) return p->value;
-        if (const auto *p = std::get_if<Timestamp>(&v)) return timestampToStringMs(*p);
-        if (const auto *p = std::get_if<Uuid>(&v)) return p->value;
-        if (const auto *p = std::get_if<Json>(&v)) return p->value;
-        if (const auto *p = std::get_if<IntervalYearMonth>(&v)) return p->value;
-        if (const auto *p = std::get_if<IntervalDaySecond>(&v)) return p->value;
-        if (const auto *p = std::get_if<Blob>(&v)) {
+        if (const auto* p = std::get_if<Decimal>(&v)) return p->value;
+        if (const auto* p = std::get_if<std::string>(&v)) return *p;
+        if (const auto* p = std::get_if<Date>(&v)) return p->value;
+        if (const auto* p = std::get_if<Time>(&v)) return p->value;
+        if (const auto* p = std::get_if<Timestamp>(&v)) return timestampToStringMs(*p);
+        if (const auto* p = std::get_if<Uuid>(&v)) return p->value;
+        if (const auto* p = std::get_if<Json>(&v)) return p->value;
+        if (const auto* p = std::get_if<IntervalYearMonth>(&v)) return p->value;
+        if (const auto* p = std::get_if<IntervalDaySecond>(&v)) return p->value;
+        if (const auto* p = std::get_if<Blob>(&v))
+        {
             std::string s = "blob[" + std::to_string(p->size()) + "]:";
             const size_t show = std::min<size_t>(p->size(), 16);
             std::string hex;
-            for (size_t i = 0; i < show; ++i) {
+            for (size_t i = 0; i < show; ++i)
+            {
                 std::uint8_t byte = (*p)[i];
-                static const char *kHex = "0123456789ABCDEF";
+                static const char* kHex = "0123456789ABCDEF";
                 hex.push_back(kHex[(byte >> 4) & 0x0F]);
                 hex.push_back(kHex[byte & 0x0F]);
             }
@@ -300,18 +348,22 @@ namespace dbmw::common {
             if (p->size() > show) s += "...";
             return s;
         }
-        if (const auto *p = std::get_if<Array>(&v)) {
+        if (const auto* p = std::get_if<Array>(&v))
+        {
             std::string s = "[";
-            for (size_t i = 0; i < p->items.size(); ++i) {
+            for (size_t i = 0; i < p->items.size(); ++i)
+            {
                 if (i) s += ", ";
                 s += valueToString(p->items[i]);
             }
             s += ']';
             return s;
         }
-        if (const auto *p = std::get_if<Composite>(&v)) {
+        if (const auto* p = std::get_if<Composite>(&v))
+        {
             std::string s = "(";
-            for (size_t i = 0; i < p->fields.size(); ++i) {
+            for (size_t i = 0; i < p->fields.size(); ++i)
+            {
                 if (i) s += ", ";
                 s += p->fields[i].first;
                 s += '=';
@@ -320,18 +372,22 @@ namespace dbmw::common {
             s += ')';
             return s;
         }
-        if (const auto *p = std::get_if<TypedArray>(&v)) {
+        if (const auto* p = std::get_if<TypedArray>(&v))
+        {
             std::string s = p->typeName + "[";
-            for (size_t i = 0; i < p->items.size(); ++i) {
+            for (size_t i = 0; i < p->items.size(); ++i)
+            {
                 if (i) s += ", ";
                 s += valueToString(p->items[i]);
             }
             s += ']';
             return s;
         }
-        if (const auto *p = std::get_if<TypedComposite>(&v)) {
+        if (const auto* p = std::get_if<TypedComposite>(&v))
+        {
             std::string s = p->typeName + "(";
-            for (size_t i = 0; i < p->fields.size(); ++i) {
+            for (size_t i = 0; i < p->fields.size(); ++i)
+            {
                 if (i) s += ", ";
                 s += p->fields[i].first + '=' + valueToString(p->fields[i].second);
             }
@@ -341,81 +397,96 @@ namespace dbmw::common {
         return "?";
     }
 
-    std::string escapeLiteralGeneric(const Value &v) {
+    std::string escapeLiteralGeneric(const Value& v)
+    {
         if (std::holds_alternative<std::nullptr_t>(v)) return "NULL";
-        if (const auto *p = std::get_if<bool>(&v)) return *p ? "TRUE" : "FALSE";
-        if (const auto *p = std::get_if<std::int64_t>(&v)) return std::to_string(*p);
-        if (const auto *p = std::get_if<std::uint64_t>(&v)) return std::to_string(*p);
-        if (const auto *p = std::get_if<double>(&v)) {
+        if (const auto* p = std::get_if<bool>(&v)) return *p ? "TRUE" : "FALSE";
+        if (const auto* p = std::get_if<std::int64_t>(&v)) return std::to_string(*p);
+        if (const auto* p = std::get_if<std::uint64_t>(&v)) return std::to_string(*p);
+        if (const auto* p = std::get_if<double>(&v))
+        {
             if (!std::isfinite(*p)) return "NULL";
             std::ostringstream os;
             os << std::setprecision(17) << *p;
             return os.str();
         }
-        if (const auto *p = std::get_if<Timestamp>(&v)) {
+        if (const auto* p = std::get_if<Timestamp>(&v))
+        {
             std::string s = "'";
             s += timestampToStringMs(*p);
             s += '\'';
             return s;
         }
-        const auto quoteText = [](const std::string &text) {
+        const auto quoteText = [](const std::string& text)
+        {
             std::string s = "'";
-            for (const char c: text) s += c == '\'' ? "''" : std::string(1, c);
+            for (const char c : text) s += c == '\'' ? "''" : std::string(1, c);
             s += '\'';
             return s;
         };
-        if (const auto *p = std::get_if<Decimal>(&v)) return quoteText(p->value);
-        if (const auto *p = std::get_if<Date>(&v)) return quoteText(p->value);
-        if (const auto *p = std::get_if<Time>(&v)) return quoteText(p->value);
-        if (const auto *p = std::get_if<Uuid>(&v)) return quoteText(p->value);
-        if (const auto *p = std::get_if<Json>(&v)) return quoteText(p->value);
-        if (const auto *p = std::get_if<IntervalYearMonth>(&v)) return quoteText(p->value);
-        if (const auto *p = std::get_if<IntervalDaySecond>(&v)) return quoteText(p->value);
-        if (const auto *p = std::get_if<Blob>(&v)) {
+        if (const auto* p = std::get_if<Decimal>(&v)) return quoteText(p->value);
+        if (const auto* p = std::get_if<Date>(&v)) return quoteText(p->value);
+        if (const auto* p = std::get_if<Time>(&v)) return quoteText(p->value);
+        if (const auto* p = std::get_if<Uuid>(&v)) return quoteText(p->value);
+        if (const auto* p = std::get_if<Json>(&v)) return quoteText(p->value);
+        if (const auto* p = std::get_if<IntervalYearMonth>(&v)) return quoteText(p->value);
+        if (const auto* p = std::get_if<IntervalDaySecond>(&v)) return quoteText(p->value);
+        if (const auto* p = std::get_if<Blob>(&v))
+        {
             std::string s = "X'";
             appendHex(s, *p);
             s += '\'';
             return s;
         }
-        if (const auto *p = std::get_if<Array>(&v)) {
+        if (const auto* p = std::get_if<Array>(&v))
+        {
             std::string s = "ARRAY[";
-            for (size_t i = 0; i < p->items.size(); ++i) {
+            for (size_t i = 0; i < p->items.size(); ++i)
+            {
                 if (i) s += ", ";
                 s += escapeLiteralGeneric(p->items[i]);
             }
             s += "]";
             return s;
         }
-        if (const auto *p = std::get_if<Composite>(&v)) {
+        if (const auto* p = std::get_if<Composite>(&v))
+        {
             std::string s = "ROW(";
-            for (size_t i = 0; i < p->fields.size(); ++i) {
+            for (size_t i = 0; i < p->fields.size(); ++i)
+            {
                 if (i) s += ", ";
                 s += escapeLiteralGeneric(p->fields[i].second);
             }
             s += ")";
             return s;
         }
-        if (const auto *p = std::get_if<TypedArray>(&v)) {
+        if (const auto* p = std::get_if<TypedArray>(&v))
+        {
             std::string s = p->typeName + "(";
-            for (size_t i = 0; i < p->items.size(); ++i) {
+            for (size_t i = 0; i < p->items.size(); ++i)
+            {
                 if (i) s += ", ";
                 s += escapeLiteralGeneric(p->items[i]);
             }
             s += ")";
             return s;
         }
-        if (const auto *p = std::get_if<TypedComposite>(&v)) {
+        if (const auto* p = std::get_if<TypedComposite>(&v))
+        {
             std::string s = p->typeName + "(";
-            for (size_t i = 0; i < p->fields.size(); ++i) {
+            for (size_t i = 0; i < p->fields.size(); ++i)
+            {
                 if (i) s += ", ";
                 s += escapeLiteralGeneric(p->fields[i].second);
             }
             s += ")";
             return s;
         }
-        if (const auto *p = std::get_if<std::string>(&v)) {
+        if (const auto* p = std::get_if<std::string>(&v))
+        {
             std::string s = "'";
-            for (const char c: *p) {
+            for (const char c : *p)
+            {
                 if (c == '\'') s += "''";
                 else s.push_back(c);
             }
@@ -425,9 +496,11 @@ namespace dbmw::common {
         return "NULL";
     }
 
-    std::string quoteIdentifier(const std::string &ident) {
+    std::string quoteIdentifier(const std::string& ident)
+    {
         std::string s = "\"";
-        for (const char c: ident) {
+        for (const char c : ident)
+        {
             if (c == '"') s += "\"\"";
             else s.push_back(c);
         }
@@ -435,55 +508,70 @@ namespace dbmw::common {
         return s;
     }
 
-    std::int64_t GeneratedKeys::lastInsertId() const {
+    std::int64_t GeneratedKeys::lastInsertId() const
+    {
         if (rows.empty()) return 0;
 
-        const auto &firstRow = rows.rows().front();
+        const auto& firstRow = rows.rows().front();
         std::string column;
-        const auto &fields = rows.fields();
-        if (!fields.empty()) {
+        const auto& fields = rows.fields();
+        if (!fields.empty())
+        {
             column = fields.front();
-        } else {
-            const auto &data = firstRow.data();
+        }
+        else
+        {
+            const auto& data = firstRow.data();
             if (data.empty()) return 0;
             column = data.begin()->first;
         }
 
-        const Value &v = firstRow.at(column);
-        if (const auto *i = std::get_if<std::int64_t>(&v)) return *i;
-        if (const auto *i = std::get_if<std::uint64_t>(&v)) {
+        const Value& v = firstRow.at(column);
+        if (const auto* i = std::get_if<std::int64_t>(&v)) return *i;
+        if (const auto* i = std::get_if<std::uint64_t>(&v))
+        {
             return *i <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())
                        ? static_cast<std::int64_t>(*i)
                        : 0;
         }
-        if (const auto *s = std::get_if<std::string>(&v)) {
-            try {
+        if (const auto* s = std::get_if<std::string>(&v))
+        {
+            try
+            {
                 return static_cast<std::int64_t>(std::stoll(*s));
-            } catch (...) {
+            }
+            catch (...)
+            {
                 return 0;
             }
         }
         return 0;
     }
 
-    StreamSource::StreamSource(std::istream &in, const bool isBinary) : isBinary_(isBinary) {
-        read_ = [&in](void *buf, const std::size_t n) -> std::size_t {
+    StreamSource::StreamSource(std::istream& in, const bool isBinary) : isBinary_(isBinary)
+    {
+        read_ = [&in](void* buf, const std::size_t n) -> std::size_t
+        {
             if (!in.good()) return 0;
-            in.read(static_cast<char *>(buf), static_cast<std::streamsize>(n));
+            in.read(static_cast<char*>(buf), static_cast<std::streamsize>(n));
             const std::streamsize got = in.gcount();
             return got > 0 ? static_cast<std::size_t>(got) : 0;
         };
     }
 
-    Status streamParamsToParams(const StreamParams &params, Params &out) {
+    Status streamParamsToParams(const StreamParams& params, Params& out)
+    {
         out.clear();
         out.reserve(params.size());
 
-        for (const auto &param: params) {
-            if (const auto *src = std::get_if<StreamSource>(&param)) {
+        for (const auto& param : params)
+        {
+            if (const auto* src = std::get_if<StreamSource>(&param))
+            {
                 StreamSource source = *src;
                 Blob blob;
-                if (const auto total = source.totalSize()) {
+                if (const auto total = source.totalSize())
+                {
                     constexpr std::uint64_t kReserveCap = 64ULL * 1024 * 1024;
                     blob.reserve(static_cast<std::size_t>(std::min(*total, kReserveCap)));
                 }
@@ -492,17 +580,21 @@ namespace dbmw::common {
                 while ((n = source.read(buf.data(), buf.size())) > 0)
                     blob.insert(blob.end(), buf.data(), buf.data() + static_cast<std::ptrdiff_t>(n));
                 out.emplace_back(std::move(blob));
-            } else {
+            }
+            else
+            {
                 out.push_back(std::get<Value>(param));
             }
         }
         return Status::OK();
     }
 
-    std::string paramTypeSignature(const Params &params) {
+    std::string paramTypeSignature(const Params& params)
+    {
         std::string sig;
         sig.reserve(params.size());
-        for (const auto &v: params) {
+        for (const auto& v : params)
+        {
             if (std::holds_alternative<std::nullptr_t>(v)) sig.push_back('n');
             else if (std::holds_alternative<bool>(v)) sig.push_back('b');
             else if (std::holds_alternative<std::int64_t>(v)) sig.push_back('i');

@@ -1,9 +1,10 @@
-#include "dbmw/core/query_cache.h"
+#include "sqlconduit/core/query_cache.h"
 
 #include <utility>
 #include <variant>
 
-namespace dbmw::core {
+namespace sqlconduit::core
+{
     std::mutex QueryCache::mtx_;
     config::QueryCacheConfig QueryCache::cfg_;
     std::unordered_map<std::string, QueryCache::Entry> QueryCache::store_;
@@ -16,8 +17,10 @@ namespace dbmw::core {
     std::atomic<std::uint64_t> QueryCache::evictions_{0};
     std::atomic<std::uint64_t> QueryCache::invalidations_{0};
 
-    namespace {
-        std::string compositeKey(const std::string &dataSource, const std::string &key) {
+    namespace
+    {
+        std::string compositeKey(const std::string& dataSource, const std::string& key)
+        {
             std::string ck;
             ck.reserve(dataSource.size() + 1 + key.size());
             ck += dataSource;
@@ -26,36 +29,42 @@ namespace dbmw::core {
             return ck;
         }
 
-        std::size_t valueBytes(const common::Value &v) {
-            if (const auto *p = std::get_if<std::string>(&v)) return p->size();
-            if (const auto *p = std::get_if<common::Decimal>(&v)) return p->value.size();
-            if (const auto *p = std::get_if<common::Date>(&v)) return p->value.size();
-            if (const auto *p = std::get_if<common::Time>(&v)) return p->value.size();
-            if (const auto *p = std::get_if<common::Uuid>(&v)) return p->value.size();
-            if (const auto *p = std::get_if<common::Json>(&v)) return p->value.size();
-            if (const auto *p = std::get_if<common::Blob>(&v)) return p->size();
+        std::size_t valueBytes(const common::Value& v)
+        {
+            if (const auto* p = std::get_if<std::string>(&v)) return p->size();
+            if (const auto* p = std::get_if<common::Decimal>(&v)) return p->value.size();
+            if (const auto* p = std::get_if<common::Date>(&v)) return p->value.size();
+            if (const auto* p = std::get_if<common::Time>(&v)) return p->value.size();
+            if (const auto* p = std::get_if<common::Uuid>(&v)) return p->value.size();
+            if (const auto* p = std::get_if<common::Json>(&v)) return p->value.size();
+            if (const auto* p = std::get_if<common::Blob>(&v)) return p->size();
             return sizeof(common::Value);
         }
     }
 
-    std::size_t QueryCache::approxBytes(const common::ResultSet &rs) {
+    std::size_t QueryCache::approxBytes(const common::ResultSet& rs)
+    {
         std::size_t bytes = 0;
-        for (const auto &f: rs.fields()) bytes += f.size() + sizeof(std::string);
-        for (const auto &row: rs.rows()) {
-            for (const auto &[col, val]: row.data()) {
+        for (const auto& f : rs.fields()) bytes += f.size() + sizeof(std::string);
+        for (const auto& row : rs.rows())
+        {
+            for (const auto& [col, val] : row.data())
+            {
                 bytes += col.size() + sizeof(std::string) + valueBytes(val);
             }
         }
         return bytes;
     }
 
-    void QueryCache::eraseLocked(std::unordered_map<std::string, Entry>::iterator it) {
+    void QueryCache::eraseLocked(std::unordered_map<std::string, Entry>::iterator it)
+    {
         totalBytes_ -= (it->second.bytes <= totalBytes_ ? it->second.bytes : totalBytes_);
         lru_.erase(it->second.lru);
         store_.erase(it);
     }
 
-    void QueryCache::evictLocked(const std::size_t incomingBytes, const bool reserveSlot) {
+    void QueryCache::evictLocked(const std::size_t incomingBytes, const bool reserveSlot)
+    {
         const auto maxEntries = cfg_.max_entries > 0
                                     ? static_cast<std::size_t>(cfg_.max_entries)
                                     : 0;
@@ -63,14 +72,16 @@ namespace dbmw::core {
                                   ? static_cast<std::size_t>(cfg_.max_memory_bytes)
                                   : 0;
 
-        while (!lru_.empty()) {
+        while (!lru_.empty())
+        {
             const bool tooMany = maxEntries > 0 &&
-                                 (reserveSlot ? store_.size() >= maxEntries : store_.size() > maxEntries);
+                (reserveSlot ? store_.size() >= maxEntries : store_.size() > maxEntries);
             const bool tooBig = maxBytes > 0 && totalBytes_ + incomingBytes > maxBytes;
             if (!tooMany && !tooBig) return;
             const std::string old = lru_.back();
             auto oit = store_.find(old);
-            if (oit == store_.end()) {
+            if (oit == store_.end())
+            {
                 lru_.pop_back();
                 continue;
             }
@@ -79,7 +90,8 @@ namespace dbmw::core {
         }
     }
 
-    void QueryCache::configure(const config::QueryCacheConfig &cfg) {
+    void QueryCache::configure(const config::QueryCacheConfig& cfg)
+    {
         {
             std::lock_guard<std::mutex> lk(mtx_);
             cfg_ = cfg;
@@ -91,26 +103,31 @@ namespace dbmw::core {
         replicaOnly_.store(cfg.cache_on_replica_only, std::memory_order_release);
     }
 
-    bool QueryCache::enabled() {
+    bool QueryCache::enabled()
+    {
         return enabled_.load(std::memory_order_acquire);
     }
 
-    bool QueryCache::replicaOnly() {
+    bool QueryCache::replicaOnly()
+    {
         return replicaOnly_.load(std::memory_order_acquire);
     }
 
-    bool QueryCache::get(const std::string &dataSource, const std::string &key,
-                         common::ResultSet &out) {
+    bool QueryCache::get(const std::string& dataSource, const std::string& key,
+                         common::ResultSet& out)
+    {
         if (!enabled_.load(std::memory_order_acquire)) return false;
         std::lock_guard<std::mutex> lk(mtx_);
         if (!cfg_.enabled) return false;
         const std::string ck = compositeKey(dataSource, key);
         const auto it = store_.find(ck);
-        if (it == store_.end()) {
+        if (it == store_.end())
+        {
             misses_.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
-        if (it->second.expire <= std::chrono::steady_clock::now()) {
+        if (it->second.expire <= std::chrono::steady_clock::now())
+        {
             eraseLocked(it);
             misses_.fetch_add(1, std::memory_order_relaxed);
             return false;
@@ -121,8 +138,9 @@ namespace dbmw::core {
         return true;
     }
 
-    void QueryCache::put(const std::string &dataSource, const std::string &key,
-                         const common::ResultSet &rs) {
+    void QueryCache::put(const std::string& dataSource, const std::string& key,
+                         const common::ResultSet& rs)
+    {
         if (!enabled_.load(std::memory_order_acquire)) return;
         const std::size_t bytes = approxBytes(rs);
 
@@ -137,7 +155,8 @@ namespace dbmw::core {
         const auto now = std::chrono::steady_clock::now();
         const auto ttl = std::chrono::milliseconds(cfg_.ttl_ms);
 
-        if (const auto it = store_.find(ck); it != store_.end()) {
+        if (const auto it = store_.find(ck); it != store_.end())
+        {
             totalBytes_ -= (it->second.bytes <= totalBytes_ ? it->second.bytes : totalBytes_);
             it->second.rs = rs;
             it->second.bytes = bytes;
@@ -159,23 +178,28 @@ namespace dbmw::core {
         store_.emplace(ck, std::move(e));
     }
 
-    void QueryCache::invalidate(const std::string &dataSource) {
+    void QueryCache::invalidate(const std::string& dataSource)
+    {
         if (!enabled_.load(std::memory_order_acquire)) return;
         std::uint64_t removed = 0;
         {
             std::lock_guard<std::mutex> lk(mtx_);
             if (store_.empty()) return;
             const std::string prefix = compositeKey(dataSource, std::string{});
-            for (auto it = store_.begin(); it != store_.end();) {
+            for (auto it = store_.begin(); it != store_.end();)
+            {
                 if (it->first.size() >= prefix.size() &&
-                    it->first.compare(0, prefix.size(), prefix) == 0) {
+                    it->first.compare(0, prefix.size(), prefix) == 0)
+                {
                     totalBytes_ -= (it->second.bytes <= totalBytes_
                                         ? it->second.bytes
                                         : totalBytes_);
                     lru_.erase(it->second.lru);
                     it = store_.erase(it);
                     ++removed;
-                } else {
+                }
+                else
+                {
                     ++it;
                 }
             }
@@ -183,7 +207,8 @@ namespace dbmw::core {
         if (removed > 0) invalidations_.fetch_add(removed, std::memory_order_relaxed);
     }
 
-    QueryCache::Stats QueryCache::stats() {
+    QueryCache::Stats QueryCache::stats()
+    {
         Stats out;
         {
             std::lock_guard<std::mutex> lk(mtx_);

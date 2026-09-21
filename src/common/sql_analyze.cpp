@@ -1,90 +1,110 @@
-#include "dbmw/common/sql_analyze.h"
+#include "sqlconduit/common/sql_analyze.h"
 
-#include <cctype>
 
-namespace dbmw::common::sql {
-    namespace {
-        std::string buildStructural(const std::string &sql) {
+namespace sqlconduit::common::sql
+{
+    namespace
+    {
+        std::string buildStructural(const std::string& sql)
+        {
             std::string out;
             out.reserve(sql.size());
             const std::size_t n = sql.size();
-            const auto isIdent = [](unsigned char c) {
+            const auto isIdent = [](unsigned char c)
+            {
                 return std::isalnum(c) || c == '_';
             };
             bool pendingSpace = false;
-            const auto flushSpace = [&] {
+            const auto flushSpace = [&]
+            {
                 if (pendingSpace && !out.empty() && out.back() != ' ') out.push_back(' ');
                 pendingSpace = false;
             };
             std::size_t i = 0;
-            while (i < n) {
+            while (i < n)
+            {
                 const auto c = static_cast<unsigned char>(sql[i]);
 
-                if (std::isspace(c)) {
+                if (std::isspace(c))
+                {
                     pendingSpace = !out.empty();
                     ++i;
                     continue;
                 }
 
-                if (c == '-' && i + 1 < n && sql[i + 1] == '-') {
+                if (c == '-' && i + 1 < n && sql[i + 1] == '-')
+                {
                     while (i < n && sql[i] != '\n') ++i;
                     pendingSpace = !out.empty();
                     continue;
                 }
-                if (c == '/' && i + 1 < n && sql[i + 1] == '*') {
+                if (c == '/' && i + 1 < n && sql[i + 1] == '*')
+                {
                     const bool semantic = i + 2 < n &&
-                                          (sql[i + 2] == '!' || sql[i + 2] == '+');
+                        (sql[i + 2] == '!' || sql[i + 2] == '+');
                     const auto close = sql.find("*/", i + 2);
                     const auto end = close == std::string::npos ? n : close + 2;
-                    if (semantic) {
+                    if (semantic)
+                    {
                         flushSpace();
                         out.append(sql, i, end - i);
-                    } else {
+                    }
+                    else
+                    {
                         pendingSpace = !out.empty();
                     }
                     i = end;
                     continue;
                 }
 
-                if (c == '$') {
+                if (c == '$')
+                {
                     std::size_t tagEnd = i + 1;
                     while (tagEnd < n &&
-                           (std::isalnum(static_cast<unsigned char>(sql[tagEnd])) ||
+                        (std::isalnum(static_cast<unsigned char>(sql[tagEnd])) ||
                             sql[tagEnd] == '_'))
                         ++tagEnd;
                     const bool validTag = tagEnd < n && sql[tagEnd] == '$' &&
-                                          (tagEnd == i + 1 ||
-                                           !std::isdigit(static_cast<unsigned char>(sql[i + 1])));
-                    if (validTag) {
+                    (tagEnd == i + 1 ||
+                        !std::isdigit(static_cast<unsigned char>(sql[i + 1])));
+                    if (validTag)
+                    {
                         const std::string delimiter = sql.substr(i, tagEnd - i + 1);
                         const auto close = sql.find(delimiter, tagEnd + 1);
-                        if (close != std::string::npos) {
+                        if (close != std::string::npos)
+                        {
                             flushSpace();
                             const auto end = close + delimiter.size();
                             std::uint64_t bodyHash = 1469598103934665603ULL;
-                            for (auto p = tagEnd + 1; p < close; ++p) {
+                            for (auto p = tagEnd + 1; p < close; ++p)
+                            {
                                 bodyHash ^= static_cast<unsigned char>(sql[p]);
                                 bodyHash *= 1099511628211ULL;
                             }
                             out += delimiter + "<body_hash:" +
-                                    std::to_string(bodyHash) + ">" + delimiter;
+                                std::to_string(bodyHash) + ">" + delimiter;
                             i = end;
                             continue;
                         }
                     }
                 }
 
-                if (c == '\'') {
+                if (c == '\'')
+                {
                     flushSpace();
                     out += '?';
                     ++i;
-                    while (i < n) {
-                        if (sql[i] == '\\' && i + 1 < n) {
+                    while (i < n)
+                    {
+                        if (sql[i] == '\\' && i + 1 < n)
+                        {
                             i += 2;
                             continue;
                         }
-                        if (sql[i] == '\'') {
-                            if (i + 1 < n && sql[i + 1] == '\'') {
+                        if (sql[i] == '\'')
+                        {
+                            if (i + 1 < n && sql[i + 1] == '\'')
+                            {
                                 i += 2;
                                 continue;
                             }
@@ -96,19 +116,25 @@ namespace dbmw::common::sql {
                     continue;
                 }
 
-                if (c == '"' || c == '`') {
+                if (c == '"' || c == '`')
+                {
                     flushSpace();
                     const char quote = static_cast<char>(c);
                     out.push_back(quote);
                     ++i;
-                    while (i < n) {
+                    while (i < n)
+                    {
                         out.push_back(sql[i]);
-                        if (sql[i] == '\\' && i + 1 < n) {
+                        if (sql[i] == '\\' && i + 1 < n)
+                        {
                             out.push_back(sql[++i]);
-                        } else if (sql[i] == quote) {
+                        }
+                        else if (sql[i] == quote)
+                        {
                             if (i + 1 < n && sql[i + 1] == quote)
                                 out.push_back(sql[++i]);
-                            else {
+                            else
+                            {
                                 ++i;
                                 break;
                             }
@@ -119,48 +145,53 @@ namespace dbmw::common::sql {
                 }
 
                 const bool boundary = i == 0 ||
-                                      !isIdent(static_cast<unsigned char>(sql[i - 1]));
+                    !isIdent(static_cast<unsigned char>(sql[i - 1]));
                 const bool signedNumber = (c == '+' || c == '-') && i + 1 < n &&
-                                          (std::isdigit(static_cast<unsigned char>(sql[i + 1])) ||
-                                           (sql[i + 1] == '.' && i + 2 < n &&
-                                            std::isdigit(static_cast<unsigned char>(sql[i + 2]))));
+                (std::isdigit(static_cast<unsigned char>(sql[i + 1])) ||
+                    (sql[i + 1] == '.' && i + 2 < n &&
+                        std::isdigit(static_cast<unsigned char>(sql[i + 2]))));
                 const bool plainNumber = std::isdigit(c) ||
-                                         (c == '.' && i + 1 < n &&
-                                          std::isdigit(static_cast<unsigned char>(sql[i + 1])));
-                if (boundary && (plainNumber || signedNumber)) {
+                (c == '.' && i + 1 < n &&
+                    std::isdigit(static_cast<unsigned char>(sql[i + 1])));
+                if (boundary && (plainNumber || signedNumber))
+                {
                     flushSpace();
                     out += '?';
                     if (signedNumber) ++i;
                     if (i + 1 < n && sql[i] == '0' &&
-                        (sql[i + 1] == 'x' || sql[i + 1] == 'X')) {
+                        (sql[i + 1] == 'x' || sql[i + 1] == 'X'))
+                    {
                         i += 2;
                         while (i < n && (std::isxdigit(static_cast<unsigned char>(sql[i])) ||
-                                         sql[i] == '_'))
+                            sql[i] == '_'))
                             ++i;
                         continue;
                     }
                     if (i + 1 < n && sql[i] == '0' &&
-                        (sql[i + 1] == 'b' || sql[i + 1] == 'B')) {
+                        (sql[i + 1] == 'b' || sql[i + 1] == 'B'))
+                    {
                         i += 2;
                         while (i < n && (sql[i] == '0' || sql[i] == '1' || sql[i] == '_')) ++i;
                         continue;
                     }
                     while (i < n && (std::isdigit(static_cast<unsigned char>(sql[i])) ||
-                                     sql[i] == '_'))
+                        sql[i] == '_'))
                         ++i;
-                    if (i < n && sql[i] == '.') {
+                    if (i < n && sql[i] == '.')
+                    {
                         ++i;
                         while (i < n && (std::isdigit(static_cast<unsigned char>(sql[i])) ||
-                                         sql[i] == '_'))
+                            sql[i] == '_'))
                             ++i;
                     }
-                    if (i < n && (sql[i] == 'e' || sql[i] == 'E')) {
+                    if (i < n && (sql[i] == 'e' || sql[i] == 'E'))
+                    {
                         std::size_t exponent = i + 1;
                         if (exponent < n && (sql[exponent] == '+' || sql[exponent] == '-'))
                             ++exponent;
                         const auto digits = exponent;
                         while (exponent < n &&
-                               (std::isdigit(static_cast<unsigned char>(sql[exponent])) ||
+                            (std::isdigit(static_cast<unsigned char>(sql[exponent])) ||
                                 sql[exponent] == '_'))
                             ++exponent;
                         if (exponent > digits) i = exponent;
@@ -175,17 +206,21 @@ namespace dbmw::common::sql {
             return out;
         }
 
-        std::string maskLiteralRegions(const std::string &sql) {
+        std::string maskLiteralRegions(const std::string& sql)
+        {
             std::string out = sql;
             const std::size_t n = out.size();
             std::size_t i = 0;
-            while (i < n) {
+            while (i < n)
+            {
                 const auto c = static_cast<unsigned char>(out[i]);
-                if (c == '-' && i + 1 < n && out[i + 1] == '-') {
+                if (c == '-' && i + 1 < n && out[i + 1] == '-')
+                {
                     while (i < n && out[i] != '\n') out[i++] = ' ';
                     continue;
                 }
-                if (c == '/' && i + 1 < n && out[i + 1] == '*') {
+                if (c == '/' && i + 1 < n && out[i + 1] == '*')
+                {
                     out[i] = ' ';
                     out[i + 1] = ' ';
                     const auto close = out.find("*/", i + 2);
@@ -194,19 +229,24 @@ namespace dbmw::common::sql {
                     i = end;
                     continue;
                 }
-                if (c == '\'' || c == '"' || c == '`') {
+                if (c == '\'' || c == '"' || c == '`')
+                {
                     const char quote = static_cast<char>(c);
                     out[i++] = ' ';
-                    while (i < n) {
-                        if (out[i] == '\\' && i + 1 < n) {
+                    while (i < n)
+                    {
+                        if (out[i] == '\\' && i + 1 < n)
+                        {
                             out[i] = ' ';
                             out[++i] = ' ';
                             continue;
                         }
-                        if (out[i] == quote) {
+                        if (out[i] == quote)
+                        {
                             out[i] = ' ';
                             if (i + 1 < n && out[i + 1] == quote) out[++i] = ' ';
-                            else {
+                            else
+                            {
                                 ++i;
                                 break;
                             }
@@ -215,19 +255,22 @@ namespace dbmw::common::sql {
                     }
                     continue;
                 }
-                if (c == '$') {
+                if (c == '$')
+                {
                     std::size_t tagEnd = i + 1;
                     while (tagEnd < n &&
-                           (std::isalnum(static_cast<unsigned char>(out[tagEnd])) ||
+                        (std::isalnum(static_cast<unsigned char>(out[tagEnd])) ||
                             out[tagEnd] == '_'))
                         ++tagEnd;
                     const bool validTag = tagEnd < n && out[tagEnd] == '$' &&
-                                          (tagEnd == i + 1 ||
-                                           !std::isdigit(static_cast<unsigned char>(out[i + 1])));
-                    if (validTag) {
+                    (tagEnd == i + 1 ||
+                        !std::isdigit(static_cast<unsigned char>(out[i + 1])));
+                    if (validTag)
+                    {
                         const std::string delimiter = out.substr(i, tagEnd - i + 1);
                         const auto close = out.find(delimiter, tagEnd + 1);
-                        if (close != std::string::npos) {
+                        if (close != std::string::npos)
+                        {
                             for (std::size_t p = i; p < close + delimiter.size(); ++p) out[p] = ' ';
                             i = close + delimiter.size();
                             continue;
@@ -239,50 +282,58 @@ namespace dbmw::common::sql {
             return out;
         }
 
-        bool containsTopLevelKeyword(const std::string &masked, const char *kw) {
+        bool containsTopLevelKeyword(const std::string& masked, const char* kw)
+        {
             const std::size_t klen = std::char_traits<char>::length(kw);
             const std::size_t n = masked.size();
             int depth = 0;
-            for (std::size_t i = 0; i + klen <= n; ++i) {
-                if (masked[i] == '(') {
+            for (std::size_t i = 0; i + klen <= n; ++i)
+            {
+                if (masked[i] == '(')
+                {
                     ++depth;
                     continue;
                 }
-                if (masked[i] == ')') {
+                if (masked[i] == ')')
+                {
                     if (depth > 0) --depth;
                     continue;
                 }
                 if (depth != 0) continue;
                 bool matches = true;
-                for (std::size_t k = 0; k < klen; ++k) {
+                for (std::size_t k = 0; k < klen; ++k)
+                {
                     if (std::toupper(static_cast<unsigned char>(masked[i + k])) !=
-                        std::toupper(static_cast<unsigned char>(kw[k]))) {
+                        std::toupper(static_cast<unsigned char>(kw[k])))
+                    {
                         matches = false;
                         break;
                     }
                 }
                 if (!matches) continue;
                 const bool leftOk = (i == 0) ||
-                                    (!std::isalnum(static_cast<unsigned char>(masked[i - 1])) &&
-                                     masked[i - 1] != '_');
+                (!std::isalnum(static_cast<unsigned char>(masked[i - 1])) &&
+                    masked[i - 1] != '_');
                 const bool rightOk = (i + klen == n) ||
-                                     (!std::isalnum(static_cast<unsigned char>(masked[i + klen])) &&
-                                      masked[i + klen] != '_');
+                (!std::isalnum(static_cast<unsigned char>(masked[i + klen])) &&
+                    masked[i + klen] != '_');
                 if (leftOk && rightOk) return true;
             }
             return false;
         }
 
-        std::string upperFirstVerb(const std::string &masked);
+        std::string upperFirstVerb(const std::string& masked);
 
-        bool matchWordAt(const std::string &s, const std::size_t i, const char *kw) {
+        bool matchWordAt(const std::string& s, const std::size_t i, const char* kw)
+        {
             const std::size_t len = std::char_traits<char>::length(kw);
             if (i + len > s.size()) return false;
             for (std::size_t k = 0; k < len; ++k)
                 if (std::toupper(static_cast<unsigned char>(s[i + k])) !=
                     std::toupper(static_cast<unsigned char>(kw[k])))
                     return false;
-            const auto identChar = [](const unsigned char c) {
+            const auto identChar = [](const unsigned char c)
+            {
                 return std::isalnum(c) || c == '_';
             };
             if (i > 0 && identChar(static_cast<unsigned char>(s[i - 1]))) return false;
@@ -291,29 +342,35 @@ namespace dbmw::common::sql {
             return true;
         }
 
-        bool eatWord(const std::string &s, const std::size_t i, const char *kw,
-                     std::size_t &next) {
+        bool eatWord(const std::string& s, const std::size_t i, const char* kw,
+                     std::size_t& next)
+        {
             if (!matchWordAt(s, i, kw)) return false;
             next = i + std::char_traits<char>::length(kw);
             return true;
         }
 
-        std::size_t nextNonSpace(const std::string &s, std::size_t i) {
+        std::size_t nextNonSpace(const std::string& s, std::size_t i)
+        {
             while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
             return i;
         }
 
-        bool eatBlockTerminator(const std::string &s, const std::size_t i, std::size_t &next) {
-            for (const char *kw: {"CASE", "IF", "LOOP", "WHILE", "REPEAT", "TRY", "CATCH"})
+        bool eatBlockTerminator(const std::string& s, const std::size_t i, std::size_t& next)
+        {
+            for (const char* kw : {"CASE", "IF", "LOOP", "WHILE", "REPEAT", "TRY", "CATCH"})
                 if (eatWord(s, i, kw, next)) return true;
             return false;
         }
 
-        bool maskCompoundBody(std::string &s) {
+        bool maskCompoundBody(std::string& s)
+        {
             std::size_t beginPos = std::string::npos;
-            for (std::size_t i = 0; i < s.size(); ++i) {
+            for (std::size_t i = 0; i < s.size(); ++i)
+            {
                 std::size_t next = 0;
-                if (eatWord(s, i, "BEGIN", next)) {
+                if (eatWord(s, i, "BEGIN", next))
+                {
                     beginPos = i;
                     break;
                 }
@@ -323,14 +380,17 @@ namespace dbmw::common::sql {
             int depth = 0;
             std::size_t endPos = std::string::npos;
             std::size_t i = beginPos;
-            while (i < s.size()) {
+            while (i < s.size())
+            {
                 std::size_t next = 0;
-                if (eatWord(s, i, "BEGIN", next)) {
+                if (eatWord(s, i, "BEGIN", next))
+                {
                     ++depth;
                     i = next;
                     continue;
                 }
-                if (eatWord(s, i, "END", next)) {
+                if (eatWord(s, i, "END", next))
+                {
                     --depth;
                     const std::size_t afterSpace = nextNonSpace(s, next);
                     std::size_t afterKw = 0;
@@ -338,15 +398,18 @@ namespace dbmw::common::sql {
                         i = afterKw;
                     else
                         i = next;
-                    if (depth <= 0) {
+                    if (depth <= 0)
+                    {
                         endPos = i;
                         break;
                     }
                     continue;
                 }
                 bool opened = false;
-                for (const char *kw: {"CASE", "LOOP", "WHILE", "REPEAT"}) {
-                    if (eatWord(s, i, kw, next)) {
+                for (const char* kw : {"CASE", "LOOP", "WHILE", "REPEAT"})
+                {
+                    if (eatWord(s, i, kw, next))
+                    {
                         ++depth;
                         i = next;
                         opened = true;
@@ -354,7 +417,8 @@ namespace dbmw::common::sql {
                     }
                 }
                 if (opened) continue;
-                if (eatWord(s, i, "IF", next)) {
+                if (eatWord(s, i, "IF", next))
+                {
                     const std::size_t afterSpace = nextNonSpace(s, next);
                     if (afterSpace < s.size() && s[afterSpace] != '(') ++depth;
                     i = next;
@@ -367,34 +431,40 @@ namespace dbmw::common::sql {
             return true;
         }
 
-        std::string upperMainVerb(const std::string &masked) {
+        std::string upperMainVerb(const std::string& masked)
+        {
             const std::string first = upperFirstVerb(masked);
             if (first != "WITH") return first;
 
             int depth = 0;
             std::string nestedWrite;
-            for (std::size_t i = 0; i < masked.size();) {
+            for (std::size_t i = 0; i < masked.size();)
+            {
                 const unsigned char c = static_cast<unsigned char>(masked[i]);
-                if (c == '(') {
+                if (c == '(')
+                {
                     ++depth;
                     ++i;
                     continue;
                 }
-                if (c == ')') {
+                if (c == ')')
+                {
                     if (depth > 0) --depth;
                     ++i;
                     continue;
                 }
-                if (std::isalpha(c) || c == '_') {
+                if (std::isalpha(c) || c == '_')
+                {
                     std::string token;
-                    while (i < masked.size()) {
+                    while (i < masked.size())
+                    {
                         const unsigned char tc = static_cast<unsigned char>(masked[i]);
                         if (!std::isalnum(tc) && tc != '_') break;
                         token.push_back(static_cast<char>(std::toupper(tc)));
                         ++i;
                     }
                     const bool write = token == "INSERT" || token == "UPDATE" ||
-                                       token == "DELETE" || token == "MERGE" || token == "REPLACE";
+                        token == "DELETE" || token == "MERGE" || token == "REPLACE";
                     if (depth > 0 && write && nestedWrite.empty()) nestedWrite = token;
                     if (depth == 0 && (token == "SELECT" || write))
                         return !nestedWrite.empty() ? nestedWrite : token;
@@ -405,12 +475,14 @@ namespace dbmw::common::sql {
             return first;
         }
 
-        std::string upperFirstVerb(const std::string &masked) {
+        std::string upperFirstVerb(const std::string& masked)
+        {
             std::size_t i = 0;
             const std::size_t n = masked.size();
             while (i < n && std::isspace(static_cast<unsigned char>(masked[i]))) ++i;
             std::string verb;
-            while (i < n) {
+            while (i < n)
+            {
                 const auto c = masked[i];
                 if (std::isspace(static_cast<unsigned char>(c)) || c == '(' || c == ';' || c == '{')
                     break;
@@ -421,21 +493,25 @@ namespace dbmw::common::sql {
         }
     }
 
-    std::string structuralTemplate(const std::string &sql) {
+    std::string structuralTemplate(const std::string& sql)
+    {
         return buildStructural(sql);
     }
 
-    std::uint64_t fingerprintTemplate(const std::string &sql) {
+    std::uint64_t fingerprintTemplate(const std::string& sql)
+    {
         const std::string tpl = buildStructural(sql);
         std::uint64_t hash = 1469598103934665603ULL;
-        for (const unsigned char c: tpl) {
+        for (const unsigned char c : tpl)
+        {
             hash ^= c;
             hash *= 1099511628211ULL;
         }
         return hash;
     }
 
-    StatementKind classifyStatement(const std::string &sql) {
+    StatementKind classifyStatement(const std::string& sql)
+    {
         const std::string verb = upperMainVerb(maskLiteralRegions(sql));
         if (verb == "SELECT" || verb == "SHOW" || verb == "EXPLAIN" ||
             verb == "DESC" || verb == "DESCRIBE")
@@ -449,83 +525,101 @@ namespace dbmw::common::sql {
         return StatementKind::Other;
     }
 
-    bool isWrite(StatementKind kind) {
+    bool isWrite(StatementKind kind)
+    {
         return kind == StatementKind::Insert || kind == StatementKind::Update ||
-               kind == StatementKind::Delete || kind == StatementKind::Ddl ||
-               kind == StatementKind::Other;
+            kind == StatementKind::Delete || kind == StatementKind::Ddl ||
+            kind == StatementKind::Other;
     }
 
-    bool hasWhereClause(const std::string &sql) {
+    bool hasWhereClause(const std::string& sql)
+    {
         return containsTopLevelKeyword(maskLiteralRegions(sql), "WHERE");
     }
 
-    bool hasLimitClause(const std::string &sql) {
+    bool hasLimitClause(const std::string& sql)
+    {
         return containsTopLevelKeyword(maskLiteralRegions(sql), "LIMIT");
     }
 
-    bool hasRowLimitClause(const std::string &sql) {
+    bool hasRowLimitClause(const std::string& sql)
+    {
         if (hasLimitClause(sql)) return true;
         const std::string masked = maskLiteralRegions(sql);
         const std::size_t n = masked.size();
         int depth = 0;
-        for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t i = 0; i < n; ++i)
+        {
             const char c = masked[i];
-            if (c == '(') {
+            if (c == '(')
+            {
                 ++depth;
                 continue;
             }
-            if (c == ')') {
+            if (c == ')')
+            {
                 if (depth > 0) --depth;
                 continue;
             }
             if (depth != 0) continue;
             if (!std::isalpha(static_cast<unsigned char>(c))) continue;
             if (i > 0 && (std::isalnum(static_cast<unsigned char>(masked[i - 1])) ||
-                          masked[i - 1] == '_'))
+                masked[i - 1] == '_'))
                 continue;
             std::size_t p = i;
             std::string word;
             while (p < n && (std::isalnum(static_cast<unsigned char>(masked[p])) ||
-                             masked[p] == '_')) {
+                masked[p] == '_'))
+            {
                 word += static_cast<char>(std::toupper(static_cast<unsigned char>(masked[p])));
                 ++p;
             }
             std::size_t q = p;
             while (q < n && std::isspace(static_cast<unsigned char>(masked[q]))) ++q;
-            if (word == "FETCH") {
+            if (word == "FETCH")
+            {
                 std::string next;
-                while (q < n && std::isalpha(static_cast<unsigned char>(masked[q]))) {
+                while (q < n && std::isalpha(static_cast<unsigned char>(masked[q])))
+                {
                     next += static_cast<char>(std::toupper(static_cast<unsigned char>(masked[q])));
                     ++q;
                 }
                 if (next == "FIRST" || next == "NEXT") return true;
-            } else if (word == "ROWNUM") {
+            }
+            else if (word == "ROWNUM")
+            {
                 if (q < n && (masked[q] == '<' || masked[q] == '=')) return true;
             }
         }
         return false;
     }
 
-    bool hasMultipleStatements(const std::string &sql) {
+    bool hasMultipleStatements(const std::string& sql)
+    {
         return hasMultipleStatements(sql, false);
     }
 
-    bool hasMultipleStatements(const std::string &sql, const bool allowRoutineBody) {
+    bool hasMultipleStatements(const std::string& sql, const bool allowRoutineBody)
+    {
         std::string masked = maskLiteralRegions(sql);
         if (allowRoutineBody && isRoutineDdl(sql)) maskCompoundBody(masked);
         int depth = 0;
         bool ended = false;
-        for (const char ch: masked) {
-            if (ch == '(') {
+        for (const char ch : masked)
+        {
+            if (ch == '(')
+            {
                 ++depth;
                 continue;
             }
-            if (ch == ')') {
+            if (ch == ')')
+            {
                 if (depth > 0) --depth;
                 continue;
             }
             if (depth != 0) continue;
-            if (ch == ';') {
+            if (ch == ';')
+            {
                 ended = true;
                 continue;
             }
@@ -534,11 +628,12 @@ namespace dbmw::common::sql {
         return false;
     }
 
-    bool isRoutineDdl(const std::string &sql) {
+    bool isRoutineDdl(const std::string& sql)
+    {
         const std::string masked = maskLiteralRegions(sql);
         const std::string verb = upperMainVerb(masked);
         if (verb != "CREATE" && verb != "ALTER") return false;
         return containsTopLevelKeyword(masked, "PROCEDURE") ||
-               containsTopLevelKeyword(masked, "FUNCTION");
+            containsTopLevelKeyword(masked, "FUNCTION");
     }
 }

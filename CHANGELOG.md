@@ -1,6 +1,6 @@
 # Changelog
 
-This file contains the user-facing highlights for each dbmw release. A matching version section is
+This file contains the user-facing highlights for each SQLConduit release. A matching version section is
 required before pushing a `v*` tag; the release workflow uses that section as the GitHub Release
 description.
 
@@ -11,7 +11,7 @@ description.
 - Added the Oracle driver (OCI): `OCILogon2` connections, `?` to `:n` placeholder rewriting,
   SQLT-based type mapping, native parameter binding, LOB reads and writes, transactions and
   savepoints, statement caching, and generated-key back-fill via `RETURNING ... INTO`. Enabled with
-  `DBMW_ENABLE_ORACLE=ON`; requires the Oracle Instant Client.
+  `SQLCONDUIT_ENABLE_ORACLE=ON`; requires the Oracle Instant Client.
 - Added `Dialect::Oracle` to the dialect machinery — identifier quoting, routine and index helpers,
   and call plans — so the entity mapping layer emits Oracle-compatible SQL.
 - Added an explicit `datasources[].oracle` configuration block for service names or SIDs, client
@@ -48,7 +48,7 @@ description.
 - Fixed prepared-statement cache eviction, mixed LOB-column indexing, locator cleanup, and UTF-8
   CLOB byte sizing, preventing invalid cache lookups, descriptor leaks, and multibyte truncation.
 - Kept caller-owned transaction semantics for array DML failures while rolling back the complete
-  batch when dbmw owns the transaction.
+  batch when SQLConduit owns the transaction.
 
 ## [0.5.1]
 

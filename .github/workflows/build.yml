@@ -74,23 +74,23 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DDBMW_ENABLE_MYSQL=${{ matrix.drivers }} \
-            -DDBMW_ENABLE_POSTGRES=${{ matrix.drivers }} \
-            -DDBMW_ENABLE_ODBC=${{ matrix.drivers }} \
-            -DDBMW_ENABLE_ORACLE=OFF \
-            -DDBMW_ENABLE_ASYNC_CORO=${{ matrix.coro }} \
-            -DDBMW_BUILD_TESTS=ON
+            -DSQLCONDUIT_ENABLE_MYSQL=${{ matrix.drivers }} \
+            -DSQLCONDUIT_ENABLE_POSTGRES=${{ matrix.drivers }} \
+            -DSQLCONDUIT_ENABLE_ODBC=${{ matrix.drivers }} \
+            -DSQLCONDUIT_ENABLE_ORACLE=OFF \
+            -DSQLCONDUIT_ENABLE_ASYNC_CORO=${{ matrix.coro }} \
+            -DSQLCONDUIT_BUILD_TESTS=ON
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
         run: |
           cmake -S . -B build -A x64 `
-            -DDBMW_ENABLE_MYSQL=${{ matrix.drivers }} `
-            -DDBMW_ENABLE_POSTGRES=${{ matrix.drivers }} `
-            -DDBMW_ENABLE_ODBC=${{ matrix.drivers }} `
-            -DDBMW_ENABLE_ORACLE=OFF `
-            -DDBMW_ENABLE_ASYNC_CORO=${{ matrix.coro }} `
-            -DDBMW_BUILD_TESTS=ON
+            -DSQLCONDUIT_ENABLE_MYSQL=${{ matrix.drivers }} `
+            -DSQLCONDUIT_ENABLE_POSTGRES=${{ matrix.drivers }} `
+            -DSQLCONDUIT_ENABLE_ODBC=${{ matrix.drivers }} `
+            -DSQLCONDUIT_ENABLE_ORACLE=OFF `
+            -DSQLCONDUIT_ENABLE_ASYNC_CORO=${{ matrix.coro }} `
+            -DSQLCONDUIT_BUILD_TESTS=ON
 
       - name: Build
         run: cmake --build build --config Release -j
@@ -100,7 +100,7 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.coro }}" = "ON" ]; then
-            ctest --test-dir build -C Release -R dbmw_coro_test --output-on-failure
+            ctest --test-dir build -C Release -R sqlconduit_coro_test --output-on-failure
           else
             ctest --test-dir build -C Release --output-on-failure
           fi
@@ -117,7 +117,7 @@ jobs:
           ver="${GITHUB_REF_NAME#v}"
           if [ "$ver" = "$GITHUB_REF_NAME" ]; then ver="dev-${GITHUB_SHA::7}"; fi
           if [ "${{ runner.os }}" = "Windows" ]; then ext=zip; else ext=tar.gz; fi
-          pkg="dbmw-${ver}-${{ matrix.pkg }}.${ext}"
+          pkg="sqlconduit-${ver}-${{ matrix.pkg }}.${ext}"
           cp LICENSE README.md CHANGELOG.md dist/
           if [ "$ext" = "zip" ]; then
             powershell -NoProfile -Command "Compress-Archive -Path 'dist/*' -DestinationPath '${pkg}'"
@@ -131,7 +131,7 @@ jobs:
         if: github.ref != 'refs/heads/dev'
         uses: actions/upload-artifact@v4
         with:
-          name: dbmw-${{ matrix.pkg }}
+          name: sqlconduit-${{ matrix.pkg }}
           path: ${{ env.PKG_FILE }}
           if-no-files-found: error
           retention-days: 30
@@ -165,7 +165,7 @@ jobs:
       - name: Download platform artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: dbmw-*
+          pattern: sqlconduit-*
           merge-multiple: true
           path: artifacts
 
@@ -178,13 +178,13 @@ jobs:
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
-              --title "dbmw $TAG" \
+              --title "SQLConduit $TAG" \
               --notes-file release-notes.md
             gh release upload "$TAG" artifacts/* --repo "$GITHUB_REPOSITORY" --clobber
           else
             gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
-              --title "dbmw $TAG" \
+              --title "SQLConduit $TAG" \
               --verify-tag \
               --notes-file release-notes.md \
               artifacts/*

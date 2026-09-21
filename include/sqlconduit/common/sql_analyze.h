@@ -1,0 +1,41 @@
+#ifndef SQLCONDUIT_COMMON_SQL_ANALYZE_H
+#define SQLCONDUIT_COMMON_SQL_ANALYZE_H
+
+#include <string>
+#include <vector>
+
+namespace sqlconduit::common::sql
+{
+    enum class StatementKind
+    {
+        Unknown,
+        Select,
+        Insert,
+        Update,
+        Delete,
+        Ddl,
+        Other
+    };
+
+    std::string structuralTemplate(const std::string& sql);
+
+    std::uint64_t fingerprintTemplate(const std::string& sql);
+
+    StatementKind classifyStatement(const std::string& sql);
+
+    bool isWrite(StatementKind kind);
+
+    bool hasWhereClause(const std::string& sql);
+
+    bool hasLimitClause(const std::string& sql);
+
+    bool hasRowLimitClause(const std::string& sql);
+
+    bool hasMultipleStatements(const std::string& sql);
+
+    bool hasMultipleStatements(const std::string& sql, bool allowRoutineBody);
+
+    bool isRoutineDdl(const std::string& sql);
+}
+
+#endif

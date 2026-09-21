@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run dbmw integration tests under WSL.
+# Run sqlconduit integration tests under WSL.
 #
 # Flow: sync sources to ext4 -> start MySQL/PG -> provision test accounts -> build
 #       everything (including ODBC tests) -> run MySQL/PostgreSQL integration tests.
@@ -10,22 +10,22 @@
 #   MYSQL_USER=root PG_USER=postgres bash scripts/run-integration-wsl.sh  # existing accounts
 #
 # Notes:
-#   - Sources must be built on ext4 (/root/dbmw). Building directly under /mnt/d is unreliable
+#   - Sources must be built on ext4 (/root/sqlconduit). Building directly under /mnt/d is unreliable
 #     with DrvFS, so this script synchronizes the tree first.
-#   - When run as root, it creates dedicated `dbmw` MySQL and PostgreSQL accounts without
+#   - When run as root, it creates dedicated `sqlconduit` MySQL and PostgreSQL accounts without
 #     changing existing root/postgres passwords. Override the variables above to reuse accounts.
 #   - ODBC integration tests are compile-only because WSL has no SQL Server instance; ctest
 #     excludes them with `-E odbc`.
 #   - Install missing dependencies with scripts/setup-wsl.sh --mysql --pg --odbc.
 set -euo pipefail
 
-MYSQL_PW="${MYSQL_PW:-dbmwtest}"
-PG_PW="${PG_PW:-dbmwtest}"
-MYSQL_USER="${MYSQL_USER:-dbmw}"
-MYSQL_DB="${MYSQL_DB:-dbmw_test}"
-PG_USER="${PG_USER:-dbmw}"
-PG_DB="${PG_DB:-dbmw}"
-WORK=/root/dbmw
+MYSQL_PW="${MYSQL_PW:-sqlconduittest}"
+PG_PW="${PG_PW:-sqlconduittest}"
+MYSQL_USER="${MYSQL_USER:-sqlconduit}"
+MYSQL_DB="${MYSQL_DB:-sqlconduit_test}"
+PG_USER="${PG_USER:-sqlconduit}"
+PG_DB="${PG_DB:-sqlconduit}"
+WORK=/root/sqlconduit
 BUILD="$WORK/build-it"
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -59,35 +59,35 @@ echo "==> 1.5/5 Provisioning test accounts (automatic as root; skipped otherwise
 if [ "$IS_ROOT" = "1" ]; then
   # Use the local Unix socket/auth_socket path; creating test users does not alter root credentials.
   mysql -uroot <<SQL || echo "    Warning: MySQL account provisioning failed (check socket permissions)"
-CREATE USER IF NOT EXISTS 'dbmw'@'%' IDENTIFIED BY '$MYSQL_PW';
-CREATE USER IF NOT EXISTS 'dbmw'@'localhost' IDENTIFIED BY '$MYSQL_PW';
-ALTER USER 'dbmw'@'%' IDENTIFIED BY '$MYSQL_PW';
-ALTER USER 'dbmw'@'localhost' IDENTIFIED BY '$MYSQL_PW';
-GRANT ALL PRIVILEGES ON *.* TO 'dbmw'@'%' WITH GRANT OPTION;
-GRANT ALL PRIVILEGES ON *.* TO 'dbmw'@'localhost' WITH GRANT OPTION;
-CREATE DATABASE IF NOT EXISTS dbmw_test;
-GRANT ALL PRIVILEGES ON dbmw_test.* TO 'dbmw'@'%';
-GRANT ALL PRIVILEGES ON dbmw_test.* TO 'dbmw'@'localhost';
+CREATE USER IF NOT EXISTS 'sqlconduit'@'%' IDENTIFIED BY '$MYSQL_PW';
+CREATE USER IF NOT EXISTS 'sqlconduit'@'localhost' IDENTIFIED BY '$MYSQL_PW';
+ALTER USER 'sqlconduit'@'%' IDENTIFIED BY '$MYSQL_PW';
+ALTER USER 'sqlconduit'@'localhost' IDENTIFIED BY '$MYSQL_PW';
+GRANT ALL PRIVILEGES ON *.* TO 'sqlconduit'@'%' WITH GRANT OPTION;
+GRANT ALL PRIVILEGES ON *.* TO 'sqlconduit'@'localhost' WITH GRANT OPTION;
+CREATE DATABASE IF NOT EXISTS sqlconduit_test;
+GRANT ALL PRIVILEGES ON sqlconduit_test.* TO 'sqlconduit'@'%';
+GRANT ALL PRIVILEGES ON sqlconduit_test.* TO 'sqlconduit'@'localhost';
 FLUSH PRIVILEGES;
 SQL
   # MySQL 8 blocks non-deterministic/data-modifying functions by default.
   mysql -uroot -e "SET GLOBAL log_bin_trust_function_creators=1;" 2>/dev/null || true
-  echo "    MySQL account ready: $MYSQL_USER / dbmw_test"
+  echo "    MySQL account ready: $MYSQL_USER / sqlconduit_test"
 
   su postgres -c "psql -v ON_ERROR_STOP=0 -q" <<SQL || echo "    Warning: PostgreSQL account provisioning failed"
 DO \$\$
 BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'dbmw') THEN
-    CREATE ROLE dbmw LOGIN SUPERUSER CREATEDB CREATEROLE PASSWORD '$PG_PW';
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'sqlconduit') THEN
+    CREATE ROLE sqlconduit LOGIN SUPERUSER CREATEDB CREATEROLE PASSWORD '$PG_PW';
   ELSE
-    ALTER ROLE dbmw LOGIN SUPERUSER CREATEDB CREATEROLE PASSWORD '$PG_PW';
+    ALTER ROLE sqlconduit LOGIN SUPERUSER CREATEDB CREATEROLE PASSWORD '$PG_PW';
   END IF;
 END
 \$\$;
-SELECT 'dbmw role ready';
+SELECT 'sqlconduit role ready';
 SQL
-  su postgres -c "psql -tAc \"SELECT 1 FROM pg_database WHERE datname='dbmw'\"" | grep -q 1 \
-    || su postgres -c "createdb -O dbmw dbmw"
+  su postgres -c "psql -tAc \"SELECT 1 FROM pg_database WHERE datname='sqlconduit'\"" | grep -q 1 \
+    || su postgres -c "createdb -O sqlconduit sqlconduit"
   echo "    PostgreSQL account ready: $PG_USER / $PG_DB"
 else
   echo "    Not running as root; using existing $MYSQL_USER / $PG_USER accounts"
@@ -119,29 +119,29 @@ else
   echo "    unixODBC not found -> ODBC=OFF (run setup-wsl.sh --odbc to compile-check ODBC tests)"
 fi
 cmake -S "$WORK" -B "$BUILD" -G "Unix Makefiles" \
-  -DDBMW_ENABLE_MYSQL=ON \
-  -DDBMW_ENABLE_POSTGRES=ON \
-  -DDBMW_ENABLE_ODBC="$ODBC_OPT" \
-  -DDBMW_BUILD_TESTS=ON \
-  -DDBMW_BUILD_INTEGRATION_TESTS=ON
+  -DSQLCONDUIT_ENABLE_MYSQL=ON \
+  -DSQLCONDUIT_ENABLE_POSTGRES=ON \
+  -DSQLCONDUIT_ENABLE_ODBC="$ODBC_OPT" \
+  -DSQLCONDUIT_BUILD_TESTS=ON \
+  -DSQLCONDUIT_BUILD_INTEGRATION_TESTS=ON
 
 echo "==> 4/5 Building ($JOBS jobs)"
 cmake --build "$BUILD" -j"$JOBS"
 
 echo "==> 4.5/5 Integration test binaries"
-find "$BUILD" -name 'dbmw_*_integration_test' -type f | sort
+find "$BUILD" -name 'sqlconduit_*_integration_test' -type f | sort
 
 echo "==> 5/5 Running MySQL / PostgreSQL integration tests (excluding ODBC)"
-export DBMW_TEST_MYSQL_HOST=127.0.0.1
-export DBMW_TEST_MYSQL_PORT=3306
-export DBMW_TEST_MYSQL_USER="$MYSQL_USER"
-export DBMW_TEST_MYSQL_DATABASE="$MYSQL_DB"
-export DBMW_TEST_MYSQL_PASSWORD="$MYSQL_PW"
-export DBMW_TEST_PG_HOST=127.0.0.1
-export DBMW_TEST_PG_PORT=5432
-export DBMW_TEST_PG_USER="$PG_USER"
-export DBMW_TEST_PG_DATABASE="$PG_DB"
-export DBMW_TEST_PG_PASSWORD="$PG_PW"
+export SQLCONDUIT_TEST_MYSQL_HOST=127.0.0.1
+export SQLCONDUIT_TEST_MYSQL_PORT=3306
+export SQLCONDUIT_TEST_MYSQL_USER="$MYSQL_USER"
+export SQLCONDUIT_TEST_MYSQL_DATABASE="$MYSQL_DB"
+export SQLCONDUIT_TEST_MYSQL_PASSWORD="$MYSQL_PW"
+export SQLCONDUIT_TEST_PG_HOST=127.0.0.1
+export SQLCONDUIT_TEST_PG_PORT=5432
+export SQLCONDUIT_TEST_PG_USER="$PG_USER"
+export SQLCONDUIT_TEST_PG_DATABASE="$PG_DB"
+export SQLCONDUIT_TEST_PG_PASSWORD="$PG_PW"
 
 cd "$BUILD"
 ctest -N | grep -i integration || true

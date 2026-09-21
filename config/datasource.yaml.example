@@ -74,7 +74,7 @@ observability:
   stats_report:
     enabled: true
     interval_ms: 60000
-    file: logs/dbmw_stats.log
+    file: logs/sqlconduit_stats.log
     format: text
     include_pool: true
     include_slow_sql: true

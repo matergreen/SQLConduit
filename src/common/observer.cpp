@@ -1,6 +1,6 @@
-#include "dbmw/common/observer.h"
-#include "dbmw/common/context.h"
-#include "dbmw/common/logger.h"
+#include "sqlconduit/common/observer.h"
+#include "sqlconduit/common/context.h"
+#include "sqlconduit/common/logger.h"
 
 #include <algorithm>
 #include <atomic>
@@ -13,29 +13,33 @@
 #include <unordered_map>
 #include <utility>
 
-namespace dbmw::common {
-    namespace {
+namespace sqlconduit::common
+{
+    namespace
+    {
         std::mutex g_stateMutex;
         std::mutex g_statsMutex;
         OperationObserver g_observer;
         config::ObservabilityConfig g_config;
         PoolMetricsObserver g_poolObserver;
         PoolMetricsCollector g_poolCollector;
-        const void *g_poolCollectorOwner = nullptr;
+        const void* g_poolCollectorOwner = nullptr;
         std::atomic<std::uint64_t> g_stateVersion{1};
         std::unordered_map<std::uint64_t, SlowSqlStats> g_slowStats;
         std::deque<SlowSqlRecord> g_recentSlow;
         std::list<std::uint64_t> g_lru;
         std::unordered_map<std::uint64_t, std::list<std::uint64_t>::iterator> g_lruPos;
 
-        struct Snapshot {
+        struct Snapshot
+        {
             config::ObservabilityConfig config;
             OperationObserver observer;
             PoolMetricsObserver poolObserver;
             PoolMetricsCollector poolCollector;
         };
 
-        const Snapshot &currentSnapshot() {
+        const Snapshot& currentSnapshot()
+        {
             static thread_local std::uint64_t tlsVersion = 0;
             static thread_local Snapshot tlsSnapshot;
             const auto version = g_stateVersion.load(std::memory_order_acquire);
@@ -49,23 +53,29 @@ namespace dbmw::common {
             return tlsSnapshot;
         }
 
-        std::uint64_t nextSampleSequence() {
+        std::uint64_t nextSampleSequence()
+        {
             static thread_local std::uint64_t tlsSequence =
-                    std::hash<std::thread::id>{}(std::this_thread::get_id());
+                std::hash<std::thread::id>{}(std::this_thread::get_id());
             return ++tlsSequence;
         }
 
-        void touchLru(std::uint64_t fp) {
+        void touchLru(std::uint64_t fp)
+        {
             auto it = g_lruPos.find(fp);
-            if (it == g_lruPos.end()) {
+            if (it == g_lruPos.end())
+            {
                 g_lru.push_front(fp);
                 g_lruPos.emplace(fp, g_lru.begin());
-            } else {
+            }
+            else
+            {
                 g_lru.splice(g_lru.begin(), g_lru, it->second);
             }
         }
 
-        void evictLru() {
+        void evictLru()
+        {
             if (g_lru.empty()) return;
             const auto fp = g_lru.back();
             g_lru.pop_back();
@@ -73,23 +83,29 @@ namespace dbmw::common {
             g_slowStats.erase(fp);
         }
 
-        std::string truncate(std::string text, const std::size_t limit) {
+        std::string truncate(std::string text, const std::size_t limit)
+        {
             if (text.size() <= limit) return text;
             const auto original = text.size();
             bool inLiteral = false;
             bool escaped = false;
-            for (std::size_t i = 0; i < limit; ++i) {
+            for (std::size_t i = 0; i < limit; ++i)
+            {
                 const char c = text[i];
-                if (escaped) {
+                if (escaped)
+                {
                     escaped = false;
                     continue;
                 }
-                if (c == '\\') {
+                if (c == '\\')
+                {
                     escaped = true;
                     continue;
                 }
-                if (c == '\'') {
-                    if (i + 1 < limit && text[i + 1] == '\'') {
+                if (c == '\'')
+                {
+                    if (i + 1 < limit && text[i + 1] == '\'')
+                    {
                         ++i;
                         continue;
                     }
@@ -102,102 +118,123 @@ namespace dbmw::common {
             return head;
         }
 
-        std::uint64_t fingerprint(const std::string &dataSource,
+        std::uint64_t fingerprint(const std::string& dataSource,
                                   const OperationType type,
-                                  const std::string &sql) {
+                                  const std::string& sql)
+        {
             std::uint64_t hash = 1469598103934665603ULL;
-            auto add = [&](const unsigned char c) {
+            auto add = [&](const unsigned char c)
+            {
                 hash ^= c;
                 hash *= 1099511628211ULL;
             };
-            for (const unsigned char c: dataSource) add(c);
+            for (const unsigned char c : dataSource) add(c);
             add(0);
             add(static_cast<unsigned char>(type));
-            for (const unsigned char c: sql) add(c);
+            for (const unsigned char c : sql) add(c);
             return hash;
         }
 
-        std::string structuralSql(const std::string &sql) {
+        std::string structuralSql(const std::string& sql)
+        {
             std::string out;
             out.reserve(sql.size());
             const std::size_t n = sql.size();
-            const auto isIdent = [](unsigned char c) {
+            const auto isIdent = [](unsigned char c)
+            {
                 return std::isalnum(c) || c == '_';
             };
             bool pendingSpace = false;
-            const auto flushSpace = [&] {
+            const auto flushSpace = [&]
+            {
                 if (pendingSpace && !out.empty() && out.back() != ' ') out.push_back(' ');
                 pendingSpace = false;
             };
             std::size_t i = 0;
-            while (i < n) {
+            while (i < n)
+            {
                 const auto c = static_cast<unsigned char>(sql[i]);
 
-                if (std::isspace(c)) {
+                if (std::isspace(c))
+                {
                     pendingSpace = !out.empty();
                     ++i;
                     continue;
                 }
 
-                if (c == '-' && i + 1 < n && sql[i + 1] == '-') {
+                if (c == '-' && i + 1 < n && sql[i + 1] == '-')
+                {
                     while (i < n && sql[i] != '\n') ++i;
                     pendingSpace = !out.empty();
                     continue;
                 }
-                if (c == '/' && i + 1 < n && sql[i + 1] == '*') {
+                if (c == '/' && i + 1 < n && sql[i + 1] == '*')
+                {
                     const bool semantic = i + 2 < n &&
-                                          (sql[i + 2] == '!' || sql[i + 2] == '+');
+                        (sql[i + 2] == '!' || sql[i + 2] == '+');
                     const auto close = sql.find("*/", i + 2);
                     const auto end = close == std::string::npos ? n : close + 2;
-                    if (semantic) {
+                    if (semantic)
+                    {
                         flushSpace();
                         out.append(sql, i, end - i);
-                    } else {
+                    }
+                    else
+                    {
                         pendingSpace = !out.empty();
                     }
                     i = end;
                     continue;
                 }
 
-                if (c == '$') {
+                if (c == '$')
+                {
                     std::size_t tagEnd = i + 1;
                     while (tagEnd < n &&
-                           (std::isalnum(static_cast<unsigned char>(sql[tagEnd])) ||
+                        (std::isalnum(static_cast<unsigned char>(sql[tagEnd])) ||
                             sql[tagEnd] == '_'))
                         ++tagEnd;
                     const bool validTag = tagEnd < n && sql[tagEnd] == '$' &&
-                                          (tagEnd == i + 1 ||
-                                           !std::isdigit(static_cast<unsigned char>(sql[i + 1])));
-                    if (validTag) {
+                    (tagEnd == i + 1 ||
+                        !std::isdigit(static_cast<unsigned char>(sql[i + 1])));
+                    if (validTag)
+                    {
                         const std::string delimiter = sql.substr(i, tagEnd - i + 1);
                         const auto close = sql.find(delimiter, tagEnd + 1);
-                        if (close != std::string::npos) {
+                        if (close != std::string::npos)
+                        {
                             flushSpace();
                             const auto end = close + delimiter.size();
                             std::uint64_t bodyHash = 1469598103934665603ULL;
-                            for (auto p = tagEnd + 1; p < close; ++p) {
+                            for (auto p = tagEnd + 1; p < close; ++p)
+                            {
                                 bodyHash ^= static_cast<unsigned char>(sql[p]);
                                 bodyHash *= 1099511628211ULL;
                             }
                             out += delimiter + "<body_hash:" +
-                                    std::to_string(bodyHash) + ">" + delimiter;
+                                std::to_string(bodyHash) + ">" + delimiter;
                             i = end;
                             continue;
                         }
                     }
                 }
 
-                if (c == '\'') {
+                if (c == '\'')
+                {
                     flushSpace();
                     out += '?';
                     ++i;
-                    while (i < n) {
-                        if (sql[i] == '\\' && i + 1 < n) {
+                    while (i < n)
+                    {
+                        if (sql[i] == '\\' && i + 1 < n)
+                        {
                             i += 2;
                             continue;
                         }
-                        if (sql[i] == '\'') {
-                            if (i + 1 < n && sql[i + 1] == '\'') {
+                        if (sql[i] == '\'')
+                        {
+                            if (i + 1 < n && sql[i + 1] == '\'')
+                            {
                                 i += 2;
                                 continue;
                             }
@@ -209,19 +246,25 @@ namespace dbmw::common {
                     continue;
                 }
 
-                if (c == '"' || c == '`') {
+                if (c == '"' || c == '`')
+                {
                     flushSpace();
                     const char quote = static_cast<char>(c);
                     out.push_back(quote);
                     ++i;
-                    while (i < n) {
+                    while (i < n)
+                    {
                         out.push_back(sql[i]);
-                        if (sql[i] == '\\' && i + 1 < n) {
+                        if (sql[i] == '\\' && i + 1 < n)
+                        {
                             out.push_back(sql[++i]);
-                        } else if (sql[i] == quote) {
+                        }
+                        else if (sql[i] == quote)
+                        {
                             if (i + 1 < n && sql[i + 1] == quote)
                                 out.push_back(sql[++i]);
-                            else {
+                            else
+                            {
                                 ++i;
                                 break;
                             }
@@ -232,48 +275,53 @@ namespace dbmw::common {
                 }
 
                 const bool boundary = i == 0 ||
-                                      !isIdent(static_cast<unsigned char>(sql[i - 1]));
+                    !isIdent(static_cast<unsigned char>(sql[i - 1]));
                 const bool signedNumber = (c == '+' || c == '-') && i + 1 < n &&
-                                          (std::isdigit(static_cast<unsigned char>(sql[i + 1])) ||
-                                           (sql[i + 1] == '.' && i + 2 < n &&
-                                            std::isdigit(static_cast<unsigned char>(sql[i + 2]))));
+                (std::isdigit(static_cast<unsigned char>(sql[i + 1])) ||
+                    (sql[i + 1] == '.' && i + 2 < n &&
+                        std::isdigit(static_cast<unsigned char>(sql[i + 2]))));
                 const bool plainNumber = std::isdigit(c) ||
-                                         (c == '.' && i + 1 < n &&
-                                          std::isdigit(static_cast<unsigned char>(sql[i + 1])));
-                if (boundary && (plainNumber || signedNumber)) {
+                (c == '.' && i + 1 < n &&
+                    std::isdigit(static_cast<unsigned char>(sql[i + 1])));
+                if (boundary && (plainNumber || signedNumber))
+                {
                     flushSpace();
                     out += '?';
                     if (signedNumber) ++i;
                     if (i + 1 < n && sql[i] == '0' &&
-                        (sql[i + 1] == 'x' || sql[i + 1] == 'X')) {
+                        (sql[i + 1] == 'x' || sql[i + 1] == 'X'))
+                    {
                         i += 2;
                         while (i < n && (std::isxdigit(static_cast<unsigned char>(sql[i])) ||
-                                         sql[i] == '_'))
+                            sql[i] == '_'))
                             ++i;
                         continue;
                     }
                     if (i + 1 < n && sql[i] == '0' &&
-                        (sql[i + 1] == 'b' || sql[i + 1] == 'B')) {
+                        (sql[i + 1] == 'b' || sql[i + 1] == 'B'))
+                    {
                         i += 2;
                         while (i < n && (sql[i] == '0' || sql[i] == '1' || sql[i] == '_')) ++i;
                         continue;
                     }
                     while (i < n && (std::isdigit(static_cast<unsigned char>(sql[i])) ||
-                                     sql[i] == '_'))
+                        sql[i] == '_'))
                         ++i;
-                    if (i < n && sql[i] == '.') {
+                    if (i < n && sql[i] == '.')
+                    {
                         ++i;
                         while (i < n && (std::isdigit(static_cast<unsigned char>(sql[i])) ||
-                                         sql[i] == '_'))
+                            sql[i] == '_'))
                             ++i;
                     }
-                    if (i < n && (sql[i] == 'e' || sql[i] == 'E')) {
+                    if (i < n && (sql[i] == 'e' || sql[i] == 'E'))
+                    {
                         std::size_t exponent = i + 1;
                         if (exponent < n && (sql[exponent] == '+' || sql[exponent] == '-'))
                             ++exponent;
                         const auto digits = exponent;
                         while (exponent < n &&
-                               (std::isdigit(static_cast<unsigned char>(sql[exponent])) ||
+                            (std::isdigit(static_cast<unsigned char>(sql[exponent])) ||
                                 sql[exponent] == '_'))
                             ++exponent;
                         if (exponent > digits) i = exponent;
@@ -288,27 +336,31 @@ namespace dbmw::common {
             return out;
         }
 
-        LogLevel parseLevel(const std::string &level) {
+        LogLevel parseLevel(const std::string& level)
+        {
             if (level == "info") return LogLevel::Info;
             if (level == "warn") return LogLevel::Warn;
             if (level == "error") return LogLevel::Error;
             return LogLevel::Debug;
         }
 
-        const char *operationName(const OperationType type) {
-            switch (type) {
-                case OperationType::Query: return "query";
-                case OperationType::Execute: return "execute";
-                case OperationType::Stream: return "stream";
-                case OperationType::Batch: return "batch";
-                case OperationType::Select: return "select";
-                case OperationType::Routine: return "routine";
-                default: return "operation";
+        const char* operationName(const OperationType type)
+        {
+            switch (type)
+            {
+            case OperationType::Query: return "query";
+            case OperationType::Execute: return "execute";
+            case OperationType::Stream: return "stream";
+            case OperationType::Batch: return "batch";
+            case OperationType::Select: return "select";
+            case OperationType::Routine: return "routine";
+            default: return "operation";
             }
         }
     }
 
-    void Observability::setObserver(OperationObserver observer) {
+    void Observability::setObserver(OperationObserver observer)
+    {
         {
             std::lock_guard<std::mutex> lock(g_stateMutex);
             g_observer = std::move(observer);
@@ -316,7 +368,8 @@ namespace dbmw::common {
         g_stateVersion.fetch_add(1, std::memory_order_release);
     }
 
-    void Observability::setPoolMetricsObserver(PoolMetricsObserver observer) {
+    void Observability::setPoolMetricsObserver(PoolMetricsObserver observer)
+    {
         {
             std::lock_guard<std::mutex> lock(g_stateMutex);
             g_poolObserver = std::move(observer);
@@ -325,7 +378,8 @@ namespace dbmw::common {
     }
 
     void Observability::setPoolMetricsCollector(PoolMetricsCollector collector,
-                                                const void *owner) {
+                                                const void* owner)
+    {
         {
             std::lock_guard<std::mutex> lock(g_stateMutex);
             g_poolCollector = std::move(collector);
@@ -334,11 +388,13 @@ namespace dbmw::common {
         g_stateVersion.fetch_add(1, std::memory_order_release);
     }
 
-    void Observability::clearPoolMetricsCollector(const void *owner) {
+    void Observability::clearPoolMetricsCollector(const void* owner)
+    {
         bool changed = false;
         {
             std::lock_guard<std::mutex> lock(g_stateMutex);
-            if (g_poolCollectorOwner == owner) {
+            if (g_poolCollectorOwner == owner)
+            {
                 g_poolCollector = {};
                 g_poolCollectorOwner = nullptr;
                 changed = true;
@@ -347,10 +403,12 @@ namespace dbmw::common {
         if (changed) g_stateVersion.fetch_add(1, std::memory_order_release);
     }
 
-    PoolMetricsEvent Observability::samplePoolMetrics() noexcept {
+    PoolMetricsEvent Observability::samplePoolMetrics() noexcept
+    {
         PoolMetricsEvent event;
         event.timestamp = std::chrono::system_clock::now();
-        try {
+        try
+        {
             PoolMetricsCollector collector;
             PoolMetricsObserver observer;
             {
@@ -358,46 +416,64 @@ namespace dbmw::common {
                 collector = g_poolCollector;
                 observer = g_poolObserver;
             }
-            if (collector) {
-                try {
+            if (collector)
+            {
+                try
+                {
                     event.pools = collector();
-                } catch (...) {
+                }
+                catch (...)
+                {
                     event.pools.clear();
                 }
             }
-            if (observer) {
-                try {
+            if (observer)
+            {
+                try
+                {
                     observer(event);
-                } catch (...) {
+                }
+                catch (...)
+                {
                 }
             }
-        } catch (...) {
+        }
+        catch (...)
+        {
         }
         return event;
     }
 
-    void Observability::emit(const OperationEvent &event) noexcept {
-        try {
-            const Snapshot &snapshot = currentSnapshot();
+    void Observability::emit(const OperationEvent& event) noexcept
+    {
+        try
+        {
+            const Snapshot& snapshot = currentSnapshot();
             if (!snapshot.observer) return;
-            try {
+            try
+            {
                 snapshot.observer(event);
-            } catch (...) {
             }
-        } catch (...) {
+            catch (...)
+            {
+            }
+        }
+        catch (...)
+        {
         }
     }
 
-    void Observability::configure(const config::ObservabilityConfig &config) {
+    void Observability::configure(const config::ObservabilityConfig& config)
+    {
         config::ObservabilityConfig normalized = config;
         if (normalized.slow_sql.aggregate_capacity < 1)
             normalized.slow_sql.aggregate_capacity = 1;
         if (normalized.slow_sql.recent_capacity < 0)
             normalized.slow_sql.recent_capacity = 0;
         const auto capacity =
-                static_cast<std::size_t>(normalized.slow_sql.aggregate_capacity);
+            static_cast<std::size_t>(normalized.slow_sql.aggregate_capacity);
         const auto recentCapacity =
-                static_cast<std::size_t>(normalized.slow_sql.recent_capacity);
+            static_cast<std::size_t>(normalized.slow_sql.recent_capacity);
         const auto buckets = normalized.slow_sql.histogram_buckets_ms;
 
         {
@@ -409,10 +485,12 @@ namespace dbmw::common {
         std::lock_guard<std::mutex> lock(g_statsMutex);
 
         const bool bucketsChanged = std::any_of(
-            g_slowStats.begin(), g_slowStats.end(), [&](const auto &entry) {
+            g_slowStats.begin(), g_slowStats.end(), [&](const auto& entry)
+            {
                 return entry.second.histogramBucketsMs != buckets;
             });
-        if (bucketsChanged) {
+        if (bucketsChanged)
+        {
             g_slowStats.clear();
             g_lru.clear();
             g_lruPos.clear();
@@ -422,23 +500,28 @@ namespace dbmw::common {
         while (g_recentSlow.size() > recentCapacity) g_recentSlow.pop_front();
     }
 
-    void Observability::emitSql(OperationEvent event, const std::string &sql,
-                                const SqlRenderer &renderer,
-                                const common::ResultSet *result) noexcept {
-        try {
-            const Snapshot &snapshot = currentSnapshot();
-            const config::ObservabilityConfig &config = snapshot.config;
-            const OperationObserver &observer = snapshot.observer;
+    void Observability::emitSql(OperationEvent event, const std::string& sql,
+                                const SqlRenderer& renderer,
+                                const common::ResultSet* result) noexcept
+    {
+        try
+        {
+            const Snapshot& snapshot = currentSnapshot();
+            const config::ObservabilityConfig& config = snapshot.config;
+            const OperationObserver& observer = snapshot.observer;
 
             const bool slowEnabled = config.slow_sql.enabled;
             const bool logEnabled = config.sql_log.enabled;
 
             {
-                const SqlContext &ctx = ContextScope::current();
+                const SqlContext& ctx = ContextScope::current();
                 if (!ctx.traceId.empty()) event.traceId = ctx.traceId;
-                if (!ctx.spanId.empty()) {
+                if (!ctx.spanId.empty())
+                {
                     event.spanId = ctx.spanId;
-                } else if (!event.traceId.empty()) {
+                }
+                else if (!event.traceId.empty())
+                {
                     event.spanId = nextSpanId();
                 }
                 if (ctx.shadow) event.shadow = true;
@@ -458,26 +541,28 @@ namespace dbmw::common {
             event.slow = slowEnabled && durationMs >= config.slow_sql.threshold_ms;
 
             const bool logEligible = logEnabled &&
-                                     (!config.sql_log.slow_only || durationMs >= config.slow_sql.threshold_ms) &&
-                                     ((event.status.ok() && config.sql_log.log_success) ||
-                                      (!event.status.ok() && config.sql_log.log_errors));
+                (!config.sql_log.slow_only || durationMs >= config.slow_sql.threshold_ms) &&
+                ((event.status.ok() && config.sql_log.log_success) ||
+                    (!event.status.ok() && config.sql_log.log_errors));
             const auto sequence = logEnabled ? nextSampleSequence() : 0;
             const bool sampled = !logEnabled ||
-                                 config.sql_log.sample_rate >= 1.0 ||
-                                 (config.sql_log.sample_rate > 0.0 &&
-                                  static_cast<double>((event.sqlFingerprint ^ sequence) % 1000000ULL) /
-                                  1000000.0 < config.sql_log.sample_rate);
+                config.sql_log.sample_rate >= 1.0 ||
+                (config.sql_log.sample_rate > 0.0 &&
+                    static_cast<double>((event.sqlFingerprint ^ sequence) % 1000000ULL) /
+                    1000000.0 < config.sql_log.sample_rate);
             const bool needsRendered = renderer &&
-                                       ((logEligible && sampled && config.sql_log.mode == "full") ||
-                                        (event.slow && config.slow_sql.retain_rendered_sql));
+            ((logEligible && sampled && config.sql_log.mode == "full") ||
+                (event.slow && config.slow_sql.retain_rendered_sql));
 
-            if (event.slow || (logEligible && sampled)) {
+            if (event.slow || (logEligible && sampled))
+            {
                 event.sqlTemplate = truncate(sql, static_cast<std::size_t>(
                                                  event.slow
                                                      ? config.slow_sql.max_sql_length
                                                      : config.sql_log.max_sql_length));
             }
-            if (needsRendered) {
+            if (needsRendered)
+            {
                 SqlRenderOptions options;
                 options.includeStringValues = config.sql_log.include_string_values;
                 options.includeBlobValues = config.sql_log.include_blob_values;
@@ -490,21 +575,26 @@ namespace dbmw::common {
                 if (renderer(options, rendered).ok()) event.renderedSql = std::move(rendered);
             }
 
-            if (event.slow) {
+            if (event.slow)
+            {
                 const auto now = std::chrono::system_clock::now();
                 const auto aggKey = event.sqlFingerprint;
                 std::lock_guard<std::mutex> lock(g_statsMutex);
                 const bool isNew = g_slowStats.find(aggKey) == g_slowStats.end();
-                if (isNew) {
+                if (isNew)
+                {
                     if (g_slowStats.size() >= static_cast<std::size_t>(
-                            config.slow_sql.aggregate_capacity))
+                        config.slow_sql.aggregate_capacity))
                         evictLru();
                     touchLru(aggKey);
-                } else {
+                }
+                else
+                {
                     touchLru(aggKey);
                 }
-                auto &stats = g_slowStats[aggKey];
-                if (isNew) {
+                auto& stats = g_slowStats[aggKey];
+                if (isNew)
+                {
                     stats.fingerprint = aggKey;
                     stats.dataSource = event.dataSource;
                     stats.type = event.type;
@@ -524,12 +614,13 @@ namespace dbmw::common {
                 stats.lastSeen = now;
                 std::size_t bucket = 0;
                 while (bucket < stats.histogramBucketsMs.size() &&
-                       event.duration.count() >
-                       static_cast<std::int64_t>(stats.histogramBucketsMs[bucket]) * 1000)
+                    event.duration.count() >
+                    static_cast<std::int64_t>(stats.histogramBucketsMs[bucket]) * 1000)
                     ++bucket;
                 ++stats.histogram[bucket];
 
-                if (config.slow_sql.recent_capacity > 0) {
+                if (config.slow_sql.recent_capacity > 0)
+                {
                     SlowSqlRecord record;
                     record.timestamp = now;
                     record.dataSource = event.dataSource;
@@ -545,54 +636,63 @@ namespace dbmw::common {
                     record.traceId = event.traceId;
                     record.spanId = event.spanId;
                     if (g_recentSlow.size() >= static_cast<std::size_t>(
-                            config.slow_sql.recent_capacity))
+                        config.slow_sql.recent_capacity))
                         g_recentSlow.pop_front();
                     g_recentSlow.push_back(std::move(record));
                 }
             }
 
-            if (logEligible && sampled) {
-                const auto &displaySql = config.sql_log.mode == "full" &&
+            if (logEligible && sampled)
+            {
+                const auto& displaySql = config.sql_log.mode == "full" &&
                                          !event.renderedSql.empty()
                                              ? event.renderedSql
                                              : event.sqlTemplate;
                 std::ostringstream message;
                 message << "sql datasource=" << event.dataSource
-                        << " operation=" << operationName(event.type)
-                        << " duration_ms=" << durationMs
-                        << " rows=" << event.rowCount
-                        << " status=" << errorCodeToString(event.status.code)
-                        << " fingerprint=" << event.sqlFingerprint;
+                    << " operation=" << operationName(event.type)
+                    << " duration_ms=" << durationMs
+                    << " rows=" << event.rowCount
+                    << " status=" << errorCodeToString(event.status.code)
+                    << " fingerprint=" << event.sqlFingerprint;
                 if (!event.traceId.empty()) message << " trace=" << event.traceId;
                 if (!event.spanId.empty()) message << " span=" << event.spanId;
                 message << " statement=" << displaySql;
                 Logger::log(parseLevel(config.sql_log.level), message.str());
             }
 
-            if (observer) {
-                try { observer(event); } catch (...) {
+            if (observer)
+            {
+                try { observer(event); }
+                catch (...)
+                {
                 }
             }
-        } catch (...) {
+        }
+        catch (...)
+        {
         }
     }
 
     std::vector<SlowSqlStats> Observability::slowSqlStats(
-        const std::size_t limit, const std::string &dataSource) {
+        const std::size_t limit, const std::string& dataSource)
+    {
         std::vector<SlowSqlStats> result;
         std::lock_guard<std::mutex> lock(g_statsMutex);
         result.reserve(g_slowStats.size());
-        for (const auto &entry: g_slowStats) {
+        for (const auto& entry : g_slowStats)
+        {
             if (dataSource.empty() || entry.second.dataSource == dataSource)
                 result.push_back(entry.second);
         }
-        std::sort(result.begin(), result.end(), [](const auto &a, const auto &b) {
+        std::sort(result.begin(), result.end(), [](const auto& a, const auto& b)
+        {
             const std::uint64_t ac = a.count == 0 ? 1 : a.count;
             const std::uint64_t bc = b.count == 0 ? 1 : b.count;
             const auto averageA = static_cast<long double>(a.totalDuration.count()) /
-                                  static_cast<long double>(ac);
+                static_cast<long double>(ac);
             const auto averageB = static_cast<long double>(b.totalDuration.count()) /
-                                  static_cast<long double>(bc);
+                static_cast<long double>(bc);
             return averageA > averageB;
         });
         if (result.size() > limit) result.resize(limit);
@@ -600,11 +700,13 @@ namespace dbmw::common {
     }
 
     std::vector<SlowSqlRecord> Observability::recentSlowSql(
-        const std::size_t limit, const std::string &dataSource) {
+        const std::size_t limit, const std::string& dataSource)
+    {
         std::vector<SlowSqlRecord> result;
         if (limit == 0) return result;
         std::lock_guard<std::mutex> lock(g_statsMutex);
-        for (auto it = g_recentSlow.rbegin(); it != g_recentSlow.rend(); ++it) {
+        for (auto it = g_recentSlow.rbegin(); it != g_recentSlow.rend(); ++it)
+        {
             if (!dataSource.empty() && it->dataSource != dataSource) continue;
             result.push_back(*it);
             if (result.size() >= limit) break;
@@ -612,7 +714,8 @@ namespace dbmw::common {
         return result;
     }
 
-    void Observability::clearSlowSqlStats() {
+    void Observability::clearSlowSqlStats()
+    {
         std::lock_guard<std::mutex> lock(g_statsMutex);
         g_slowStats.clear();
         g_lru.clear();

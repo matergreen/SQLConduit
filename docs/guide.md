@@ -1,4 +1,4 @@
-# dbmw 详细指南
+# SQLConduit 详细指南
 
 > English version: [guide_en.md](guide_en.md) · 快速入门：[README.md](../README.md)
 
@@ -31,7 +31,7 @@
   并预留**驱动扩展接口**，新增数据库只需实现 `IDriver` 并注册。
 
 > 状态：核心层（配置/连接池/心跳/事务/参数绑定/门面）已完整实现，
-> 并通过 `tests/dbmw_core_test.cpp` 的 146 项行为验证（mock 驱动，无需真实数据库）。
+> 并通过 `tests/sqlconduit_core_test.cpp` 的 146 项行为验证（mock 驱动，无需真实数据库）。
 >
 > 驱动实现进度：
 > - **MySQL 已完整实现**（libmysqlclient）：连接超时/字符集、ping、按列类型映射结果集、
@@ -50,14 +50,14 @@
 >
 > 预编译与生成键为四个驱动各自实现；大参数流式（`StreamSource`）当前四驱动统一以**缓冲降级**实现
 > （一次性读成 `Blob` 再按普通参数绑定），调用代码保持一致，MySQL `send_long_data` / ODBC `SQLPutData` 真分块为后续增强。
-> 四个驱动均由 `DBMW_ENABLE_*` 编译期开关控制。
+> 四个驱动均由 `SQLCONDUIT_ENABLE_*` 编译期开关控制。
 
 ---
 
 ## 目录结构
 
 ```
-include/dbmw/
+include/sqlconduit/
   common/    types.h(值/行/结果集/状态/错误码)  observer.h(观测事件)  logger.h(轻量日志)
   config/    datasource_config.h  config_loader.h(解析 JSON)
   core/      idatabase_connection.h(连接抽象 + 流式/批量默认能力)
@@ -65,12 +65,12 @@ include/dbmw/
   driver/    idriver.h  driver_registry.h  driver_factory.h
              mysql_driver.h  postgres_driver.h  odbc_driver.h
   async/     async_types.h(结果体/Handle)  executor.h(IExecutor/线程池)
-             dbmw_async.h(异步门面)  task.h(协程层，可选 C++20)
+             sqlconduit_async.h(异步门面)  task.h(协程层，可选 C++20)
   mapping.h  (实体映射层 v0.5.0：header-only，Row ↔ 业务实体，读写双向)
-  dbmw.h     (对外门面)
+  sqlconduit.h     (对外门面)
 src/         对应实现
-tests/       dbmw_core_test.cpp  dbmw_async_test.cpp  dbmw_coro_test.cpp(coro=ON)
-             dbmw_mapping_test.cpp(实体映射)
+tests/       sqlconduit_core_test.cpp  sqlconduit_async_test.cpp  sqlconduit_coro_test.cpp(coro=ON)
+             sqlconduit_mapping_test.cpp(实体映射)
 config/      datasources.json.example  datasource.yaml.example
 third_party/nlohmann/json.hpp  (vendored 单头，离线可用)
 scripts/     setup-wsl.sh
@@ -91,9 +91,9 @@ sudo apt install -y build-essential cmake
 mkdir -p build && cd build
 cmake ..                                   # 仅核心层
 # 启用驱动示例：
-# cmake .. -DDBMW_ENABLE_MYSQL=ON -DDBMW_ENABLE_POSTGRES=ON -DDBMW_ENABLE_ODBC=ON
+# cmake .. -DSQLCONDUIT_ENABLE_MYSQL=ON -DSQLCONDUIT_ENABLE_POSTGRES=ON -DSQLCONDUIT_ENABLE_ODBC=ON
 # 启用协程层（可选，仅 task.cpp 提标 C++20）：
-# cmake .. -DDBMW_ENABLE_ASYNC_CORO=ON
+# cmake .. -DSQLCONDUIT_ENABLE_ASYNC_CORO=ON
 cmake --build .
 
 ```
@@ -101,8 +101,8 @@ cmake --build .
 运行测试（可选，不需要真实数据库，用 mock 驱动验证核心语义）：
 
 ```bash
-cmake .. -DDBMW_BUILD_TESTS=ON && cmake --build . && ctest --output-on-failure
-# 或直接执行： ./tests/dbmw_core_test
+cmake .. -DSQLCONDUIT_BUILD_TESTS=ON && cmake --build . && ctest --output-on-failure
+# 或直接执行： ./tests/sqlconduit_core_test
 ```
 
 也可一键执行 `scripts/setup-wsl.sh`（按参数安装依赖并构建）。
@@ -111,7 +111,7 @@ cmake .. -DDBMW_BUILD_TESTS=ON && cmake --build . && ctest --output-on-failure
 
 macOS 用 [Homebrew](https://brew.sh) 管理依赖，编译器走系统 **clang++**（需先装 Xcode Command Line Tools）。Homebrew 的包装在 `/opt/homebrew`（Apple Silicon）或 `/usr/local`（Intel），CMake 默认搜索路径未必覆盖，建议显式用 `CMAKE_PREFIX_PATH` 指明客户端库位置。
 
-> **注意**：`DBMW_ENABLE_ODBC` 与 `DBMW_ENABLE_ORACLE` 默认都是 `OFF`。需要 ODBC 时先安装 unixODBC，
+> **注意**：`SQLCONDUIT_ENABLE_ODBC` 与 `SQLCONDUIT_ENABLE_ORACLE` 默认都是 `OFF`。需要 ODBC 时先安装 unixODBC，
 > 需要 Oracle 时先装 Instant Client（Basic + SDK），再显式传入对应开关。
 
 ```bash
@@ -127,46 +127,46 @@ brew install mysql-client libpqxx libpq unixodbc
 mkdir -p build && cd build
 cmake .. \
   -DCMAKE_PREFIX_PATH="$(brew --prefix);$(brew --prefix mysql-client)" \
-  -DDBMW_ENABLE_MYSQL=ON -DDBMW_ENABLE_POSTGRES=ON -DDBMW_ENABLE_ODBC=ON
+  -DSQLCONDUIT_ENABLE_MYSQL=ON -DSQLCONDUIT_ENABLE_POSTGRES=ON -DSQLCONDUIT_ENABLE_ODBC=ON
 # 启用 Oracle（Instant Client 解压后的目录）：
-#   -DDBMW_ENABLE_ORACLE=ON -DOCI_INCLUDE_DIR=.../sdk/include -DOCI_LIBRARY=.../libclntsh.dylib
+#   -DSQLCONDUIT_ENABLE_ORACLE=ON -DOCI_INCLUDE_DIR=.../sdk/include -DOCI_LIBRARY=.../libclntsh.dylib
 cmake --build . -j"$(sysctl -n hw.ncpu)"
 
 ```
 
-> 只启用部分驱动时，删掉对应 `-DDBMW_ENABLE_*` 并去掉 `CMAKE_PREFIX_PATH` 里未安装的包（未安装的 `brew --prefix <pkg>` 会报错）；核心层不需要任何客户端库，可直接 `cmake ..` 构建。
+> 只启用部分驱动时，删掉对应 `-DSQLCONDUIT_ENABLE_*` 并去掉 `CMAKE_PREFIX_PATH` 里未安装的包（未安装的 `brew --prefix <pkg>` 会报错）；核心层不需要任何客户端库，可直接 `cmake ..` 构建。
 
 运行测试（可选，mock 驱动、无需真实数据库）：
 
 ```bash
-cmake .. -DDBMW_BUILD_TESTS=ON && cmake --build . -j"$(sysctl -n hw.ncpu)" && ctest --output-on-failure
+cmake .. -DSQLCONDUIT_BUILD_TESTS=ON && cmake --build . -j"$(sysctl -n hw.ncpu)" && ctest --output-on-failure
 ```
 
 ## 快速使用
 
 ```cpp
-#include "dbmw/dbmw.h"
+#include "sqlconduit/sqlconduit.h"
 
-dbmw::DBMW::init("config/datasources.json");   // 加载多数据源 + 启动心跳
+sqlconduit::SQLConduit::init("config/datasources.json");   // 加载多数据源 + 启动心跳
 
-dbmw::common::ResultSet rs;
-auto st = dbmw::DBMW::query("SELECT 1", rs);    // 默认数据源
+sqlconduit::common::ResultSet rs;
+auto st = sqlconduit::SQLConduit::query("SELECT 1", rs);    // 默认数据源
 if (st.ok()) { /* 处理 rs */ }
 
 int64_t n = 0;
-dbmw::DBMW::execute("UPDATE t SET c = 1 WHERE id = 2", n); // 默认数据源
+sqlconduit::SQLConduit::execute("UPDATE t SET c = 1 WHERE id = 2", n); // 默认数据源
 
-dbmw::DBMW::shutdown();
+sqlconduit::SQLConduit::shutdown();
 ```
 
-指定数据源：`dbmw::DBMW::query("pg", "SELECT now()", rs);`
+指定数据源：`sqlconduit::SQLConduit::query("pg", "SELECT now()", rs);`
 
 ## 事务与会话
 
 `query()` / `execute()` 每次都会**重新借一条连接**，因此跨多条语句的事务必须先把连接固定下来：
 
 ```cpp
-auto st = dbmw::DBMW::transaction([](dbmw::core::Session& s) {
+auto st = sqlconduit::SQLConduit::transaction([](sqlconduit::core::Session& s) {
     int64_t n = 0;
     if (auto r = s.execute("UPDATE accounts SET bal = bal - 100 WHERE id = 1", n); !r.ok())
         return r;                       // 返回失败 -> 自动 rollback
@@ -183,9 +183,9 @@ auto st = dbmw::DBMW::transaction([](dbmw::core::Session& s) {
 SQL 中用 `?` 作占位符，参数值通过 `common::Params` 传入，**不参与 SQL 字符串拼接**：
 
 ```cpp
-dbmw::common::ResultSet rs;
-dbmw::common::Params p{ std::string("O'Brien"), std::int64_t(42) };
-auto st = dbmw::DBMW::query("SELECT * FROM t WHERE name = ? AND age > ?", p, rs);
+sqlconduit::common::ResultSet rs;
+sqlconduit::common::Params p{ std::string("O'Brien"), std::int64_t(42) };
+auto st = sqlconduit::SQLConduit::query("SELECT * FROM t WHERE name = ? AND age > ?", p, rs);
 ```
 
 - PostgreSQL / MySQL / Oracle / ODBC 均走**原生参数绑定**。
@@ -214,35 +214,35 @@ auto st = dbmw::DBMW::query("SELECT * FROM t WHERE name = ? AND age > ?", p, rs)
 （闸门只在 `DataSource` 入口过一次、结果缓存键不变、故障转移/写缓冲不用于事务）。
 
 > 注意：`prepare` / `executePrepared` 显式句柄 API 只存在于 `Session`（句柄绑定具体连接，无状态门面持有不了跨调用的句柄）；
-> 生成键与大参数流式在 `DataSource`（`DBMW::dataSource()` 取得）与 `Session` 上都有。
+> 生成键与大参数流式在 `DataSource`（`SQLConduit::dataSource()` 取得）与 `Session` 上都有。
 
 ### 预编译语句复用（连接级句柄缓存）
 
-`DBMW::query(sql, params)` / `execute(sql, params)` 在驱动支持且 `prepared_cache.enabled` 开启时，
+`SQLConduit::query(sql, params)` / `execute(sql, params)` 在驱动支持且 `prepared_cache.enabled` 开启时，
 内部按 `(归一化 SQL + 参数类型签名)` 在本连接的缓存里查已编译句柄，没有就 `prepare` 并存入，再用
 `executePrepared` 执行。**对调用方完全透明、签名不变**——热点 SQL 自动只 prepare 一次。
 
 ```cpp
 // 透明自动缓存：用法与原来完全一致，无需任何改动
-dbmw::common::ResultSet rs;
-dbmw::common::Params p{ std::int64_t(1) };
-auto st = dbmw::DBMW::query("SELECT * FROM t WHERE id = ?", p, rs);
+sqlconduit::common::ResultSet rs;
+sqlconduit::common::Params p{ std::int64_t(1) };
+auto st = sqlconduit::SQLConduit::query("SELECT * FROM t WHERE id = ?", p, rs);
 ```
 
 需要在稳定连接上精细控制、或批量复用同一句柄时，用 `Session` 的显式句柄 API：
 
 ```cpp
-auto st = dbmw::DBMW::transaction([](dbmw::core::Session& s) {
-    dbmw::core::PreparedStatementHandle h;
+auto st = sqlconduit::SQLConduit::transaction([](sqlconduit::core::Session& s) {
+    sqlconduit::core::PreparedStatementHandle h;
     // typesSample 仅用于推导参数类型签名（占位值即可，不需要真实数据）
     if (auto r = s.prepare("INSERT INTO t(a,b) VALUES(?,?)",
-                           dbmw::common::Params{std::int64_t(0), std::string("")}, h); !r.ok())
+                           sqlconduit::common::Params{std::int64_t(0), std::string("")}, h); !r.ok())
         return r;
     int64_t n = 0;
     for (const auto& row : rowsToInsert)
-        if (auto r = s.executePrepared(h, dbmw::common::Params{row.a, row.b}, n); !r.ok())
+        if (auto r = s.executePrepared(h, sqlconduit::common::Params{row.a, row.b}, n); !r.ok())
             return r;
-    return dbmw::common::Status::OK();
+    return sqlconduit::common::Status::OK();
 });
 ```
 
@@ -257,29 +257,29 @@ auto st = dbmw::DBMW::transaction([](dbmw::core::Session& s) {
 `execute` 新增带生成键的重载，回吐刚插入生成的列：
 
 ```cpp
-auto ds = dbmw::DBMW::dataSource();          // 默认数据源（也可传名字取指定源）
+auto ds = sqlconduit::SQLConduit::dataSource();          // 默认数据源（也可传名字取指定源）
 int64_t n = 0;
-dbmw::common::GeneratedKeys keys;
+sqlconduit::common::GeneratedKeys keys;
 
 // MySQL：开箱即得，无需改 SQL
 ds->execute("INSERT INTO t(name) VALUES('x')", n, keys);
 int64_t id = keys.lastInsertId();            // MySQL 自增主键
 
-// PostgreSQL / Oracle / ODBC：靠 SQL 自带 RETURNING / OUTPUT 直出，dbmw 不自动补
+// PostgreSQL / Oracle / ODBC：靠 SQL 自带 RETURNING / OUTPUT 直出，SQLConduit 不自动补
 ds->execute("INSERT INTO t(name) VALUES('x') RETURNING id", n, keys);
 if (!keys.empty()) id = keys.rows[0].asInt64(0);  // 取 RETURNING 出来的第一列
 ```
 
 统一模型：`GeneratedKeys` 始终是"生成列的结果集"——MySQL 用 `mysql_insert_id` 合成一行一列，
-PG/Oracle/ODBC 用 `RETURNING`/`OUTPUT` 直出。**dbmw 不会给你自己写的 SQL 自动追加 `RETURNING`**（那会改写语义并耦合方言），
+PG/Oracle/ODBC 用 `RETURNING`/`OUTPUT` 直出。**SQLConduit 不会给你自己写的 SQL 自动追加 `RETURNING`**（那会改写语义并耦合方言），
 因此 PG/ODBC 想拿自增 id 就在 SQL 里自己写 `RETURNING id`；Oracle 需写成
 `RETURNING id INTO :2`（`:1` 已被 `VALUES(?)` 占用），驱动会解析 `RETURNING ... INTO` 并回读。
 无 `RETURNING` 且非 MySQL 自增时 `keys.empty()` 为真（不报错）。
 复用同一 `GeneratedKeys` 对象前调用 `keys.clear()`，避免重试着法残留旧行被当成这次生成的键。
 
-> 这条约束只针对**调用方传入的 SQL**。SQL 由 dbmw 自己生成的场景（实体映射层的
-> `insertAs` / `insertBatchAs`）不在此列：那里 dbmw 会按方言补全，见「写」一节。
-> 区界线：谁写的 SQL 谁负责，dbmw 只对自己生成的那部分负责。
+> 这条约束只针对**调用方传入的 SQL**。SQL 由 SQLConduit 自己生成的场景（实体映射层的
+> `insertAs` / `insertBatchAs`）不在此列：那里 SQLConduit 会按方言补全，见「写」一节。
+> 区界线：谁写的 SQL 谁负责，SQLConduit 只对自己生成的那部分负责。
 
 ### 大参数流式（StreamSource）
 
@@ -287,9 +287,9 @@ PG/Oracle/ODBC 用 `RETURNING`/`OUTPUT` 直出。**dbmw 不会给你自己写的
 执行期间由驱动按块拉取。这是**输入方向**的流式，与结果集的流式消费（`queryEach`/游标）方向相反，不要混用。
 
 ```cpp
-auto ds = dbmw::DBMW::dataSource();
+auto ds = sqlconduit::SQLConduit::dataSource();
 std::ifstream f("big.bin", std::ios::binary);
-dbmw::common::StreamParams sp{ std::int64_t(1), dbmw::common::StreamSource(f) };
+sqlconduit::common::StreamParams sp{ std::int64_t(1), sqlconduit::common::StreamSource(f) };
 int64_t n = 0;
 ds->execute("INSERT INTO t(id, blob) VALUES(?, ?)", sp, n);   // 或 query / executeBatch
 ```
@@ -324,15 +324,15 @@ ds->execute("INSERT INTO t(id, blob) VALUES(?, ?)", sp, n);   // 或 query / exe
 （服务端调用超时）。此外 `cancel()` 会走 `OCIBreak` 中断在途语句。事务还可设置隔离级别、只读和整体期限：
 
 ```cpp
-dbmw::common::TransactionOptions options;
-options.isolation = dbmw::common::IsolationLevel::Serializable;
+sqlconduit::common::TransactionOptions options;
+options.isolation = sqlconduit::common::IsolationLevel::Serializable;
 options.readOnly = false;
 options.timeout = std::chrono::seconds(5);
 
-auto st = dbmw::DBMW::transaction(options, [](dbmw::core::Session& s) {
+auto st = sqlconduit::SQLConduit::transaction(options, [](sqlconduit::core::Session& s) {
     s.savepoint("before_optional_step");
     // ...
-    return dbmw::common::Status::OK();
+    return sqlconduit::common::Status::OK();
 });
 ```
 
@@ -352,18 +352,18 @@ auto st = dbmw::DBMW::transaction(options, [](dbmw::core::Session& s) {
 
 ```cpp
 std::uint64_t rows = 0;
-dbmw::DBMW::queryEach("SELECT * FROM large_table", {},
-    [](const dbmw::common::Row& row) {
+sqlconduit::SQLConduit::queryEach("SELECT * FROM large_table", {},
+    [](const sqlconduit::common::Row& row) {
         // 返回 false 可提前停止。
         return consume(row);
     }, rows);
 
-dbmw::common::ParamBatch batch{
+sqlconduit::common::ParamBatch batch{
     {std::int64_t(1), std::string("a")},
     {std::int64_t(2), std::string("b")}
 };
-dbmw::common::BatchResult result;
-dbmw::DBMW::executeBatch("INSERT INTO t(id, name) VALUES(?, ?)", batch, result);
+sqlconduit::common::BatchResult result;
+sqlconduit::SQLConduit::executeBatch("INSERT INTO t(id, name) VALUES(?, ?)", batch, result);
 ```
 
 **批量执行是原子的**，三个驱动行为一致：调用方未开事务时中间件自动包一层事务，
@@ -381,16 +381,16 @@ dbmw::DBMW::executeBatch("INSERT INTO t(id, name) VALUES(?, ?)", batch, result);
 适合"结果集大、想按批可控消费、且不想一次物化进内存"的场景。
 
 ```cpp
-dbmw::core::CursorOptions opts;
+sqlconduit::core::CursorOptions opts;
 opts.batch_size = 1000;          // 每次 fetch 预取行数（也可用配置 default_batch_size 兜底）
 opts.auto_transaction = true;    // PG 未开事务时由游标自建事务兜底
 
-std::unique_ptr<dbmw::core::Cursor> cur;
-auto st = dbmw::DBMW::openCursor("SELECT * FROM large_table WHERE k > ?",
-                                 dbmw::common::Params{std::int64_t(0)}, opts, cur);
+std::unique_ptr<sqlconduit::core::Cursor> cur;
+auto st = sqlconduit::SQLConduit::openCursor("SELECT * FROM large_table WHERE k > ?",
+                                 sqlconduit::common::Params{std::int64_t(0)}, opts, cur);
 if (!st.ok()) { /* 处理错误 */ }
 
-dbmw::common::ResultSet batch;
+sqlconduit::common::ResultSet batch;
 while (cur->fetch(0, batch).ok() && cur->hasNext()) {  // fetch(0) = 按 batch_size 取
     consume(batch);
     batch.clear();
@@ -398,7 +398,7 @@ while (cur->fetch(0, batch).ok() && cur->hasNext()) {  // fetch(0) = 按 batch_s
 cur->close();   // 显式归还连接；不调也会在析构时关 + 还
 ```
 
-门面 `DBMW::openCursor` 有两个重载：默认数据源，或指定数据源名。事务/会话内另可用
+门面 `SQLConduit::openCursor` 有两个重载：默认数据源，或指定数据源名。事务/会话内另可用
 `Session::openCursor(...)`（连接不额外占用，随会话结束归还）。`fetch(n, out)` 把至多 n 行**追加**
 写入 `out`（不清空，多次 fetch 可累积同一结果集）；`n == 0` 由驱动按 batch_size 决定。`fetchRow`
 取单行、`close` 显式关闭（幂等）、`isOpen` / `hasNext` / `rowsFetched` 暴露状态。
@@ -477,7 +477,7 @@ cur->close();   // 显式归还连接；不调也会在析构时关 + 还
 }
 ```
 
-调用 `DBMW::reload(path, grace)` 可原子加载新配置，并等待旧连接池中的在途操作归还。
+调用 `SQLConduit::reload(path, grace)` 可原子加载新配置，并等待旧连接池中的在途操作归还。
 
 ## 限流、审计、缓存与主库故障转移
 
@@ -490,7 +490,7 @@ cur->close();   // 显式归还连接；不调也会在析构时关 + 还
 执行中断线或超时存在“已提交但回包丢失”的歧义，中间件会直接返回错误，
 不会在另一个主库上盲目重放。全部候选在执行前就不可用时：
 
-dbmw 不执行选主、租约或 fencing，因此自动写切换默认拒绝启用。只有数据库集群已通过
+SQLConduit 不执行选主、租约或 fencing，因此自动写切换默认拒绝启用。只有数据库集群已通过
 外部机制保证单主时，才可设置 `acknowledge_external_fencing=true`。这个配置只是显式风险
 确认，不会凭空提供 fencing 能力。
 
@@ -548,10 +548,10 @@ dbmw 不执行选主、租约或 fencing，因此自动写切换默认拒绝启�
 要换算法——滑动窗口、Redis 集中式限流、按租户配额、恒定放行等——只需实现该接口并挂到中间件，无需改动任何调用点：
 
 ```cpp
-#include "dbmw/dbmw.h"
-#include "dbmw/core/rate_limiter.h"
+#include "sqlconduit/sqlconduit.h"
+#include "sqlconduit/core/rate_limiter.h"
 
-class SlidingWindowLimiter : public dbmw::core::IRateLimiter {
+class SlidingWindowLimiter : public sqlconduit::core::IRateLimiter {
 public:
     bool acquire(std::uint64_t fingerprint) override {
         // 返回 true=放行；false=限流（中间件转成 RateLimited，retryable=false）
@@ -563,25 +563,25 @@ public:
 
 两种挂载方式：
 
-- **全局默认**：`DBMW::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());`
+- **全局默认**：`SQLConduit::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());`
   之后任意未显式指定限流器的数据源，在配置未启用 `rate_limit` 时回退到这个默认实现。
-  可在 `DBMW::init()` 之前或之后调用；后调用时会立即更新所有继承默认值的已有数据源和组。
+  可在 `SQLConduit::init()` 之前或之后调用；后调用时会立即更新所有继承默认值的已有数据源和组。
 - **逐数据源覆盖**：`DataSourceOptions::rate_limiter`（或 `GroupOptions::rate_limiter`）传入
   `shared_ptr<IRateLimiter>`，该数据源优先用你给的实现，**优先于全局默认**。
 
 ```cpp
-dbmw::DBMW::init("datasources.json");
+sqlconduit::SQLConduit::init("datasources.json");
 
 // 全局默认：未显式指定的数据源都走滑动窗口
-dbmw::DBMW::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());
+sqlconduit::SQLConduit::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());
 
 // 某数据源单独挂一个高吞吐放行实现（测试 / 白名单）
-dbmw::core::DataSourceOptions opts;
-opts.rate_limiter = std::make_shared<dbmw::core::RateLimiter>(100000.0, 0.0, 100000, "off");
+sqlconduit::core::DataSourceOptions opts;
+opts.rate_limiter = std::make_shared<sqlconduit::core::RateLimiter>(100000.0, 0.0, 100000, "off");
 mgr.addDataSource(cfg, opts);
 ```
 
-优先级（高 → 低）：`opts.rate_limiter`（逐源） > 配置 `rate_limit`（`global_qps` 或 `per_fingerprint_qps` 任一启用即构造 `RateLimiter`） > `DBMW::setDefaultRateLimiter`（全局默认）。
+优先级（高 → 低）：`opts.rate_limiter`（逐源） > 配置 `rate_limit`（`global_qps` 或 `per_fingerprint_qps` 任一启用即构造 `RateLimiter`） > `SQLConduit::setDefaultRateLimiter`（全局默认）。
 调用点 `preGate` / `gateSession` 只调 `acquire`，因此替换算法对上层完全透明、零侵入。
 
 ### SQL 审计与拦截（sql_audit）
@@ -627,22 +627,22 @@ mgr.addDataSource(cfg, opts);
 挂载只需一行，全局生效，无需改任何调用点：
 
 ```cpp
-class TenantQuotaInterceptor : public dbmw::core::ISqlInterceptor {
+class TenantQuotaInterceptor : public sqlconduit::core::ISqlInterceptor {
 public:
     void onRoute(const std::string &, const std::string &, common::OperationType,
                  common::SqlContext &ctx) override {
         // 例如按 ctx.tenantId 打灰度标记
     }
-    common::Status beforeExecution(const dbmw::core::ExecutionView &view) override {
+    common::Status beforeExecution(const sqlconduit::core::ExecutionView &view) override {
         if (overQuota(view.ctx.tenantId))
             return common::Status::error(common::ErrorCode::SqlBlocked, "tenant over quota");
         return common::Status::OK();
     }
-    void afterExecution(const dbmw::core::ExecutionView &view) override { /* 记指标 */ }
-    void onCompletion(const dbmw::core::ExecutionView &view) override { /* 收尾 */ }
+    void afterExecution(const sqlconduit::core::ExecutionView &view) override { /* 记指标 */ }
+    void onCompletion(const sqlconduit::core::ExecutionView &view) override { /* 收尾 */ }
 };
 
-dbmw::DBMW::addInterceptor(std::make_shared<TenantQuotaInterceptor>());
+sqlconduit::SQLConduit::addInterceptor(std::make_shared<TenantQuotaInterceptor>());
 ```
 
 - 全局注册表：`core::InterceptorRegistry::add / clear / snapshot / enabled / setEnabled`。
@@ -727,14 +727,14 @@ dbmw::DBMW::addInterceptor(std::make_shared<TenantQuotaInterceptor>());
 
 ## 动态数据源（v0.4.0 M4：运行时增删）
 
-`DBMW::init` 启动后，你仍然可以在运行时增删数据源与组——配置不再是一次性快照：
+`SQLConduit::init` 启动后，你仍然可以在运行时增删数据源与组——配置不再是一次性快照：
 
 | 方法 | 用途 |
 | --- | --- |
-| `DBMW::addDataSource(cfg, opts)` | 注册一个新的叶子数据源（建池 + 启动心跳 + 插入 DataSource） |
-| `DBMW::removeDataSource(name, grace=5s)` | 注销一个叶子数据源；被组引用时拒绝 |
-| `DBMW::addGroup(cfg, opts)` | 注册一个读写组（主 + 副本 + 故障转移 + 可选写缓冲） |
-| `DBMW::removeGroup(name, grace=5s)` | 注销一个组；停止其写缓冲线程 |
+| `SQLConduit::addDataSource(cfg, opts)` | 注册一个新的叶子数据源（建池 + 启动心跳 + 插入 DataSource） |
+| `SQLConduit::removeDataSource(name, grace=5s)` | 注销一个叶子数据源；被组引用时拒绝 |
+| `SQLConduit::addGroup(cfg, opts)` | 注册一个读写组（主 + 副本 + 故障转移 + 可选写缓冲） |
+| `SQLConduit::removeGroup(name, grace=5s)` | 注销一个组；停止其写缓冲线程 |
 
 `opts` 走 `core::DataSourceOptions` / `core::GroupOptions`，分别控制 `retry` / `circuit_breaker` / `rate_limiter` / `cursor` / `attach_heartbeat` 与 `acknowledge_external_fencing` / `acknowledge_data_loss_and_duplicates`。后者两个 ack 标志与 `init()` 一致——`addGroup` 不允许隐式启用自动写切换或写缓冲，调用方必须显式表态。
 
@@ -747,20 +747,20 @@ dbmw::DBMW::addInterceptor(std::make_shared<TenantQuotaInterceptor>());
 - **grace 宽限期**：removeDataSource / removeGroup 的 grace 语义与 shutdown 一致——等待在途连接归还，超期强制关闭。grace=0 立即返回（池被标记 closed），适合"想下线但不想等"。
 
 ```cpp
-dbmw::DBMW::init("datasources.json");                  // 启动期基线
+sqlconduit::SQLConduit::init("datasources.json");                  // 启动期基线
 
-dbmw::core::DataSourceOptions leafOpts;
-dbmw::DBMW::addDataSource(cfg, leafOpts);              // 运行时加一个池
+sqlconduit::core::DataSourceOptions leafOpts;
+sqlconduit::SQLConduit::addDataSource(cfg, leafOpts);              // 运行时加一个池
 
-dbmw::core::GroupOptions grpOpts;
+sqlconduit::core::GroupOptions grpOpts;
 grpOpts.acknowledge_external_fencing = true;          // 必填：自动写切换需明确同意
-dbmw::DBMW::addGroup(grp, grpOpts);                    // 运行时组一个读写组
+sqlconduit::SQLConduit::addGroup(grp, grpOpts);                    // 运行时组一个读写组
 
-dbmw::DBMW::removeGroup("legacy_grp");                 // 先卸组
-dbmw::DBMW::removeDataSource("legacy_leaf");           // 再卸叶子
+sqlconduit::SQLConduit::removeGroup("legacy_grp");                 // 先卸组
+sqlconduit::SQLConduit::removeDataSource("legacy_leaf");           // 再卸叶子
 ```
 
-并发安全由 `mtx_` 保证——多线程同时 addDataSource 不同名互不干扰；同名并发里后到者以 `ConfigError` 优雅失败，**不会**让两个调用者都以为自己成功。详细并发行为见 `tests/dbmw_dynamic_test.cpp`（79 项断言，16 个场景覆盖 add/remove/group/ack/并发/grace）。
+并发安全由 `mtx_` 保证——多线程同时 addDataSource 不同名互不干扰；同名并发里后到者以 `ConfigError` 优雅失败，**不会**让两个调用者都以为自己成功。详细并发行为见 `tests/sqlconduit_dynamic_test.cpp`（79 项断言，16 个场景覆盖 add/remove/group/ack/并发/grace）。
 
 ## 幂等声明（v0.4.0 M5：让调用方决定写是否可重试）
 
@@ -777,12 +777,12 @@ dbmw::DBMW::removeDataSource("legacy_leaf");           // 再卸叶子
 ```cpp
 // 一次业务请求入口包一层 ContextScope，整段调用链（同步/异步/事务）都透传：
 {
-    dbmw::common::ContextScope scope({.idempotency = dbmw::common::Idempotency::Idempotent});
+    sqlconduit::common::ContextScope scope({.idempotency = sqlconduit::common::Idempotency::Idempotent});
     ds->execute("UPDATE accounts SET status='paid' WHERE id=?", affected); // 失败会重试
 }
 
 {
-    dbmw::common::ContextScope scope({.idempotency = dbmw::common::Idempotency::NonIdempotent});
+    sqlconduit::common::ContextScope scope({.idempotency = sqlconduit::common::Idempotency::NonIdempotent});
     ds->execute("UPDATE accounts SET balance=balance-100 WHERE id=?", affected); // 绝不重试
 }
 ```
@@ -793,7 +793,7 @@ dbmw::DBMW::removeDataSource("legacy_leaf");           // 再卸叶子
 - **事务内不重试**这条不变量（I4）——事务内语句根本不进重试循环；
 - **非可重试错误**（业务/约束冲突）照旧不重试——声明只覆盖"连接类可重试错误"这一档。
 
-异步路径同源：`async::execute` 的 `maxAttempts` 读取 submit 时刻栈顶 `ContextScope` 的快照（`entryCtx.idempotency`），与同步 `resolveWriteAttempts` 用同一张优先级表。详细行为见 `tests/dbmw_idempotency_test.cpp`（19 项断言，9 个场景覆盖三态 × 同步/异步 × 读路径不受影响）。
+异步路径同源：`async::execute` 的 `maxAttempts` 读取 submit 时刻栈顶 `ContextScope` 的快照（`entryCtx.idempotency`），与同步 `resolveWriteAttempts` 用同一张优先级表。详细行为见 `tests/sqlconduit_idempotency_test.cpp`（19 项断言，9 个场景覆盖三态 × 同步/异步 × 读路径不受影响）。
 
 ## 影子库路由（v0.4.0 M6：把整组流量切到影子数据源）
 
@@ -820,10 +820,10 @@ dbmw::DBMW::removeDataSource("legacy_leaf");           // 再卸叶子
 **触发**：通过 SPI（最常用——按租户 / 灰度比例灵活切换）：
 
 ```cpp
-dbmw::DBMW::addInterceptor({
+sqlconduit::SQLConduit::addInterceptor({
     .onRoute = [](const std::string&, const std::string&,
-                  dbmw::common::OperationType,
-                  dbmw::common::SqlContext &ctx) {
+                  sqlconduit::common::OperationType,
+                  sqlconduit::common::SqlContext &ctx) {
         // 例：每 1% 流量切到影子
         if (shouldReplayToShadow(ctx.tenantId)) ctx.shadow = true;
     }
@@ -833,7 +833,7 @@ dbmw::DBMW::addInterceptor({
 或者直接用线程本地 `ContextScope`（同一线程 / 协程全程生效）：
 
 ```cpp
-dbmw::common::ContextScope scope({.shadow = true});
+sqlconduit::common::ContextScope scope({.shadow = true});
 ds->execute("INSERT INTO orders ...", affected);   // 落到 shadow_db
 ds->query("SELECT * FROM products ...", rs);        // 落到 shadow_db（命中主/副本按 routing）
 ```
@@ -855,7 +855,7 @@ ds->query("SELECT * FROM products ...", rs);        // 落到 shadow_db（命中
 - 影子源**不得**是本组副本；
 - 影子源**不得**与任何组名同名（避免引用歧义）。
 
-校验放在 `resolveShadows`（在 `init()` 与 `addGroup()` 后、对外可见前）。详细行为与代码片段见 `tests/dbmw_shadow_test.cpp`（39 项断言，10 个场景覆盖同步 / 异步 / 缓存 / 写缓冲 / 配置校验所有分支）。
+校验放在 `resolveShadows`（在 `init()` 与 `addGroup()` 后、对外可见前）。详细行为与代码片段见 `tests/sqlconduit_shadow_test.cpp`（39 项断言，10 个场景覆盖同步 / 异步 / 缓存 / 写缓冲 / 配置校验所有分支）。
 
 ## 读后写一致性增强（v0.4.0 M8：会话级粘性读）
 
@@ -893,32 +893,32 @@ ds->query("SELECT * FROM products ...", rs);        // 落到 shadow_db（命中
 配置副本 + `read_after_write_ms=0` = **陈旧读风险**。`ConfigLoader` 在加载时会 `fprintf(stderr, "...")` 打 WARN 提示，但不阻断 load：
 
 ```
-dbmw WARN: datasource group 'g' has 1 replica(s) but read_after_write_ms=0;
+sqlconduit WARN: datasource group 'g' has 1 replica(s) but read_after_write_ms=0;
 writes-then-reads may be served by replicas and return stale data.
 Set read_after_write_ms > 0 (e.g. 1000) to pin post-write reads to the primary.
 ```
 
-详细行为见 `tests/dbmw_raw_session_test.cpp`（26 项断言 / 6 个场景覆盖同步 / 异步 / 帧隔离 / 时间戳兜底 / 影子 / 幂等 / config_loader WARN）。
+详细行为见 `tests/sqlconduit_raw_session_test.cpp`（26 项断言 / 6 个场景覆盖同步 / 异步 / 帧隔离 / 时间戳兜底 / 影子 / 幂等 / config_loader WARN）。
 
 ## 结果脱敏（v0.4.0 M7：按角色 / 租户掩码结果集）
 
-合规场景（手机号、身份证、银行卡）需要在结果集返回前按角色 / 租户做掩码。**dbmw 不内置任何脱敏规则**——规则是业务 / 合规概念，内置等于替用户做合规决策；只提供 SPI 钩子和 I10 守卫（脱敏结果绝不进缓存）。
+合规场景（手机号、身份证、银行卡）需要在结果集返回前按角色 / 租户做掩码。**SQLConduit 不内置任何脱敏规则**——规则是业务 / 合规概念，内置等于替用户做合规决策；只提供 SPI 钩子和 I10 守卫（脱敏结果绝不进缓存）。
 
 **改写时机**：SPI `afterExecution`（M1 §3.3）拿到 `view.result`（`common::ResultSet*`，可改写）。改写完成后置位 `view.result->transformed = true`，**这是中间件识别"已被脱敏"的唯一信号**。
 
 **示例**（业务自己实现 `ISqlInterceptor`）：
 
 ```cpp
-class MaskingInterceptor : public dbmw::core::ISqlInterceptor {
+class MaskingInterceptor : public sqlconduit::core::ISqlInterceptor {
 public:
     void onRoute(const std::string&, const std::string&,
-                 dbmw::common::OperationType, dbmw::common::SqlContext&) override {}
+                 sqlconduit::common::OperationType, sqlconduit::common::SqlContext&) override {}
 
-    dbmw::common::Status beforeExecution(const dbmw::core::ExecutionView&) override {
-        return dbmw::common::Status::OK();
+    sqlconduit::common::Status beforeExecution(const sqlconduit::core::ExecutionView&) override {
+        return sqlconduit::common::Status::OK();
     }
 
-    void afterExecution(const dbmw::core::ExecutionView &view) override {
+    void afterExecution(const sqlconduit::core::ExecutionView &view) override {
         if (!view.result) return;                  // 非查询（写 / 批 / 游标）不动
         // 这里做你的脱敏：按列名 / 列下标 / 值模式识别敏感字段并掩码
         for (auto &row : view.result->mutableRows()) {
@@ -928,17 +928,17 @@ public:
         view.result->transformed = true;
     }
 
-    void onRow(const dbmw::core::ExecutionView&, dbmw::common::Row &row) override {
+    void onRow(const sqlconduit::core::ExecutionView&, sqlconduit::common::Row &row) override {
         // queryEach / 游标不会整体物化 ResultSet，逐行交付前在这里脱敏。
         if (row.has("phone")) row.set("phone", "***");
     }
 
-    void onCompletion(const dbmw::core::ExecutionView&) override {}
+    void onCompletion(const sqlconduit::core::ExecutionView&) override {}
 };
 
-// 在 DBMW::init 之前注册：
-dbmw::DBMW::addInterceptor(std::make_shared<MaskingInterceptor>());
-dbmw::core::InterceptorRegistry::setEnabled(true);
+// 在 SQLConduit::init 之前注册：
+sqlconduit::SQLConduit::addInterceptor(std::make_shared<MaskingInterceptor>());
+sqlconduit::core::InterceptorRegistry::setEnabled(true);
 ```
 
 **I10 守卫的硬约束**：同步查询先缓存驱动原始结果，再对返回副本执行 `afterExecution`；异步缓存入口通过 `transformed` 标记拒绝改写结果：
@@ -955,7 +955,7 @@ dbmw::core::InterceptorRegistry::setEnabled(true);
 
 普通查询使用 `mutableRows()` 原地改写；`queryEach` 与游标使用 `onRow`，中间件不会为了脱敏把流式结果整体物化。
 
-不变量保留：**数据进入拦截器 → 数据出拦截器 → 缓存守卫**全程只看 `transformed` 标记位。详细行为与代码片段见 `tests/dbmw_redaction_test.cpp`（38 项断言，5 个场景覆盖同步 / 异步 / 缓存命中 / I10 守卫 / 改写标记）。
+不变量保留：**数据进入拦截器 → 数据出拦截器 → 缓存守卫**全程只看 `transformed` 标记位。详细行为与代码片段见 `tests/sqlconduit_redaction_test.cpp`（38 项断言，5 个场景覆盖同步 / 异步 / 缓存命中 / I10 守卫 / 改写标记）。
 
 ## 异步 API（v0.2.0：回调 / future / 协程）
 
@@ -965,16 +965,16 @@ dbmw::core::InterceptorRegistry::setEnabled(true);
 { "async": { "enabled": true, "threads": 4, "queue_size": 4096 } }
 ```
 
-`threads` 是 worker 数（0 = hardware_concurrency），另有 1 个 timer 线程负责重试退避与超时检查；队列满时新操作以 `Overloaded` 快速失败（显式背压，不是隐式排队）。`DBMW::shutdown` 会先拒绝新操作、在 `grace` 内等待在途操作，然后协作式停止执行器与连接池。C++ 无法安全强杀仍在访问连接状态的线程；如果底层驱动不支持取消，停机可能继续等到该驱动调用返回/网络超时。
+`threads` 是 worker 数（0 = hardware_concurrency），另有 1 个 timer 线程负责重试退避与超时检查；队列满时新操作以 `Overloaded` 快速失败（显式背压，不是隐式排队）。`SQLConduit::shutdown` 会先拒绝新操作、在 `grace` 内等待在途操作，然后协作式停止执行器与连接池。C++ 无法安全强杀仍在访问连接状态的线程；如果底层驱动不支持取消，停机可能继续等到该驱动调用返回/网络超时。
 
 **回调式（热路径）**——完成回调由完成调度器投递，绝不在调用栈上执行；返回的 `Handle` 支持取消：
 
 ```cpp
-dbmw::async::Options opts;
+sqlconduit::async::Options opts;
 opts.timeout = std::chrono::milliseconds(2000);   // 语句整体期限（兜底）
-auto h = dbmw::async::query("SELECT id FROM users WHERE age > ?",
-                            {dbmw::common::Value(std::int64_t(18))},
-    [](dbmw::async::QueryResult &&r) {            // 跑在完成调度器线程，须短小
+auto h = sqlconduit::async::query("SELECT id FROM users WHERE age > ?",
+                            {sqlconduit::common::Value(std::int64_t(18))},
+    [](sqlconduit::async::QueryResult &&r) {            // 跑在完成调度器线程，须短小
         if (r.status.ok()) useRows(std::move(r.rows));
     }, opts);
 // 需要中途放弃时：h.cancel() —— Queued 不碰池；Running 尽力转发驱动 cancel
@@ -983,72 +983,72 @@ auto h = dbmw::async::query("SELECT id FROM users WHERE age > ?",
 **future 式（便利形态）**——无取消能力（需要取消用回调式拿 `Handle`）；未取值即析构是合法用法：
 
 ```cpp
-auto fut = dbmw::async::execute("UPDATE users SET active = 1 WHERE id = ?",
-                                {dbmw::common::Value(std::int64_t(7))});
+auto fut = sqlconduit::async::execute("UPDATE users SET active = 1 WHERE id = ?",
+                                {sqlconduit::common::Value(std::int64_t(7))});
 auto r = fut.get();   // r.status / r.affected
 ```
 
 **协程式（可选，C++20）**——惰性 `Task`，`co_await` 时才启动；未 `co_await` 直接析构 = 安全放弃。治理/重试/取消/超时与回调形态完全同源，协程恢复线程 = 完成调度器线程：
 
 ```bash
-cmake .. -DDBMW_ENABLE_ASYNC_CORO=ON   # 仅 task.cpp 提标 C++20，其余 TU 仍为 C++17
+cmake .. -DSQLCONDUIT_ENABLE_ASYNC_CORO=ON   # 仅 task.cpp 提标 C++20，其余 TU 仍为 C++17
 ```
 
 ```cpp
-#include "dbmw/async/task.h"   // 本 TU 必须以 C++20 编译
+#include "sqlconduit/async/task.h"   // 本 TU 必须以 C++20 编译
 
-dbmw::async::Task<void> demo() {
+sqlconduit::async::Task<void> demo() {
     // 参数先具名构造：co_await 实参里的花括号临时会触发 GCC 13 ICE（见下方注意事项）
-    dbmw::common::Params params;
-    params.push_back(dbmw::common::Value(std::int64_t(18)));
+    sqlconduit::common::Params params;
+    params.push_back(sqlconduit::common::Value(std::int64_t(18)));
 
-    auto q = co_await dbmw::async::queryAsync("SELECT id FROM users WHERE age > ?", params);
+    auto q = co_await sqlconduit::async::queryAsync("SELECT id FROM users WHERE age > ?", params);
     if (q.status.ok()) useRows(std::move(q.rows));
 
-    auto tx = co_await dbmw::async::transactionAsync({}, [](dbmw::core::Session &s) {
+    auto tx = co_await sqlconduit::async::transactionAsync({}, [](sqlconduit::core::Session &s) {
         std::int64_t n = 0;
         return s.execute("UPDATE users SET active = 1", n);  // 非 Ok 自动回滚
     });
 }
 
-dbmw::async::run(demo());   // 受控 fire-and-forget：跑完自毁，不悬垂
+sqlconduit::async::run(demo());   // 受控 fire-and-forget：跑完自毁，不悬垂
 ```
 
-**自定义执行器（asio 接入）**：实现 `IExecutor::post(std::function<void()>)`，再通过 `dbmw::async::setExecutor(...)` 注入适配器；完成回调与协程恢复会发生在自定义事件循环线程上。
+**自定义执行器（asio 接入）**：实现 `IExecutor::post(std::function<void()>)`，再通过 `sqlconduit::async::setExecutor(...)` 注入适配器；完成回调与协程恢复会发生在自定义事件循环线程上。
 
 约束与注意：
 
-- 回调与事务 fn 跑在 worker 上，须短小、线程安全；**事务 fn 内部禁止调用 `dbmw::async::*`**（池偏小时互相等连接造成活锁），直接用同步 `Session` 方法。
+- 回调与事务 fn 跑在 worker 上，须短小、线程安全；**事务 fn 内部禁止调用 `sqlconduit::async::*`**（池偏小时互相等连接造成活锁），直接用同步 `Session` 方法。
 - `run()` 启动的顶层协程内未捕获异常会 `terminate`（不静默吞掉）；异常应协程内处理，或经 `co_await` 链传给有 `try/catch` 的外层。
 - 协程体不要用捕获局部引用的 lambda——闭包临时对象先于异步完成销毁，捕获会悬垂；用具名函数返回 `Task`。
 - GCC 13 已知缺陷：`co_await` 实参中直接写非平凡花括号临时（如 `{Value(1)}`）会触发编译器 ICE（PR109227 系）；参数先具名构造再传入即可规避，GCC 14+ / Clang / MSVC 不受影响。
 
 ## 实体映射（v0.5.0：Row ↔ 业务实体，读写双向）
 
-`include/dbmw/mapping.h` 是 **header-only** 的适配层：把 `ResultSet` 的行按**业务手写的字段声明**搬进/搬出业务结构体。它不是 ORM——SQL 仍由业务书写、没有脏跟踪与延迟加载、`dbmw.h` 与引擎核心**零改动**。
+`include/sqlconduit/mapping.h` 是 **header-only** 的适配层：把 `ResultSet` 的行按**业务手写的字段声明**搬进/搬出业务结构体。它不是 ORM——SQL 仍由业务书写、没有脏跟踪与延迟加载、`sqlconduit.h` 与引擎核心**零改动**。
 
 ### 一次声明
 
 ```cpp
-#include "dbmw/mapping.h"
+#include "sqlconduit/mapping.h"
 
 struct User {
     std::int64_t id;
     std::string  name;
     std::optional<std::string> email;   // optional 自动接 SQL NULL
-    dbmw::common::Decimal balance;      // 高精度原样保留，不转 double
+    sqlconduit::common::Decimal balance;      // 高精度原样保留，不转 double
     std::int64_t created_at;
 };
 
-template <> struct dbmw::mapping::RowMapper<User> {
+template <> struct sqlconduit::mapping::RowMapper<User> {
     static auto describe() {
-        return dbmw::mapping::Mapping<User>()
+        return sqlconduit::mapping::Mapping<User>()
             .field(&User::id,         "id")
             .field(&User::name,       "name")
             .field(&User::email,      "email")
             .field(&User::balance,    "balance")
             .field(&User::created_at, "created_at",
-                   dbmw::mapping::FieldFlags::PrimaryKey);
+                   sqlconduit::mapping::FieldFlags::PrimaryKey);
     }
 };
 ```
@@ -1056,34 +1056,34 @@ template <> struct dbmw::mapping::RowMapper<User> {
 ### 读
 
 ```cpp
-auto r = dbmw::queryAs<User>("SELECT id,name,email,balance,created_at FROM users WHERE age > ?",
-                             {dbmw::common::Value(std::int64_t(18))});
+auto r = sqlconduit::queryAs<User>("SELECT id,name,email,balance,created_at FROM users WHERE age > ?",
+                             {sqlconduit::common::Value(std::int64_t(18))});
 if (r.status.ok()) for (auto &u : r.items) use(u);      // r.items：std::vector<User>
 
-auto one = dbmw::queryOneAs<User>("SELECT * FROM users WHERE id = ?",
-                                  {dbmw::common::Value(std::int64_t(1))});
+auto one = sqlconduit::queryOneAs<User>("SELECT * FROM users WHERE id = ?",
+                                  {sqlconduit::common::Value(std::int64_t(1))});
 // one.value：std::optional<User>；**多于一行是错误**，不静默取第一行
 
-dbmw::queryEachAs<User>("SELECT * FROM users", [](User &&u) { use(u); return true; });
+sqlconduit::queryEachAs<User>("SELECT * FROM users", [](User &&u) { use(u); return true; });
 ```
 
-游标与事务内同样可用：`dbmw::fetchAs<T>(cursor)`、`dbmw::queryAs<T>(session, sql)`。
+游标与事务内同样可用：`sqlconduit::fetchAs<T>(cursor)`、`sqlconduit::queryAs<T>(session, sql)`。
 
 ### 写
 
 ```cpp
-User u{0, "alice", "a@x.com", dbmw::common::Decimal{"12.50"}, now()};
+User u{0, "alice", "a@x.com", sqlconduit::common::Decimal{"12.50"}, now()};
 
-auto p = dbmw::paramsOf(u);                       // 实体 → Params（跳过 Generated/ReadOnly 列）
-auto ins = dbmw::insertSql<User>("users");        // "INSERT INTO \"users\" (...) VALUES (?, ...)"
-auto insM = dbmw::insertSql<User>("users",
-                                  dbmw::common::util::Dialect::MySQL);
+auto p = sqlconduit::paramsOf(u);                       // 实体 → Params（跳过 Generated/ReadOnly 列）
+auto ins = sqlconduit::insertSql<User>("users");        // "INSERT INTO \"users\" (...) VALUES (?, ...)"
+auto insM = sqlconduit::insertSql<User>("users",
+                                  sqlconduit::common::util::Dialect::MySQL);
                                                  // "INSERT INTO `users` (...) VALUES (?, ...)"
-auto upd = dbmw::updateSql<User>("users");        // "UPDATE \"users\" SET ... WHERE \"id\" = ?"
+auto upd = sqlconduit::updateSql<User>("users");        // "UPDATE \"users\" SET ... WHERE \"id\" = ?"
 
-auto k = dbmw::insertAs("users", u);              // 执行 + 生成键回填到主键字段
-auto n = dbmw::updateAs("users", u);              // 按 PrimaryKey 定位
-auto b = dbmw::insertBatchAs("users", std::vector<User>{...});
+auto k = sqlconduit::insertAs("users", u);              // 执行 + 生成键回填到主键字段
+auto n = sqlconduit::updateAs("users", u);              // 按 PrimaryKey 定位
+auto b = sqlconduit::insertBatchAs("users", std::vector<User>{...});
 ```
 
 **标识符引号按方言生成**：`insertSql<T>(table)` / `updateSql<T>(table)` 不传 `Dialect` 时是**方言中立**的
@@ -1130,7 +1130,7 @@ MySQL 走基类批量循环里的 `mysql_insert_id`。
 
 - **查询缓存**：只缓存原始 `ResultSet`，命中后再映射——实体从不进缓存。
 - **脱敏**：映射发生在 `afterExecution` 之后，业务实体拿到的是脱敏后的值。
-- **异步**：`dbmw::async::queryAs<T>` 提供回调 / future / 协程三形态，映射跑在**完成投递线程**（默认 worker；注入 asio 时是 `io_context` 线程），因此映射逻辑必须轻量——大结果集走 `queryEachAs` 流式分流。
+- **异步**：`sqlconduit::async::queryAs<T>` 提供回调 / future / 协程三形态，映射跑在**完成投递线程**（默认 worker；注入 asio 时是 `io_context` 线程），因此映射逻辑必须轻量——大结果集走 `queryEachAs` 流式分流。
 
 ## PostgreSQL 数组 / 复合 / 几何类型
 
@@ -1175,7 +1175,7 @@ struct Value : ValueBase { using ValueBase::ValueBase; };
 common::Array tags;  tags.items = {Value{"red"}, Value{"blue"}};
 common::Composite addr; addr.fields = {{"city", Value{"Shanghai"}}, {"zip", Value{"200000"}}};
 
-DBMW::execute("INSERT INTO t (tags, addr, pt) VALUES (?, ?, ?)",
+SQLConduit::execute("INSERT INTO t (tags, addr, pt) VALUES (?, ?, ?)",
               Params{ Value{tags}, Value{addr},
                       Value{common::Json{common::pgFormatPoint(common::PgPoint{1, 2})}} }, n);
 ```
@@ -1195,7 +1195,7 @@ DBMW::execute("INSERT INTO t (tags, addr, pt) VALUES (?, ?, ?)",
 | `common::Array` / `common::Composite` | 原样透传 |
 | `common::PgPoint` / `PgLine` / `PgLseg` / `PgBox` / `PgPath` / `PgPolygon` / `PgCircle` | `Json`（PG 文本），双向 |
 
-7 个几何结构体定义在 `include/dbmw/common/pg_types.h`，配套 `pgParseXxx` / `pgFormatXxx`，
+7 个几何结构体定义在 `include/sqlconduit/common/pg_types.h`，配套 `pgParseXxx` / `pgFormatXxx`，
 可脱离驱动单独使用（`src/common/pg_types.cpp` 不链接 libpqxx）。
 
 ### OID 元数据缓存
@@ -1209,13 +1209,13 @@ DBMW::execute("INSERT INTO t (tags, addr, pt) VALUES (?, ?, ?)",
 - 加载失败不会让查询失败——退化成原始字符串，和改造前一致。
 
 `pg_types.h` 里的文本编解码（数组/复合的元素切分、引号转义、7 种几何语法）不依赖 libpqxx，
-因此有 `tests/dbmw_pg_types_test.cpp` 做纯单元测试，不需要真库。
+因此有 `tests/sqlconduit_pg_types_test.cpp` 做纯单元测试，不需要真库。
 
 ## Oracle 驱动（OCI）
 
-Oracle 走官方 **OCI**（Oracle Call Interface）而非 ODBC，由 `DBMW_ENABLE_ORACLE` 控制。
+Oracle 走官方 **OCI**（Oracle Call Interface）而非 ODBC，由 `SQLCONDUIT_ENABLE_ORACLE` 控制。
 标识符引号与 PG 一致用**双引号**，且**不做大小写折叠**——Oracle 会把未加引号的标识符折成大写，
-dbmw 一律加引号，因此建表时用什么大小写，SQL 里就写什么大小写。
+SQLConduit 一律加引号，因此建表时用什么大小写，SQL 里就写什么大小写。
 
 ### 依赖与构建
 
@@ -1227,7 +1227,7 @@ unzip instantclient-basiclite-linux.x64-*.zip -d /opt/oracle
 unzip instantclient-sdk-linux.x64-*.zip      -d /opt/oracle
 echo /opt/oracle/instantclient_* > /etc/ld.so.conf.d/oracle-instantclient.conf && ldconfig
 
-cmake .. -DDBMW_ENABLE_ORACLE=ON \
+cmake .. -DSQLCONDUIT_ENABLE_ORACLE=ON \
   -DOCI_INCLUDE_DIR=/opt/oracle/instantclient_21_12/sdk/include \
   -DOCI_LIBRARY=/opt/oracle/instantclient_21_12/libclntsh.so
 ```
@@ -1356,14 +1356,14 @@ OCI 的 `OCIErrorGet` 并不填充 sqlstate 参数，所以驱动自己维护一
 大小和数据库类型名；`common::CallOutput` 同时返回标量输出与 REF CURSOR 结果集：
 
 ```cpp
-using namespace dbmw::common;
+using namespace sqlconduit::common;
 CallParams params{
     CallParam{Value{std::int64_t(7)}},
     CallParam::out(ValueType::String, 1024),
     CallParam::refCursor()
 };
 CallOutput result;
-auto status = dbmw::DBMW::call("BEGIN report_pkg.run(?, ?, ?); END;", params, result);
+auto status = sqlconduit::SQLConduit::call("BEGIN report_pkg.run(?, ?, ?); END;", params, result);
 // result.outParams[0] 是标量 OUT；result.sets[0] 是 REF CURSOR
 ```
 
@@ -1397,13 +1397,13 @@ IN 参数中，驱动会把它们安全展开成 Oracle 类型构造器并逐项
   `OCI_ATTR_CALL_TIME`；TCPS、wallet 与证书 DN 校验均由生成的描述符显式表达；
 - `escapeLiteral` 的 Blob 走 `HEXTORAW`，但 `allowsLiteralInterpolation()` 返回 false，实际不会被调用。
 
-`oracle_types.h` 的类型层不依赖 OCI 头，因此有 `tests/dbmw_oracle_types_test.cpp` 做纯单元测试，
-不需要 Instant Client；需要真机的是 `tests/dbmw_oracle_integration_test.cpp`（用
-`DBMW_TEST_ORACLE_*` 环境变量提供连接信息）。
+`oracle_types.h` 的类型层不依赖 OCI 头，因此有 `tests/sqlconduit_oracle_types_test.cpp` 做纯单元测试，
+不需要 Instant Client；需要真机的是 `tests/sqlconduit_oracle_integration_test.cpp`（用
+`SQLCONDUIT_TEST_ORACLE_*` 环境变量提供连接信息）。
 
 ## 例程与索引（v0.5.1：函数 / 存储过程 / 索引的生命周期与调用协议）
 
-`dbmw/util.h` 提供 `dbmw::common::util`。它管的是**调用协议**与**生命周期**，
+`sqlconduit/util.h` 提供 `sqlconduit::common::util`。它管的是**调用协议**与**生命周期**，
 **不做 SQL 方言翻译**——例程体（`BEGIN ... END` / `$$ ... $$` / `AS ...`）由业务按目标方言书写。
 
 ### 方言
@@ -1475,7 +1475,7 @@ util::call(proc, params, r);
 
 // OUT / INOUT —— 必须走 Session 重载
 params.emplace_back(util::CallParam{util::ParamDirection::Out, common::Value(std::int64_t(0))});
-DBMW::transaction("my", [&](core::Session &s) { return util::call(s, proc, params, r); });
+SQLConduit::transaction("my", [&](core::Session &s) { return util::call(s, proc, params, r); });
 // r.outParams[0] 即 OUT 值
 
 // 只要 affected：returnsRows = false
@@ -1486,10 +1486,10 @@ util::call(proc, params, r, o);
 
 | 方言 | OUT | INOUT | 机制与限制 |
 |---|---|---|---|
-| MySQL | ✅ 需 `Session` | ✅ 需 `Session` | `CALL p(?, @dbmw_out_1)` → 同连接 `SELECT @dbmw_out_1`；INOUT 额外先 `SET @dbmw_out_0 = ?` |
+| MySQL | ✅ 需 `Session` | ✅ 需 `Session` | `CALL p(?, @sqlconduit_out_1)` → 同连接 `SELECT @sqlconduit_out_1`；INOUT 额外先 `SET @sqlconduit_out_0 = ?` |
 | PostgreSQL（函数） | ✅ 池路径即可 | ✅ 池路径即可 | 值就是 `SELECT * FROM f(...)` 结果行的前 N 列 |
 | PostgreSQL（存储过程） | ❌ | ❌ | PG 的 `CALL` 不把 OUT 回传客户端 → `NotSupported` |
-| SQL Server | ❌ | ❌ | 需先 `DECLARE @var <type>`，dbmw 无法推断类型 → `NotSupported` |
+| SQL Server | ❌ | ❌ | 需先 `DECLARE @var <type>`，SQLConduit 无法推断类型 → `NotSupported` |
 
 异步路径没有连接亲和，`SELECT @var` 可能落到另一条连接上，因此**异步不支持 OUT / INOUT**；
 需要多结果集时用 `async::util::callAll()`（回调 / future / 协程三形态）。
@@ -1568,7 +1568,7 @@ PG 的 `$$ ... $$` 体本来就被字面量 mask，所以这个 bug 只在 MySQL
     "stats_report": {
       "enabled": true,
       "interval_ms": 60000,
-      "file": "logs/dbmw_stats.log",
+      "file": "logs/sqlconduit_stats.log",
       "format": "text",
       "include_pool": true,
       "include_slow_sql": true,
@@ -1588,21 +1588,21 @@ PG 的 `$$ ... $$` 体本来就被字面量 mask，所以这个 bug 只在 MySQL
 `include_*_values` 后才会进入日志；SQL 和单参数都有长度上限。
 
 ```cpp
-dbmw::DBMW::setObserver([](const dbmw::common::OperationEvent& event) {
+sqlconduit::SQLConduit::setObserver([](const sqlconduit::common::OperationEvent& event) {
     // event: 数据源、操作类型、耗时、结构化状态、行数和 SQL 指纹。
     // SQL 日志与慢 SQL 均未开启时，默认仍不包含 SQL 或参数。
 });
 
-auto topSlow = dbmw::DBMW::slowSqlStats(20, "main");       // 平均耗时倒序
-auto recent = dbmw::DBMW::recentSlowSql(50, "main");      // 最近发生倒序
-dbmw::DBMW::clearSlowSqlStats();
+auto topSlow = sqlconduit::SQLConduit::slowSqlStats(20, "main");       // 平均耗时倒序
+auto recent = sqlconduit::SQLConduit::recentSlowSql(50, "main");      // 最近发生倒序
+sqlconduit::SQLConduit::clearSlowSqlStats();
 
-dbmw::core::ConnectionPool::Stats stats;
-if (dbmw::DBMW::poolStats(stats, "app")) {
+sqlconduit::core::ConnectionPool::Stats stats;
+if (sqlconduit::SQLConduit::poolStats(stats, "app")) {
     // min/max、utilization()、idle/borrowed/waiting、高水位、借出等待耗时、淘汰计数等。
 }
 
-auto physicalPools = dbmw::DBMW::allPoolStats();
+auto physicalPools = sqlconduit::SQLConduit::allPoolStats();
 ```
 
 慢 SQL 使用参数化模板指纹聚合，并通过固定容量与耗时直方图控制内存。观察器异常会被隔离，
@@ -1616,11 +1616,11 @@ auto physicalPools = dbmw::DBMW::allPoolStats();
 注入：
 
 ```cpp
-#include "dbmw/common/context.h"
-dbmw::common::SqlContext ctx;
+#include "sqlconduit/common/context.h"
+sqlconduit::common::SqlContext ctx;
 ctx.traceId = "4bf92f3577b34da6a3ce929d0e0e4736";     // 32 hex
 ctx.spanId  = "00f067aa0ba902b7";                       // 16 hex（可选）
-dbmw::common::ContextScope scope(ctx);
+sqlconduit::common::ContextScope scope(ctx);
 
 ds.execute("UPDATE t SET v = ? WHERE id = ?", ...);
 // 进入 observer / sql_log / slowSql 时，event.traceId / spanId 已就位。
@@ -1641,12 +1641,12 @@ ds.execute("UPDATE t SET v = ? WHERE id = ?", ...);
 **W3C `traceparent` 解析与格式化**：
 
 ```cpp
-auto ctxOpt = dbmw::common::parseTraceparent(
+auto ctxOpt = sqlconduit::common::parseTraceparent(
     "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
 // 校验：长度必须 55；version 必须 `00`；trace-id 不能全 0；trace/span 必须是合法 hex。
 // 非法一律返回 std::nullopt，由业务决定丢弃还是回退。
 
-auto parent = dbmw::common::formatTraceparent(traceId, spanId);
+auto parent = sqlconduit::common::formatTraceparent(traceId, spanId);
 // 输出严格 55 字节：`00-<32 hex>-<16 hex>-<01 flags>`（flags 缺省 01 = sampled）。
 ```
 
@@ -1665,13 +1665,13 @@ traceId / spanId 解析，不会反向污染字段。
 | `transformed`| observeSql 透传 `ResultSet*`，emitSql 读 `result->transformed` | SPI 已改写 / 裁剪 / 脱敏了结果集 | 失败也要标记——合规审计关心「脱敏路径上是否出现真实数据泄漏」|
 
 ```cpp
-dbmw::common::SqlContext ctx;
+sqlconduit::common::SqlContext ctx;
 ctx.tenantId = "t-acme";
 ctx.shadow   = true;            // 这个租户分流到影子库
-dbmw::common::ContextScope scope(ctx);
+sqlconduit::common::ContextScope scope(ctx);
 
 // SPI afterExecution 已置 view.result->transformed=true
-dbmw::DBMW::setObserver([](const dbmw::common::OperationEvent &event) {
+sqlconduit::SQLConduit::setObserver([](const sqlconduit::common::OperationEvent &event) {
     if (event.shadow && event.status.ok()) {
         shadowQps[event.dataSource]++;
     }
@@ -1695,7 +1695,7 @@ dbmw::DBMW::setObserver([](const dbmw::common::OperationEvent &event) {
 - **告警阈值建议**：影子流量与生产流量分开告警（影子流量 QPS 高、错误率容忍更大）；
   脱敏失败要单独告警（哪怕事务失败也可能部分数据已落库/日志，需即时上报）。
 
-测试覆盖 `tests/dbmw_observer_event_test.cpp`（22 项断言 / 8 个场景，包括失败
+测试覆盖 `tests/sqlconduit_observer_event_test.cpp`（22 项断言 / 8 个场景，包括失败
 事件也必须带这两个标记——告警归因需要）。
 
 ### 指标导出（Prometheus 文本适配器）
@@ -1706,19 +1706,19 @@ M3 把池指标与慢 SQL 统计暴露为标准 Prometheus 文本格式（0.0.4�
 #### 1. 注册池指标观察者
 
 ```cpp
-#include "dbmw/common/observer.h"
+#include "sqlconduit/common/observer.h"
 
 // 在 DatabaseManager::init() 完成后注入 collector；
 // init() 内部已经做了，所以通常不必手动再调一次。
-dbmw::common::Observability::setPoolMetricsCollector([&mgr] {
+sqlconduit::common::Observability::setPoolMetricsCollector([&mgr] {
     return mgr.allPoolStats();
 });
 
-dbmw::common::Observability::setPoolMetricsObserver(
-    [](const dbmw::common::PoolMetricsEvent &e) {
+sqlconduit::common::Observability::setPoolMetricsObserver(
+    [](const sqlconduit::common::PoolMetricsEvent &e) {
         // 立即采一次：可挂在 Prometheus exporter 自己的周期里。
         // 也可以等 StatsReporter::writeOnce 每 interval_ms 触发一次。
-        const auto text = dbmw::exporters::toPrometheusText(e, {});
+        const auto text = sqlconduit::exporters::toPrometheusText(e, {});
         // text 交给 Prometheus scraper（pushgateway / HTTP handler）。
     });
 ```
@@ -1728,21 +1728,21 @@ dbmw::common::Observability::setPoolMetricsObserver(
 #### 2. Prometheus 文本格式
 
 ```cpp
-const auto pools = dbmw::common::Observability::samplePoolMetrics();
-const auto slow  = dbmw::common::Observability::slowSqlStats(100);
-const auto text  = dbmw::exporters::toPrometheusText(pools, slow);
+const auto pools = sqlconduit::common::Observability::samplePoolMetrics();
+const auto slow  = sqlconduit::common::Observability::slowSqlStats(100);
+const auto text  = sqlconduit::exporters::toPrometheusText(pools, slow);
 
-// 关键指标名（默认 prefix="dbmw"）：
-//   dbmw_pool_connections{data_source="app",state=...}
-//   dbmw_pool_connections_idle / _borrowed / _max / _min
-//   dbmw_pool_utilization_ratio{data_source="..."}
-//   dbmw_pool_waiting{data_source="..."}
-//   dbmw_pool_borrow_requests_total / _successes / _timeouts / _wait_seconds_total
-//   dbmw_pool_connections_created_total / _closed_total
-//   dbmw_pool_validation_failures_total / _leak_warnings_total
-//   dbmw_slow_sql_count{data_source="...",fingerprint="..."}
-//   dbmw_slow_sql_errors / _timeouts / _duration_seconds_sum / _max
-//   dbmw_slow_sql_duration_seconds_bucket{...,le="0.01|0.1|1|+Inf"}
+// 关键指标名（默认 prefix="sqlconduit"）：
+//   sqlconduit_pool_connections{data_source="app",state=...}
+//   sqlconduit_pool_connections_idle / _borrowed / _max / _min
+//   sqlconduit_pool_utilization_ratio{data_source="..."}
+//   sqlconduit_pool_waiting{data_source="..."}
+//   sqlconduit_pool_borrow_requests_total / _successes / _timeouts / _wait_seconds_total
+//   sqlconduit_pool_connections_created_total / _closed_total
+//   sqlconduit_pool_validation_failures_total / _leak_warnings_total
+//   sqlconduit_slow_sql_count{data_source="...",fingerprint="..."}
+//   sqlconduit_slow_sql_errors / _timeouts / _duration_seconds_sum / _max
+//   sqlconduit_slow_sql_duration_seconds_bucket{...,le="0.01|0.1|1|+Inf"}
 ```
 
 #### 3. 重要约束
@@ -1789,11 +1789,11 @@ const auto text  = dbmw::exporters::toPrometheusText(pools, slow);
 
 ## 安装与下游集成
 
-dbmw 可作为 CMake 包安装，下游用 `find_package(dbmw)` 直接接入（nlohmann/json 随包自带，无需再 `find_package`）：
+SQLConduit 可作为 CMake 包安装，下游用 `find_package(sqlconduit)` 直接接入（nlohmann/json 随包自带，无需再 `find_package`）：
 
 ```bash
 mkdir -p build && cd build
-cmake .. -DDBMW_ENABLE_POSTGRES=ON   # 按需开启驱动
+cmake .. -DSQLCONDUIT_ENABLE_POSTGRES=ON   # 按需开启驱动
 cmake --build .
 cmake --install . --prefix /usr/local
 ```
@@ -1805,27 +1805,27 @@ cmake_minimum_required(VERSION 3.16)
 project(my_app LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 
-find_package(dbmw REQUIRED)
+find_package(sqlconduit REQUIRED)
 
 add_executable(my_app main.cpp)
-target_link_libraries(my_app PRIVATE dbmw::dbmw)
+target_link_libraries(my_app PRIVATE sqlconduit::sqlconduit)
 ```
 
-`dbmw::dbmw` 的 PUBLIC 依赖（`dbmw::nlohmann_json`）随包自动带入。`DBMW::shutdown()`
+`sqlconduit::sqlconduit` 的 PUBLIC 依赖（`sqlconduit::nlohmann_json`）随包自动带入。`SQLConduit::shutdown()`
 退出前务必调用，回收连接池与心跳线程。
 
 ### 非 CMake 工程（pkg-config）
 
-安装后会生成 `dbmw.pc`：
+安装后会生成 `sqlconduit.pc`：
 
 ```bash
-g++ main.cpp $(pkg-config --cflags --libs dbmw) -o my_app
+g++ main.cpp $(pkg-config --cflags --libs sqlconduit) -o my_app
 ```
 
 ### 驱动客户端库（务必阅读）
 
-开启某个驱动后，安装包**只包含** `libdbmw.a` 与头文件，**不含**对应数据库客户端库
-（libpqxx / libmysqlclient / unixODBC / OCI）。由于 dbmw 是静态库，这些客户端库需由下游自行
+开启某个驱动后，安装包**只包含** `libsqlconduit.a` 与头文件，**不含**对应数据库客户端库
+（libpqxx / libmysqlclient / unixODBC / OCI）。由于 SQLConduit 是静态库，这些客户端库需由下游自行
 提供，否则链接时报未定义符号：
 
 - 开启 MySQL  → 下游 `apt install default-libmysqlclient-dev` 并链接 `-lmysqlclient`
@@ -1833,15 +1833,15 @@ g++ main.cpp $(pkg-config --cflags --libs dbmw) -o my_app
 - 开启 ODBC   → 下游装 `unixodbc-dev`，链接 `-lodbc`
 - 开启 Oracle → 下游装 Instant Client（Basic Lite + SDK），链接 `-lclntsh`
 
-`find_package(dbmw)` 与 `dbmw.pc` 不会自动补这些链接（静态库 + 纯路径依赖无法跨包传播）。
+`find_package(sqlconduit)` 与 `sqlconduit.pc` 不会自动补这些链接（静态库 + 纯路径依赖无法跨包传播）。
 
 > **预期行为（开箱提示）**
-> - 默认 `DBMW_ENABLE_*` 全 OFF；未编译期启用的驱动，调用返回 `DriverDisabled`。
-> - 程序退出前务必调用 `DBMW::shutdown()` 回收连接池与心跳线程。
+> - 默认 `SQLCONDUIT_ENABLE_*` 全 OFF；未编译期启用的驱动，调用返回 `DriverDisabled`。
+> - 程序退出前务必调用 `SQLConduit::shutdown()` 回收连接池与心跳线程。
 
 ## 扩展新数据库类型
 
-1. 在 `include/dbmw/driver/` 新增 `xxx_driver.h/.cpp`，实现 `MySQLConnection`
+1. 在 `include/sqlconduit/driver/` 新增 `xxx_driver.h/.cpp`，实现 `MySQLConnection`
    风格的 `IDatabaseConnection` 与 `IDriver`。
 2. 在 `.cpp` 中调用 `DriverRegistry::instance().registerDriver("xxx", ...)`。
 3. （可选）在 `driver_factory.cpp` 的 `registerBuiltinDrivers()` 中登记，

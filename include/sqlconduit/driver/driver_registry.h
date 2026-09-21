@@ -1,0 +1,36 @@
+#ifndef SQLCONDUIT_DRIVER_DRIVER_REGISTRY_H
+#define SQLCONDUIT_DRIVER_DRIVER_REGISTRY_H
+
+#include "sqlconduit/driver/idriver.h"
+
+#include <string>
+#include <functional>
+#include <map>
+#include <memory>
+#include <vector>
+
+namespace sqlconduit::driver
+{
+    using DriverFactoryFn = std::function<std::unique_ptr<IDriver>()>;
+
+    class DriverRegistry
+    {
+    public:
+        static DriverRegistry& instance();
+
+        void registerDriver(const std::string& type, DriverFactoryFn fn);
+
+        [[nodiscard]] bool has(const std::string& type) const;
+
+        [[nodiscard]] std::unique_ptr<IDriver> create(const std::string& type) const;
+
+        [[nodiscard]] std::vector<std::string> registeredTypes() const;
+
+    private:
+        DriverRegistry() = default;
+
+        std::map<std::string, DriverFactoryFn> factories_;
+    };
+}
+
+#endif

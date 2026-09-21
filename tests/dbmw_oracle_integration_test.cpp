@@ -387,6 +387,42 @@ namespace {
         require(duplicate.sqlState == "23000",
                 "ORA-00001 should map to SQLSTATE 23000, got '" + duplicate.sqlState + "'");
     }
+
+    void testCallableApi(Fixture &f) {
+        using dbmw::common::CallOutput;
+        using dbmw::common::CallParam;
+        using dbmw::common::CallParams;
+        using dbmw::common::ParamDirection;
+        using dbmw::common::TypedArray;
+        using dbmw::common::ValueType;
+
+        CallOutput output;
+        CallParams params{
+            CallParam::out(ValueType::Int64),
+            CallParam{Value{std::int64_t(41)}},
+            CallParam::refCursor()
+        };
+        requireOk(dbmw::DBMW::call(
+                      "BEGIN ? := ? + 1; OPEN ? FOR SELECT COUNT(*) AS N FROM " + f.table +
+                      "; END;", params, output), "scalar OUT and REF CURSOR call");
+        require(output.outParams.size() == 1 && asInt(output.outParams[0]) == 42,
+                "scalar OUT bind value");
+        require(output.sets.size() == 1 && output.sets[0].rowCount() == 1,
+                "REF CURSOR result set");
+
+        TypedArray numbers{"SYS.ODCINUMBERLIST",
+                           {Value{std::int64_t(2)}, Value{std::int64_t(3)},
+                            Value{std::int64_t(5)}}};
+        CallParams collectionParams{
+            CallParam::out(ValueType::Int64),
+            CallParam{ParamDirection::In, Value{numbers}}
+        };
+        requireOk(dbmw::DBMW::call(
+                      "BEGIN SELECT SUM(COLUMN_VALUE) INTO ? FROM TABLE(?); END;",
+                      collectionParams, output), "named collection constructor call");
+        require(output.outParams.size() == 1 && asInt(output.outParams[0]) == 10,
+                "named collection members were bound in order");
+    }
 }
 
 int main() {
@@ -397,6 +433,7 @@ int main() {
         testMappingRoundTrip(f);
         testTransactionsAndSavepoints(f);
         testStreamingAndErrors(f);
+        testCallableApi(f);
         std::cout << "Oracle integration test passed (" << gChecks << " checks)\n";
         return 0;
     } catch (const std::exception &e) {

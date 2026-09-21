@@ -75,6 +75,10 @@ namespace dbmw::core {
                                         const common::Params &params,
                                         std::vector<common::ResultSet> &out);
 
+        virtual common::Status call(const std::string &sql,
+                                    const common::CallParams &params,
+                                    common::CallOutput &out);
+
         virtual common::Status openCursor(const std::string &sql,
                                           const common::Params &params,
                                           const CursorOptions &opts,

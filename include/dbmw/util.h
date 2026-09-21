@@ -80,22 +80,10 @@ namespace dbmw::common::util {
         std::string options;
     };
 
-    enum class ParamDirection { In, Out, InOut };
-
-    struct CallParam {
-        Value value;
-        ParamDirection direction = ParamDirection::In;
-
-        CallParam() = default;
-
-        explicit CallParam(Value v) : value(std::move(v)) {
-        }
-
-        CallParam(const ParamDirection d, Value v) : value(std::move(v)), direction(d) {
-        }
-    };
-
-    using CallParams = std::vector<CallParam>;
+    using ParamDirection = common::ParamDirection;
+    using CallValueType = common::ValueType;
+    using CallParam = common::CallParam;
+    using CallParams = common::CallParams;
 
     struct CallResult {
         Status status;
@@ -338,12 +326,11 @@ namespace dbmw::common::util {
                 "values as a result set instead");
 
         if (d == Dialect::Oracle && hasOut)
-            return unsupported("dbmw::util: oracle OUT/INOUT parameters need a PL/SQL block "
-                "with bound variables, which the CallPlan model does not carry; return the "
-                "values as a result set instead");
+            return unsupported("dbmw::util: Oracle output binds are executed through "
+                "DBMW::call()/util::call(), not represented by CallPlan");
         if (d == Dialect::Oracle && ref.kind == RoutineKind::Procedure && returnsRows)
-            return unsupported("dbmw::util: oracle procedures can only return rows through a "
-                "REF CURSOR OUT parameter");
+            return unsupported("dbmw::util: Oracle procedure result sets require a REF CURSOR "
+                "CallParam and DBMW::call()/util::call()");
 
         if (d == Dialect::Postgres && ref.kind == RoutineKind::Procedure) {
             if (returnsRows)
@@ -935,6 +922,27 @@ namespace dbmw::common::util {
         CallOptions o = opts;
         if (o.dataSource.empty()) o.dataSource = ref.dataSource;
         const Dialect d = resolveDialect(o);
+        if (d == Dialect::Oracle && ref.kind == RoutineKind::Procedure) {
+            const bool hasRefCursor = std::any_of(params.begin(), params.end(), [](const auto &p) {
+                return p.type == common::ValueType::RefCursor;
+            });
+            if (o.returnsRows && !hasRefCursor) {
+                out.status = unsupported("dbmw::util: returnsRows=true for an Oracle procedure "
+                                         "requires CallParam::refCursor()");
+                return out.status;
+            }
+            const std::string sql = "BEGIN " + quoteIdent(ref.name, d) +
+                                    parenArgs(params.size()) + "; END;";
+            common::CallOutput native;
+            const detail::ExecScope scope(o);
+            out.status = o.dataSource.empty()
+                             ? DBMW::call(sql, params, native)
+                             : DBMW::call(o.dataSource, sql, params, native);
+            out.sets = std::move(native.sets);
+            out.outParams = std::move(native.outParams);
+            out.affected = native.affected;
+            return out.status;
+        }
         CallPlan plan;
         if (const auto s = makeCallPlan(ref, params, d, o.returnsRows, plan); !s.ok()) {
             out.status = s;
@@ -973,6 +981,24 @@ namespace dbmw::common::util {
                            ? opts.dialect
                            : detectDialect(
                                opts.dataSource.empty() ? ref.dataSource : opts.dataSource);
+        if (opts.dialect == Dialect::Oracle && ref.kind == RoutineKind::Procedure) {
+            const bool hasRefCursor = std::any_of(params.begin(), params.end(), [](const auto &p) {
+                return p.type == common::ValueType::RefCursor;
+            });
+            if (opts.returnsRows && !hasRefCursor) {
+                out.status = unsupported("dbmw::util: returnsRows=true for an Oracle procedure "
+                                         "requires CallParam::refCursor()");
+                return out.status;
+            }
+            const std::string sql = "BEGIN " + quoteIdent(ref.name, opts.dialect) +
+                                    parenArgs(params.size()) + "; END;";
+            common::CallOutput native;
+            out.status = s.call(sql, params, native);
+            out.sets = std::move(native.sets);
+            out.outParams = std::move(native.outParams);
+            out.affected = native.affected;
+            return out.status;
+        }
         CallPlan plan;
         if (const auto st = makeCallPlan(ref, params, opts.dialect, opts.returnsRows, plan);
             !st.ok()) {

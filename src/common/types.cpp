@@ -128,6 +128,12 @@ namespace dbmw::common {
         return nullptr;
     }
 
+    const Value *TypedComposite::find(const std::string &name) const {
+        for (const auto &f: fields)
+            if (f.first == name) return &f.second;
+        return nullptr;
+    }
+
     std::string timestampToString(const Timestamp &t) {
         return formatTimestamp(t, false);
     }
@@ -278,6 +284,8 @@ namespace dbmw::common {
         if (const auto *p = std::get_if<Timestamp>(&v)) return timestampToStringMs(*p);
         if (const auto *p = std::get_if<Uuid>(&v)) return p->value;
         if (const auto *p = std::get_if<Json>(&v)) return p->value;
+        if (const auto *p = std::get_if<IntervalYearMonth>(&v)) return p->value;
+        if (const auto *p = std::get_if<IntervalDaySecond>(&v)) return p->value;
         if (const auto *p = std::get_if<Blob>(&v)) {
             std::string s = "blob[" + std::to_string(p->size()) + "]:";
             const size_t show = std::min<size_t>(p->size(), 16);
@@ -308,6 +316,24 @@ namespace dbmw::common {
                 s += p->fields[i].first;
                 s += '=';
                 s += valueToString(p->fields[i].second);
+            }
+            s += ')';
+            return s;
+        }
+        if (const auto *p = std::get_if<TypedArray>(&v)) {
+            std::string s = p->typeName + "[";
+            for (size_t i = 0; i < p->items.size(); ++i) {
+                if (i) s += ", ";
+                s += valueToString(p->items[i]);
+            }
+            s += ']';
+            return s;
+        }
+        if (const auto *p = std::get_if<TypedComposite>(&v)) {
+            std::string s = p->typeName + "(";
+            for (size_t i = 0; i < p->fields.size(); ++i) {
+                if (i) s += ", ";
+                s += p->fields[i].first + '=' + valueToString(p->fields[i].second);
             }
             s += ')';
             return s;
@@ -343,6 +369,8 @@ namespace dbmw::common {
         if (const auto *p = std::get_if<Time>(&v)) return quoteText(p->value);
         if (const auto *p = std::get_if<Uuid>(&v)) return quoteText(p->value);
         if (const auto *p = std::get_if<Json>(&v)) return quoteText(p->value);
+        if (const auto *p = std::get_if<IntervalYearMonth>(&v)) return quoteText(p->value);
+        if (const auto *p = std::get_if<IntervalDaySecond>(&v)) return quoteText(p->value);
         if (const auto *p = std::get_if<Blob>(&v)) {
             std::string s = "X'";
             appendHex(s, *p);
@@ -360,6 +388,24 @@ namespace dbmw::common {
         }
         if (const auto *p = std::get_if<Composite>(&v)) {
             std::string s = "ROW(";
+            for (size_t i = 0; i < p->fields.size(); ++i) {
+                if (i) s += ", ";
+                s += escapeLiteralGeneric(p->fields[i].second);
+            }
+            s += ")";
+            return s;
+        }
+        if (const auto *p = std::get_if<TypedArray>(&v)) {
+            std::string s = p->typeName + "(";
+            for (size_t i = 0; i < p->items.size(); ++i) {
+                if (i) s += ", ";
+                s += escapeLiteralGeneric(p->items[i]);
+            }
+            s += ")";
+            return s;
+        }
+        if (const auto *p = std::get_if<TypedComposite>(&v)) {
+            std::string s = p->typeName + "(";
             for (size_t i = 0; i < p->fields.size(); ++i) {
                 if (i) s += ", ";
                 s += escapeLiteralGeneric(p->fields[i].second);
@@ -469,8 +515,12 @@ namespace dbmw::common {
             else if (std::holds_alternative<Timestamp>(v)) sig.push_back('t');
             else if (std::holds_alternative<Uuid>(v)) sig.push_back('g');
             else if (std::holds_alternative<Json>(v)) sig.push_back('j');
+            else if (std::holds_alternative<IntervalYearMonth>(v)) sig.push_back('y');
+            else if (std::holds_alternative<IntervalDaySecond>(v)) sig.push_back('v');
             else if (std::holds_alternative<Array>(v)) sig.push_back('A');
             else if (std::holds_alternative<Composite>(v)) sig.push_back('C');
+            else if (std::holds_alternative<TypedArray>(v)) sig.push_back('Y');
+            else if (std::holds_alternative<TypedComposite>(v)) sig.push_back('O');
             else sig.push_back('x');
         }
         return sig;

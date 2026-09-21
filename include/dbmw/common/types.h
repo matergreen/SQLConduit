@@ -41,6 +41,16 @@ namespace dbmw::common {
         bool operator==(const Json &other) const { return value == other.value; }
     };
 
+    struct IntervalYearMonth {
+        std::string value;
+        bool operator==(const IntervalYearMonth &other) const { return value == other.value; }
+    };
+
+    struct IntervalDaySecond {
+        std::string value;
+        bool operator==(const IntervalDaySecond &other) const { return value == other.value; }
+    };
+
     struct Value;
 
     struct Array {
@@ -53,13 +63,32 @@ namespace dbmw::common {
         [[nodiscard]] const Value *find(const std::string &name) const;
     };
 
+    // Database named collection/object values. Unlike Array and Composite, these
+    // carry the database type name required by drivers such as Oracle OCI.
+    struct TypedArray {
+        std::string typeName;
+        std::vector<Value> items;
+    };
+
+    struct TypedComposite {
+        std::string typeName;
+        std::vector<std::pair<std::string, Value> > fields;
+
+        [[nodiscard]] const Value *find(const std::string &name) const;
+    };
+
     bool operator==(const Array &a, const Array &b);
     bool operator!=(const Array &a, const Array &b);
     bool operator==(const Composite &a, const Composite &b);
     bool operator!=(const Composite &a, const Composite &b);
+    bool operator==(const TypedArray &a, const TypedArray &b);
+    bool operator!=(const TypedArray &a, const TypedArray &b);
+    bool operator==(const TypedComposite &a, const TypedComposite &b);
+    bool operator!=(const TypedComposite &a, const TypedComposite &b);
 
     using ValueBase = std::variant<std::nullptr_t, bool, std::int64_t, std::uint64_t, double,
-        Decimal, std::string, Date, Time, Timestamp, Uuid, Json, Blob, Array, Composite>;
+        Decimal, std::string, Date, Time, Timestamp, Uuid, Json, Blob,
+        IntervalYearMonth, IntervalDaySecond, Array, Composite, TypedArray, TypedComposite>;
 
     struct Value : ValueBase {
         using ValueBase::ValueBase;
@@ -71,6 +100,14 @@ namespace dbmw::common {
     inline bool operator!=(const Array &a, const Array &b) { return !(a == b); }
     inline bool operator==(const Composite &a, const Composite &b) { return a.fields == b.fields; }
     inline bool operator!=(const Composite &a, const Composite &b) { return !(a == b); }
+    inline bool operator==(const TypedArray &a, const TypedArray &b) {
+        return a.typeName == b.typeName && a.items == b.items;
+    }
+    inline bool operator!=(const TypedArray &a, const TypedArray &b) { return !(a == b); }
+    inline bool operator==(const TypedComposite &a, const TypedComposite &b) {
+        return a.typeName == b.typeName && a.fields == b.fields;
+    }
+    inline bool operator!=(const TypedComposite &a, const TypedComposite &b) { return !(a == b); }
 
     template<class Visitor>
     decltype(auto) visitValue(Visitor &&vis, Value &v) {
@@ -130,6 +167,67 @@ namespace dbmw::common {
     using Params = std::vector<Value>;
     using ParamBatch = std::vector<Params>;
     using RowCallback = std::function<bool(const Row &)>;
+
+    enum class ParamDirection { In, Out, InOut };
+
+    enum class ValueType {
+        Auto,
+        Bool,
+        Int64,
+        UInt64,
+        Double,
+        Decimal,
+        String,
+        Date,
+        Time,
+        Timestamp,
+        Uuid,
+        Json,
+        Blob,
+        IntervalYearMonth,
+        IntervalDaySecond,
+        TypedArray,
+        TypedComposite,
+        RefCursor
+    };
+
+    struct CallParam {
+        Value value{nullptr};
+        ParamDirection direction = ParamDirection::In;
+        ValueType type = ValueType::Auto;
+        std::string typeName;
+        std::size_t maxBytes = 4096;
+
+        CallParam() = default;
+        explicit CallParam(Value v) : value(std::move(v)) {}
+        CallParam(ParamDirection d, Value v) : value(std::move(v)), direction(d) {}
+        CallParam(ParamDirection d, ValueType t, Value v = Value{nullptr},
+                  std::string databaseTypeName = {}, std::size_t outputMaxBytes = 4096)
+            : value(std::move(v)), direction(d), type(t),
+              typeName(std::move(databaseTypeName)), maxBytes(outputMaxBytes) {}
+
+        static CallParam out(ValueType type, std::size_t maxBytes = 4096) {
+            return CallParam{ParamDirection::Out, type, Value{nullptr}, {}, maxBytes};
+        }
+
+        static CallParam refCursor() {
+            return CallParam{ParamDirection::Out, ValueType::RefCursor};
+        }
+    };
+
+    using CallParams = std::vector<CallParam>;
+
+    struct CallOutput {
+        std::vector<ResultSet> sets;
+        std::vector<Value> outParams;
+        std::int64_t affected = 0;
+
+        void clear() {
+            sets.clear();
+            outParams.clear();
+            affected = 0;
+        }
+    };
 
     struct SqlRenderOptions {
         bool includeStringValues = false;

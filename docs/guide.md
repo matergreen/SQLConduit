@@ -1293,7 +1293,7 @@ service name 别名，旧 `extra.service_name / sid / charset_id / lob_max_bytes
 | `DATE` / `TIMESTAMP` / `TIMESTAMP WITH TZ` | `Timestamp` | Oracle `DATE` 含时分秒，不退化成 `Date` |
 | `RAW` / `BLOB` | `Blob` | 十六进制往返 |
 | `ROWID` / `UROWID` | `string` | |
-| `INTERVAL DS` / `INTERVAL YM` | `string` | **退化**：`Value` 无 interval 类型，刻意保留为缺口 |
+| `INTERVAL DS` / `INTERVAL YM` | `IntervalDaySecond` / `IntervalYearMonth` | 保留原始规范文本并区分两类 interval |
 
 LOB 默认按 `OCILobRead2` 读成 `Blob`，超过 `oracle.lob_max_bytes`（默认 4 MB）报 `NotSupported`
 而不是静默截断。
@@ -1350,14 +1350,40 @@ OCI 的 `OCIErrorGet` 并不填充 sqlstate 参数，所以驱动自己维护一
 
 未收录的 ORA 码返回空 SQLSTATE，由调用方传入的 fallback 码兜底——**不臆造 SQLSTATE**。
 
+### 存储过程、OUT 参数与命名类型
+
+公共调用模型由 `common::CallParam` 描述 `In` / `Out` / `InOut`、预期 `ValueType`、输出缓冲区
+大小和数据库类型名；`common::CallOutput` 同时返回标量输出与 REF CURSOR 结果集：
+
+```cpp
+using namespace dbmw::common;
+CallParams params{
+    CallParam{Value{std::int64_t(7)}},
+    CallParam::out(ValueType::String, 1024),
+    CallParam::refCursor()
+};
+CallOutput result;
+auto status = dbmw::DBMW::call("BEGIN report_pkg.run(?, ?, ?); END;", params, result);
+// result.outParams[0] 是标量 OUT；result.sets[0] 是 REF CURSOR
+```
+
+`util::call()` 也会在 Oracle procedure 上自动生成 PL/SQL 块并走同一绑定接口。纯 OUT 或值为
+NULL 的 INOUT 必须显式给出 `ValueType`，字符串输出可用 `maxBytes` 调整缓冲区，避免驱动猜类型。
+
+命名集合与对象使用 `TypedArray{typeName, items}` / `TypedComposite{typeName, fields}`。在过程的
+IN 参数中，驱动会把它们安全展开成 Oracle 类型构造器并逐项绑定，类型名只接受点分标识符；对象
+字段按声明顺序传给构造器。OCI 命名对象 OUT/INOUT、BLOB OUT 尚未实现，会明确返回
+`NotSupported`，不会退化成字符串或 NULL。
+
 ### 能力状态与后续开发边界
 
 以下条目按原因区分，`NotSupported` 不再笼统表示“不会开发”：
 
-- **需要先扩展公共 API**：Oracle UDT 的 `Array` / `Composite` 绑定需要类型名和属性元数据；
-  强类型 `INTERVAL` 需要给 `common::Value` 增加跨驱动类型；过程 OUT / `REF CURSOR` 需要输出绑定模型。
-  这些不是废弃项，但不会用字符串或 NULL 做不安全的静默降级；当前分别返回 `NotSupported` 或将
-  `INTERVAL` 保真为字符串。
+- **公共 API 已补齐**：`TypedArray` / `TypedComposite` 携带数据库类型名，两个强类型
+  `INTERVAL` 进入 `common::Value`，`CallParam` / `CallOutput` 表达 OUT、INOUT 与 REF CURSOR；
+  Oracle 已接入标量输出、REF CURSOR 和过程 IN 方向的命名类型构造器。
+- **仍需 OCI 对象描述符实现**：命名对象 OUT/INOUT 与 BLOB OUT 仍返回 `NotSupported`；这是驱动层
+  的对象生命周期与类型描述问题，不再是公共 API 无法表达。
 - **已经补齐驱动能力**：`openCursor()` 使用可暂停的 OCI statement；`queryAll()` 使用
   `OCIStmtGetNextResult` 顺序读取 Oracle 12c+ 隐式结果集，`supportsMultipleResultSets()` 在客户端
   OCI 提供该接口时返回 true。

@@ -25,6 +25,11 @@ description.
   per-row path.
 - Added safe Oracle routine deletion with `ifExists=true` by suppressing only ORA-04043 inside an
   anonymous PL/SQL block.
+- Added a driver-neutral callable API with typed OUT/INOUT parameters and REF CURSOR result sets.
+  Oracle procedures now support scalar output binds and REF CURSOR reads; named collection/object
+  inputs carry explicit type names and expand to safely bound Oracle constructors.
+- Added `IntervalYearMonth`, `IntervalDaySecond`, `TypedArray`, and `TypedComposite` to the public
+  value model so interval and Oracle UDT semantics no longer depend on string guessing.
 
 ### Compatibility and reliability
 

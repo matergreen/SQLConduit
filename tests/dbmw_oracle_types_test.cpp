@@ -165,9 +165,14 @@ int main() {
 
         const auto iv = common::oracleValueFromText(common::kSqltIntervalDs, "+01 02:03:04.000000",
                                                     0, 0);
-        const auto *text = std::get_if<std::string>(&iv);
-        check(text != nullptr && *text == "+01 02:03:04.000000",
-              "INTERVAL 退化为字符串（Value 无 interval 类型）");
+        const auto *daySecond = std::get_if<common::IntervalDaySecond>(&iv);
+        check(daySecond != nullptr && daySecond->value == "+01 02:03:04.000000",
+              "INTERVAL DAY TO SECOND 保留强类型");
+
+        const auto ym = common::oracleValueFromText(common::kSqltIntervalYm, "+03-02", 0, 0);
+        const auto *yearMonth = std::get_if<common::IntervalYearMonth>(&ym);
+        check(yearMonth != nullptr && yearMonth->value == "+03-02",
+              "INTERVAL YEAR TO MONTH 保留强类型");
     }
 
     std::cout << "== 参数绑定 ==\n";
@@ -194,6 +199,11 @@ int main() {
 
         const auto blob = common::oracleBindValue(common::Value{common::Blob{0x01, 0x02}});
         check(blob.raw.has_value() && blob.raw->size() == 2, "Blob 走 SQLT_BIN 原始绑定");
+
+        const auto interval = common::oracleBindValue(
+            common::Value{common::IntervalDaySecond{"+01 02:03:04"}});
+        check(interval.text && *interval.text == "+01 02:03:04",
+              "强类型 INTERVAL 可作为 Oracle 输入参数");
 
         common::Array arr;
         arr.items.push_back(common::Value{std::int64_t(1)});

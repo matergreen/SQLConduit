@@ -474,6 +474,12 @@ namespace dbmw::driver {
                 } else if (const auto *x = std::get_if<common::Json>(&v)) {
                     b.buffer_type = MYSQL_TYPE_STRING;
                     setStringParam(st, i, x->value.data(), x->value.size());
+                } else if (const auto *x = std::get_if<common::IntervalYearMonth>(&v)) {
+                    b.buffer_type = MYSQL_TYPE_STRING;
+                    setStringParam(st, i, x->value.data(), x->value.size());
+                } else if (const auto *x = std::get_if<common::IntervalDaySecond>(&v)) {
+                    b.buffer_type = MYSQL_TYPE_STRING;
+                    setStringParam(st, i, x->value.data(), x->value.size());
                 } else if (const auto *x = std::get_if<common::Blob>(&v)) {
                     b.buffer_type = MYSQL_TYPE_BLOB;
                     st.strBuf[i].resize(x->size());
@@ -486,7 +492,9 @@ namespace dbmw::driver {
                     b.buffer_type = MYSQL_TYPE_STRING;
                     setStringParam(st, i, x->data(), x->size());
                 } else if (std::holds_alternative<common::Array>(v) ||
-                           std::holds_alternative<common::Composite>(v)) {
+                           std::holds_alternative<common::Composite>(v) ||
+                           std::holds_alternative<common::TypedArray>(v) ||
+                           std::holds_alternative<common::TypedComposite>(v)) {
                     return common::Status::error(
                         common::ErrorCode::NotSupported,
                         "MySQL: array/composite parameters are not supported by this driver");

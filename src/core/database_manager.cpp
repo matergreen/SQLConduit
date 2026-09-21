@@ -248,11 +248,15 @@ namespace dbmw::core {
                                      std::is_same_v<T, common::Date> ||
                                      std::is_same_v<T, common::Time> ||
                                      std::is_same_v<T, common::Uuid> ||
-                                     std::is_same_v<T, common::Json>) {
+                                     std::is_same_v<T, common::Json> ||
+                                     std::is_same_v<T, common::IntervalYearMonth> ||
+                                     std::is_same_v<T, common::IntervalDaySecond>) {
                     if constexpr (std::is_same_v<T, common::Decimal>) key.push_back('m');
                     else if constexpr (std::is_same_v<T, common::Date>) key.push_back('a');
                     else if constexpr (std::is_same_v<T, common::Time>) key.push_back('o');
                     else if constexpr (std::is_same_v<T, common::Uuid>) key.push_back('g');
+                    else if constexpr (std::is_same_v<T, common::IntervalYearMonth>) key.push_back('y');
+                    else if constexpr (std::is_same_v<T, common::IntervalDaySecond>) key.push_back('v');
                     else key.push_back('j');
                     key += std::to_string(value.value.size());
                     key.push_back(':');
@@ -276,6 +280,19 @@ namespace dbmw::core {
                         key.push_back('\x1f');
                         key += std::to_string(field.first.size());
                         key.push_back(':');
+                        key += field.first;
+                        appendValueKey(field.second, key);
+                    }
+                } else if constexpr (std::is_same_v<T, common::TypedArray>) {
+                    key.push_back('Y');
+                    key += value.typeName;
+                    key += std::to_string(value.items.size());
+                    for (const auto &item: value.items) appendValueKey(item, key);
+                } else if constexpr (std::is_same_v<T, common::TypedComposite>) {
+                    key.push_back('O');
+                    key += value.typeName;
+                    key += std::to_string(value.fields.size());
+                    for (const auto &field: value.fields) {
                         key += field.first;
                         appendValueKey(field.second, key);
                     }
@@ -404,6 +421,29 @@ namespace dbmw::core {
                                            const auto r = (*h_)->queryAll(sql, params, out);
                                            for (const auto &set: out) rows += set.rowCount();
                                            return r;
+                                       });
+        if (status.connectionBroken) h_->invalidate();
+        return status;
+    }
+
+    common::Status Session::call(const std::string &sql, const common::CallParams &params,
+                                 common::CallOutput &out) const {
+        out.clear();
+        if (const auto a = auditStatement(sql, common::OperationType::Execute); !a.ok()) return a;
+        common::SqlContext ctx = common::ContextScope::current();
+        detail::runOnRoute(dataSource_, sql, common::OperationType::Execute, ctx);
+        common::Params observed;
+        observed.reserve(params.size());
+        for (const auto &param: params) observed.push_back(param.value);
+        std::uint64_t rows = 0;
+        const auto status = observeSql(dataSource_, common::OperationType::Execute, sql, observed,
+                                       h_->get(), rows, [&] {
+                                           const auto result = (*h_)->call(sql, params, out);
+                                           for (const auto &set: out.sets) rows += set.rowCount();
+                                           if (out.affected > 0)
+                                               rows += static_cast<std::uint64_t>(out.affected);
+                                           if (result.ok()) didWrite_ = true;
+                                           return result;
                                        });
         if (status.connectionBroken) h_->invalidate();
         return status;
@@ -1237,6 +1277,21 @@ namespace dbmw::core {
             if (!status.retryable || attempt == attempts) return status;
             std::this_thread::sleep_for(retryDelay(attempt));
         }
+        return status;
+    }
+
+    common::Status DataSource::call(const std::string &sql, const common::CallParams &params,
+                                    common::CallOutput &out) const {
+        out.clear();
+        if (const auto g = preGate(sql, common::OperationType::Execute); !g.ok()) return g;
+        if (const auto gate = beforeAttempt(); !gate.ok()) return gate;
+        std::unique_ptr<ConnectionPool::Handle> h;
+        auto status = borrowSession(h, kUsePoolDefault);
+        if (status.ok()) {
+            Session session(std::move(h), name_);
+            status = session.call(sql, params, out);
+        }
+        afterAttempt(status);
         return status;
     }
 

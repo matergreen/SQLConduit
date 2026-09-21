@@ -341,7 +341,9 @@ namespace dbmw::common {
             case OracleTypeClass::Rowid:
                 return Value{text};
             case OracleTypeClass::Interval:
-                return Value{text};
+                return sqlt == kSqltIntervalYm
+                           ? Value{IntervalYearMonth{text}}
+                           : Value{IntervalDaySecond{text}};
             case OracleTypeClass::Binary:
                 return Value{hexToBlob(text)};
             case OracleTypeClass::Date: {
@@ -434,6 +436,14 @@ namespace dbmw::common {
             return out;
         }
         if (const auto *p = std::get_if<Json>(&v)) {
+            out.text = p->value;
+            return out;
+        }
+        if (const auto *p = std::get_if<IntervalYearMonth>(&v)) {
+            out.text = p->value;
+            return out;
+        }
+        if (const auto *p = std::get_if<IntervalDaySecond>(&v)) {
             out.text = p->value;
             return out;
         }

@@ -1199,7 +1199,7 @@ SQL parses on different machines.
 | `DATE` / `TIMESTAMP` / `TIMESTAMP WITH TZ` | `Timestamp` | Oracle `DATE` carries a time component, so it is not narrowed to `Date` |
 | `RAW` / `BLOB` | `Blob` | round-trips through hex |
 | `ROWID` / `UROWID` | `string` | |
-| `INTERVAL DS` / `INTERVAL YM` | `string` | **degraded**: `Value` has no interval type — an intentional gap |
+| `INTERVAL DS` / `INTERVAL YM` | `IntervalDaySecond` / `IntervalYearMonth` | preserves canonical text while distinguishing both interval classes |
 
 LOBs are read via `OCILobRead2` into a `Blob`; anything past `oracle.lob_max_bytes` (default 4 MB)
 returns `NotSupported` rather than being silently truncated.
@@ -1260,16 +1260,46 @@ classification and retryability flags are lost:
 An ORA code that is not in the table yields an empty SQLSTATE and falls back to the caller's code —
 the driver **never invents a SQLSTATE**.
 
+### Procedures, OUT parameters, and named types
+
+The public call model uses `common::CallParam` to describe `In` / `Out` / `InOut`, the expected
+`ValueType`, output capacity, and database type name. `common::CallOutput` returns scalar outputs and
+REF CURSOR result sets together:
+
+```cpp
+using namespace dbmw::common;
+CallParams params{
+    CallParam{Value{std::int64_t(7)}},
+    CallParam::out(ValueType::String, 1024),
+    CallParam::refCursor()
+};
+CallOutput result;
+auto status = dbmw::DBMW::call("BEGIN report_pkg.run(?, ?, ?); END;", params, result);
+// result.outParams[0] is the scalar OUT; result.sets[0] is the REF CURSOR
+```
+
+For Oracle procedures, `util::call()` generates the PL/SQL block and uses the same bind path. A pure
+OUT, or a null INOUT, must declare its `ValueType`; string capacity is controlled with `maxBytes`, so
+the driver never guesses the output type.
+
+Named collections and objects use `TypedArray{typeName, items}` and
+`TypedComposite{typeName, fields}`. For procedure IN parameters, the driver safely expands them into
+Oracle type constructors and binds every member; type names are restricted to dotted identifiers,
+and object fields are passed in declaration order. OCI named-object OUT/INOUT and BLOB OUT are not
+implemented yet and return `NotSupported` instead of degrading to strings or NULL.
+
 ### Capability status and development boundaries
 
 The following items are grouped by cause; `NotSupported` no longer ambiguously means "will never
 be developed":
 
-- **Public API extension required**: Oracle UDT `Array` / `Composite` binding needs type names and
-  attribute metadata; typed `INTERVAL` needs a cross-driver addition to `common::Value`; procedure
-  OUT / `REF CURSOR` needs an output-bind model. These are not abandoned, but dbmw will not silently
-  coerce them to strings or NULL. Today they return `NotSupported`, except `INTERVAL`, whose text is
-  preserved losslessly.
+- **Public API extension completed**: `TypedArray` / `TypedComposite` carry database type names, two
+  strongly typed interval values are part of `common::Value`, and `CallParam` / `CallOutput` express
+  OUT, INOUT, and REF CURSOR. Oracle now supports scalar outputs, REF CURSOR, and named-type
+  constructors in procedure IN parameters.
+- **OCI object descriptors still pending**: named-object OUT/INOUT and BLOB OUT return
+  `NotSupported`. This is now a driver object-lifetime/type-description concern, not a limitation of
+  the public API.
 - **Driver capabilities now implemented**: `openCursor()` uses a pausable OCI statement, while
   `queryAll()` reads Oracle 12c+ implicit results in order through `OCIStmtGetNextResult`.
   `supportsMultipleResultSets()` returns true when the client OCI exposes that interface.

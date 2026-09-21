@@ -53,6 +53,12 @@ namespace dbmw {
                                        const common::Params &params,
                                        std::vector<common::ResultSet> &out);
 
+        static common::Status call(const std::string &sql, const common::CallParams &params,
+                                   common::CallOutput &out);
+
+        static common::Status call(const std::string &dataSource, const std::string &sql,
+                                   const common::CallParams &params, common::CallOutput &out);
+
         static common::Status queryEach(const std::string &sql,
                                         const common::Params &params,
                                         const common::RowCallback &callback,

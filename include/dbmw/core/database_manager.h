@@ -78,6 +78,9 @@ namespace dbmw {
             common::Status queryAll(const std::string &sql, const common::Params &params,
                                     std::vector<common::ResultSet> &out) const;
 
+            common::Status call(const std::string &sql, const common::CallParams &params,
+                                common::CallOutput &out) const;
+
             common::Status execute(const std::string &sql, std::int64_t &affected) const;
 
             common::Status execute(const std::string &sql, const common::Params &params,
@@ -317,6 +320,9 @@ namespace dbmw {
 
             common::Status queryAll(const std::string &sql, const common::Params &params,
                                     std::vector<common::ResultSet> &out) const;
+
+            common::Status call(const std::string &sql, const common::CallParams &params,
+                                common::CallOutput &out) const;
 
             common::Status execute(const std::string &sql, std::int64_t &affected) const;
 

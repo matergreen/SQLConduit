@@ -2,9 +2,11 @@
 #include "dbmw/driver/driver_registry.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <string>
 #include <utility>
@@ -1263,6 +1265,315 @@ namespace dbmw::driver {
         (void) sql;
         (void) params;
         return driverDisabled("queryAll");
+#endif
+    }
+
+    common::Status OracleConnection::call(const std::string &sql,
+                                          const common::CallParams &params,
+                                          common::CallOutput &out) {
+        out.clear();
+#ifdef DBMW_ENABLE_ORACLE
+        if (!open_ || !svc_) return notConnected("call");
+        ActiveOperation active(operationMtx_, operationActive_);
+        common::CallParams bindings;
+        std::string expansionError;
+        const auto validTypeName = [](const std::string &name) {
+            if (name.empty()) return false;
+            bool atStart = true;
+            for (const unsigned char c: name) {
+                if (c == '.') {
+                    if (atStart) return false;
+                    atStart = true;
+                } else if (atStart) {
+                    if (!(std::isalpha(c) || c == '_')) return false;
+                    atStart = false;
+                } else if (!(std::isalnum(c) || c == '_' || c == '$' || c == '#')) return false;
+            }
+            return !atStart;
+        };
+        std::function<std::string(const common::Value &)> expandInput;
+        expandInput = [&](const common::Value &value) -> std::string {
+            if (const auto *array = std::get_if<common::TypedArray>(&value)) {
+                if (!validTypeName(array->typeName)) {
+                    expansionError = "Oracle: invalid or missing named collection typeName";
+                    return {};
+                }
+                std::string expression = array->typeName + "(";
+                for (std::size_t i = 0; i < array->items.size(); ++i) {
+                    if (i) expression += ", ";
+                    expression += expandInput(array->items[i]);
+                }
+                return expression + ")";
+            }
+            if (const auto *object = std::get_if<common::TypedComposite>(&value)) {
+                if (!validTypeName(object->typeName)) {
+                    expansionError = "Oracle: invalid or missing named object typeName";
+                    return {};
+                }
+                std::string expression = object->typeName + "(";
+                for (std::size_t i = 0; i < object->fields.size(); ++i) {
+                    if (i) expression += ", ";
+                    expression += expandInput(object->fields[i].second);
+                }
+                return expression + ")";
+            }
+            bindings.emplace_back(value);
+            return ":" + std::to_string(bindings.size());
+        };
+        std::size_t found = 0;
+        const std::string oraSql = replacePlaceholders(sql, [&](const std::size_t i) {
+            const auto &param = params[i];
+            if (param.direction == common::ParamDirection::In &&
+                (std::holds_alternative<common::TypedArray>(param.value) ||
+                 std::holds_alternative<common::TypedComposite>(param.value)))
+                return expandInput(param.value);
+            bindings.push_back(param);
+            return ":" + std::to_string(bindings.size());
+        }, found);
+        if (found != params.size()) return paramMismatch(params.size(), found);
+        if (!expansionError.empty())
+            return common::Status::error(common::ErrorCode::ConfigError, expansionError);
+
+        OCIStmt *stmt = nullptr;
+        sword rc = OCIStmtPrepare2(svc_, &stmt, err_,
+                                   reinterpret_cast<const OraText *>(oraSql.data()),
+                                   static_cast<ub4>(oraSql.size()), nullptr, 0, OCI_NTV_SYNTAX,
+                                   OCI_DEFAULT);
+        if (!ociOk(rc)) return oracleError(err_, common::ErrorCode::QueryError, "call prepare");
+        struct StatementGuard {
+            OCIStmt *stmt;
+            OCIError *err;
+            ~StatementGuard() {
+                if (stmt) OCIStmtRelease(stmt, err, nullptr, 0, OCI_DEFAULT);
+            }
+        } guard{stmt, err_};
+
+        OracleInputStorage input(env_, svc_, err_, bindings.size());
+        std::vector<std::vector<char> > output(bindings.size());
+        std::vector<OCIStmt *> cursors(bindings.size(), nullptr);
+        struct CursorHandleGuard {
+            std::vector<OCIStmt *> &handles;
+            ~CursorHandleGuard() {
+                for (auto *handle: handles)
+                    if (handle) OCIHandleFree(handle, OCI_HTYPE_STMT);
+            }
+        } cursorGuard{cursors};
+        std::vector<common::ValueType> outputTypes(bindings.size(), common::ValueType::Auto);
+
+        const auto inferType = [](const common::Value &value) {
+            if (std::holds_alternative<bool>(value)) return common::ValueType::Bool;
+            if (std::holds_alternative<std::int64_t>(value)) return common::ValueType::Int64;
+            if (std::holds_alternative<std::uint64_t>(value)) return common::ValueType::UInt64;
+            if (std::holds_alternative<double>(value)) return common::ValueType::Double;
+            if (std::holds_alternative<common::Decimal>(value)) return common::ValueType::Decimal;
+            if (std::holds_alternative<common::Date>(value)) return common::ValueType::Date;
+            if (std::holds_alternative<common::Time>(value)) return common::ValueType::Time;
+            if (std::holds_alternative<common::Timestamp>(value)) return common::ValueType::Timestamp;
+            if (std::holds_alternative<common::Uuid>(value)) return common::ValueType::Uuid;
+            if (std::holds_alternative<common::Json>(value)) return common::ValueType::Json;
+            if (std::holds_alternative<common::Blob>(value)) return common::ValueType::Blob;
+            if (std::holds_alternative<common::IntervalYearMonth>(value))
+                return common::ValueType::IntervalYearMonth;
+            if (std::holds_alternative<common::IntervalDaySecond>(value))
+                return common::ValueType::IntervalDaySecond;
+            if (std::holds_alternative<common::TypedArray>(value)) return common::ValueType::TypedArray;
+            if (std::holds_alternative<common::TypedComposite>(value))
+                return common::ValueType::TypedComposite;
+            return common::ValueType::String;
+        };
+
+        static char kEmpty[1] = {0};
+        const LobBindMode lobMode = resolveLobBindMode(cfg_);
+        for (std::size_t i = 0; i < bindings.size(); ++i) {
+            const auto &param = bindings[i];
+            const bool inputDirection = param.direction != common::ParamDirection::Out;
+            const bool outputDirection = param.direction != common::ParamDirection::In;
+            common::ValueType type = param.type;
+            if (type == common::ValueType::Auto) {
+                if (!inputDirection || std::holds_alternative<std::nullptr_t>(param.value))
+                    return common::Status::error(
+                        common::ErrorCode::ConfigError,
+                        "Oracle: OUT and null INOUT parameters require an explicit ValueType");
+                type = inferType(param.value);
+            }
+            outputTypes[i] = type;
+            if ((type == common::ValueType::TypedArray ||
+                 type == common::ValueType::TypedComposite) && param.typeName.empty())
+                return common::Status::error(common::ErrorCode::ConfigError,
+                                             "Oracle: named object parameters require typeName");
+            if (type == common::ValueType::TypedArray ||
+                type == common::ValueType::TypedComposite)
+                return common::Status::error(
+                    common::ErrorCode::NotSupported,
+                    "Oracle: OCI named object binding is not available yet; use the explicit "
+                    "typeName metadata with a driver extension");
+
+            OCIBind *bind = nullptr;
+            if (type == common::ValueType::RefCursor) {
+                if (!outputDirection)
+                    return common::Status::error(common::ErrorCode::ConfigError,
+                                                 "Oracle: REF CURSOR must be OUT or INOUT");
+                rc = OCIHandleAlloc(env_, reinterpret_cast<void **>(&cursors[i]),
+                                    OCI_HTYPE_STMT, 0, nullptr);
+                if (!ociOk(rc))
+                    return oracleError(err_, common::ErrorCode::QueryError,
+                                       "REF CURSOR allocate");
+                rc = OCIBindByPos(stmt, &bind, err_, static_cast<ub4>(i + 1), &cursors[i],
+                                  static_cast<sb4>(sizeof(OCIStmt *)),
+                                  static_cast<ub2>(common::kSqltCur), &input.indicators[i],
+                                  &input.lengths[i], &input.returnCodes[i], 0, nullptr,
+                                  OCI_DEFAULT);
+            } else if (outputDirection) {
+                if (type == common::ValueType::Blob)
+                    return common::Status::error(common::ErrorCode::NotSupported,
+                                                 "Oracle: BLOB OUT parameters are not supported");
+                const std::size_t capacity = std::max<std::size_t>(2, param.maxBytes + 1);
+                if (capacity > 65535)
+                    return common::Status::error(common::ErrorCode::ConfigError,
+                                                 "Oracle: OUT maxBytes must be <= 65534");
+                output[i].assign(capacity, '\0');
+                if (inputDirection) {
+                    const auto value = common::oracleBindValue(param.value);
+                    if (value.unsupported || value.raw)
+                        return common::Status::error(common::ErrorCode::NotSupported,
+                                                     "Oracle: unsupported INOUT parameter type");
+                    if (value.text) {
+                        if (value.text->size() >= output[i].size())
+                            return common::Status::error(
+                                common::ErrorCode::ConfigError,
+                                "Oracle: INOUT value exceeds maxBytes");
+                        std::copy(value.text->begin(), value.text->end(), output[i].begin());
+                        input.lengths[i] = static_cast<ub2>(value.text->size());
+                    } else input.indicators[i] = -1;
+                }
+                rc = OCIBindByPos(stmt, &bind, err_, static_cast<ub4>(i + 1), output[i].data(),
+                                  static_cast<sb4>(output[i].size()),
+                                  static_cast<ub2>(common::kSqltStr), &input.indicators[i],
+                                  &input.lengths[i], &input.returnCodes[i], 0, nullptr,
+                                  OCI_DEFAULT);
+            } else {
+                const auto value = common::oracleBindValue(param.value);
+                if (value.unsupported)
+                    return common::Status::error(common::ErrorCode::NotSupported,
+                                                 "Oracle: unsupported input parameter type");
+                void *data = kEmpty;
+                sb4 size = 0;
+                ub2 sqlt = static_cast<ub2>(common::kSqltStr);
+                if (value.raw) {
+                    if (lobMode == LobBindMode::Lob ||
+                        (lobMode == LobBindMode::Auto && value.raw->size() > kDirectBindLimit)) {
+                        input.lobs[i] = input.lobGuard.createBlob(*value.raw);
+                        if (!input.lobs[i])
+                            return oracleError(err_, common::ErrorCode::QueryError,
+                                               "call LOB bind");
+                        data = &input.lobs[i];
+                        size = static_cast<sb4>(sizeof(OCILobLocator *));
+                        sqlt = static_cast<ub2>(common::kSqltBlob);
+                    } else {
+                        if (value.raw->size() > 32767)
+                            return common::Status::error(
+                                common::ErrorCode::NotSupported,
+                                "Oracle: call RAW input exceeds 32767 bytes");
+                        input.raw[i] = *value.raw;
+                        data = input.raw[i].data();
+                        size = static_cast<sb4>(input.raw[i].size());
+                        sqlt = static_cast<ub2>(common::kSqltBin);
+                    }
+                } else if (value.text) {
+                    input.text[i].assign(value.text->begin(), value.text->end());
+                    input.text[i].push_back('\0');
+                    data = input.text[i].data();
+                    size = static_cast<sb4>(input.text[i].size());
+                } else input.indicators[i] = -1;
+                rc = OCIBindByPos(stmt, &bind, err_, static_cast<ub4>(i + 1), data, size, sqlt,
+                                  &input.indicators[i], &input.lengths[i], &input.returnCodes[i],
+                                  0, nullptr, OCI_DEFAULT);
+            }
+            if (!ociOk(rc)) return oracleError(err_, common::ErrorCode::QueryError, "call bind");
+        }
+
+        rc = OCIStmtExecute(svc_, stmt, err_, 1, 0, nullptr, nullptr, OCI_DEFAULT);
+        if (!ociOk(rc)) return oracleError(err_, common::ErrorCode::QueryError, "call execute");
+        ub4 affected = 0;
+        if (ociOk(OCIAttrGet(stmt, OCI_HTYPE_STMT, &affected, nullptr, OCI_ATTR_ROW_COUNT, err_)))
+            out.affected = static_cast<std::int64_t>(affected);
+
+        const auto textValue = [](const common::ValueType type, const std::string &text) -> common::Value {
+            try {
+                switch (type) {
+                    case common::ValueType::Bool: return common::Value{text == "1" || text == "true" || text == "TRUE"};
+                    case common::ValueType::Int64: return common::Value{static_cast<std::int64_t>(std::stoll(text))};
+                    case common::ValueType::UInt64: return common::Value{static_cast<std::uint64_t>(std::stoull(text))};
+                    case common::ValueType::Double: return common::Value{std::stod(text)};
+                    case common::ValueType::Decimal: return common::Value{common::Decimal{text}};
+                    case common::ValueType::Date: return common::Value{common::Date{text}};
+                    case common::ValueType::Time: return common::Value{common::Time{text}};
+                    case common::ValueType::Timestamp: {
+                        common::Timestamp timestamp{};
+                        if (common::oracleParseTimestamp(text, timestamp)) return common::Value{timestamp};
+                        return common::Value{text};
+                    }
+                    case common::ValueType::Uuid: return common::Value{common::Uuid{text}};
+                    case common::ValueType::Json: return common::Value{common::Json{text}};
+                    case common::ValueType::IntervalYearMonth:
+                        return common::Value{common::IntervalYearMonth{text}};
+                    case common::ValueType::IntervalDaySecond:
+                        return common::Value{common::IntervalDaySecond{text}};
+                    default: return common::Value{text};
+                }
+            } catch (...) {
+                return common::Value{text};
+            }
+        };
+
+        for (std::size_t i = 0; i < bindings.size(); ++i) {
+            if (bindings[i].direction == common::ParamDirection::In) continue;
+            if (outputTypes[i] == common::ValueType::RefCursor) {
+                if (!cursors[i]) continue;
+                common::ResultSet set;
+                OracleResultReader reader(env_, svc_, err_, lobMaxBytes_);
+                auto status = reader.setup(cursors[i]);
+                if (status.ok()) {
+                    set.setFields(reader.fields());
+                    while (true) {
+                        common::Row row;
+                        bool hasRow = false;
+                        status = reader.fetchOne(row, hasRow);
+                        if (!status.ok() || !hasRow) break;
+                        if (cfg_.max_result_rows > 0 &&
+                            set.rowCount() >= static_cast<std::size_t>(cfg_.max_result_rows)) {
+                            status = common::Status::error(
+                                common::ErrorCode::QueryError,
+                                "Oracle: REF CURSOR exceeds max_result_rows=" +
+                                std::to_string(cfg_.max_result_rows));
+                            break;
+                        }
+                        set.addRow(std::move(row));
+                    }
+                }
+                const sword releaseRc = OCIHandleFree(cursors[i], OCI_HTYPE_STMT);
+                cursors[i] = nullptr;
+                if (!status.ok()) return status;
+                if (!ociOk(releaseRc))
+                    return oracleError(err_, common::ErrorCode::QueryError, "REF CURSOR free");
+                out.sets.push_back(std::move(set));
+                continue;
+            }
+            if (input.returnCodes[i] != 0 || input.lengths[i] >= output[i].size())
+                return common::Status::error(
+                    common::ErrorCode::QueryError,
+                    "Oracle: OUT parameter " + std::to_string(i + 1) +
+                    " exceeded maxBytes=" + std::to_string(bindings[i].maxBytes));
+            if (input.indicators[i] == -1) out.outParams.emplace_back(nullptr);
+            else out.outParams.push_back(textValue(
+                outputTypes[i], std::string(output[i].data(), input.lengths[i])));
+        }
+        txOpen_ = true;
+        return common::Status::OK();
+#else
+        (void) sql;
+        (void) params;
+        return driverDisabled("call");
 #endif
     }
 

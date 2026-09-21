@@ -59,6 +59,16 @@ namespace dbmw::core {
         return common::Status::OK();
     }
 
+    common::Status IDatabaseConnection::call(const std::string &sql,
+                                             const common::CallParams &params,
+                                             common::CallOutput &out) {
+        (void) sql;
+        (void) params;
+        out.clear();
+        return common::Status::error(common::ErrorCode::NotSupported,
+                                     "driver does not support callable parameters");
+    }
+
     common::Status IDatabaseConnection::executeBatch(
         const std::string &sql, const common::ParamBatch &batch,
         common::BatchResult &out) {

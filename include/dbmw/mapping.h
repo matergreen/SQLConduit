@@ -112,9 +112,13 @@ namespace dbmw::mapping {
             else if constexpr (std::is_same_v<U, common::Timestamp>) return "Timestamp";
             else if constexpr (std::is_same_v<U, common::Uuid>) return "Uuid";
             else if constexpr (std::is_same_v<U, common::Json>) return "Json";
+            else if constexpr (std::is_same_v<U, common::IntervalYearMonth>) return "IntervalYearMonth";
+            else if constexpr (std::is_same_v<U, common::IntervalDaySecond>) return "IntervalDaySecond";
             else if constexpr (std::is_same_v<U, common::Blob>) return "Blob";
             else if constexpr (std::is_same_v<U, common::Array>) return "Array";
             else if constexpr (std::is_same_v<U, common::Composite>) return "Composite";
+            else if constexpr (std::is_same_v<U, common::TypedArray>) return "TypedArray";
+            else if constexpr (std::is_same_v<U, common::TypedComposite>) return "TypedComposite";
             else if constexpr (std::is_same_v<U, common::PgPoint>) return "PgPoint";
             else if constexpr (std::is_same_v<U, common::PgLine>) return "PgLine";
             else if constexpr (std::is_same_v<U, common::PgLseg>) return "PgLseg";

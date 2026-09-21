@@ -86,6 +86,9 @@ namespace dbmw::driver {
         common::Status queryAll(const std::string &sql, const common::Params &params,
                                 std::vector<common::ResultSet> &out) override;
 
+        common::Status call(const std::string &sql, const common::CallParams &params,
+                            common::CallOutput &out) override;
+
         common::Status openCursor(const std::string &sql, const common::Params &params,
                                   const core::CursorOptions &opts,
                                   std::unique_ptr<core::ICursor> &out) override;

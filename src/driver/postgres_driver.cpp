@@ -186,9 +186,15 @@ namespace dbmw::driver {
                 return common::timestampToUtcStringMs(*x);
             if (const auto *x = std::get_if<common::Uuid>(&v)) return x->value;
             if (const auto *x = std::get_if<common::Json>(&v)) return x->value;
+            if (const auto *x = std::get_if<common::IntervalYearMonth>(&v)) return x->value;
+            if (const auto *x = std::get_if<common::IntervalDaySecond>(&v)) return x->value;
             if (const auto *x = std::get_if<common::Blob>(&v)) return toByteaHex(*x);
             if (const auto *x = std::get_if<common::Array>(&v)) return arrayToText(*x);
             if (const auto *x = std::get_if<common::Composite>(&v)) return compositeToText(*x);
+            if (const auto *x = std::get_if<common::TypedArray>(&v))
+                return arrayToText(common::Array{x->items});
+            if (const auto *x = std::get_if<common::TypedComposite>(&v))
+                return compositeToText(common::Composite{x->fields});
             return std::nullopt;
         }
 
@@ -342,6 +348,14 @@ namespace dbmw::driver {
                     p.append(std::optional<std::string>{x->value});
                 } else if (const auto *x = std::get_if<common::Json>(&v)) {
                     p.append(std::optional<std::string>{x->value});
+                } else if (const auto *x = std::get_if<common::IntervalYearMonth>(&v)) {
+                    p.append(std::optional<std::string>{x->value});
+                } else if (const auto *x = std::get_if<common::IntervalDaySecond>(&v)) {
+                    p.append(std::optional<std::string>{x->value});
+                } else if (const auto *x = std::get_if<common::TypedArray>(&v)) {
+                    p.append(std::optional<std::string>{arrayToText(common::Array{x->items})});
+                } else if (const auto *x = std::get_if<common::TypedComposite>(&v)) {
+                    p.append(std::optional<std::string>{compositeToText(common::Composite{x->fields})});
                 } else if (const auto *x = std::get_if<common::Blob>(&v)) {
                     p.append(std::optional<std::string>{toByteaHex(*x)});
                 } else if (const auto *x = std::get_if<std::string>(&v)) {

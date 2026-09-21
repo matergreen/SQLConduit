@@ -208,7 +208,9 @@ DBMW::transaction("my", [&](core::Session &s) { return util::call(s, proc, param
 ```
 
 OUT / INOUT support: MySQL (requires `Session`) and postgres functions (pool path is enough, the
-values are the leading columns of the result row). postgres procedures and SQL Server return
+values are the leading columns of the result row). Oracle uses
+`CallParam::out(common::ValueType::String)` and `CallParam::refCursor()` directly through the pool.
+postgres procedures and SQL Server return
 `NotSupported`, and so does the async path (no connection affinity). Use
 `async::util::callAll()` to collect multiple result sets asynchronously.
 

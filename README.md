@@ -194,6 +194,7 @@ DBMW::transaction("my", [&](core::Session &s) { return util::call(s, proc, param
 ```
 
 OUT / INOUT 的方言支持范围：MySQL（需 `Session`）、postgres 函数（池路径即可，值来自结果行前 N 列）；
+Oracle 可用 `CallParam::out(common::ValueType::String)` 和 `CallParam::refCursor()` 直接走池路径；
 postgres 存储过程与 SQL Server 返回 `NotSupported`，异步路径同样不支持（无连接亲和）。
 异步侧用 `async::util::callAll()` 收集多结果集。
 

@@ -142,6 +142,20 @@ namespace dbmw {
         return ds->queryAll(sql, params, out);
     }
 
+    common::Status DBMW::call(const std::string &sql, const common::CallParams &params,
+                              common::CallOutput &out) {
+        std::shared_ptr<core::DataSource> ds;
+        if (const auto st = resolve(std::string(), ds); !st.ok()) return st;
+        return ds->call(sql, params, out);
+    }
+
+    common::Status DBMW::call(const std::string &dataSource, const std::string &sql,
+                              const common::CallParams &params, common::CallOutput &out) {
+        std::shared_ptr<core::DataSource> ds;
+        if (const auto st = resolve(dataSource, ds); !st.ok()) return st;
+        return ds->call(sql, params, out);
+    }
+
     common::Status DBMW::queryEach(const std::string &sql, const common::Params &params,
                                    const common::RowCallback &callback, std::uint64_t &rows) {
         std::shared_ptr<core::DataSource> ds;

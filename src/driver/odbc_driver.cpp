@@ -465,6 +465,18 @@ namespace dbmw::driver {
                     columnSize = static_cast<SQLULEN>(std::max<std::size_t>(1, slot.text.size()));
                     data = const_cast<char *>(slot.text.data());
                     bufferLength = static_cast<SQLLEN>(slot.text.size());
+                } else if (const auto *v = std::get_if<common::IntervalYearMonth>(&value)) {
+                    slot.text = v->value;
+                    slot.indicator = static_cast<SQLLEN>(slot.text.size());
+                    columnSize = static_cast<SQLULEN>(std::max<std::size_t>(1, slot.text.size()));
+                    data = const_cast<char *>(slot.text.data());
+                    bufferLength = static_cast<SQLLEN>(slot.text.size());
+                } else if (const auto *v = std::get_if<common::IntervalDaySecond>(&value)) {
+                    slot.text = v->value;
+                    slot.indicator = static_cast<SQLLEN>(slot.text.size());
+                    columnSize = static_cast<SQLULEN>(std::max<std::size_t>(1, slot.text.size()));
+                    data = const_cast<char *>(slot.text.data());
+                    bufferLength = static_cast<SQLLEN>(slot.text.size());
                 } else if (const auto *v = std::get_if<common::Blob>(&value)) {
                     slot.blob = *v;
                     slot.indicator = static_cast<SQLLEN>(slot.blob.size());
@@ -479,7 +491,9 @@ namespace dbmw::driver {
                     data = const_cast<char *>(slot.text.data());
                     bufferLength = static_cast<SQLLEN>(slot.text.size());
                 } else if (std::holds_alternative<common::Array>(value) ||
-                           std::holds_alternative<common::Composite>(value)) {
+                           std::holds_alternative<common::Composite>(value) ||
+                           std::holds_alternative<common::TypedArray>(value) ||
+                           std::holds_alternative<common::TypedComposite>(value)) {
                     return common::Status::error(
                         common::ErrorCode::NotSupported,
                         "ODBC: array/composite parameters are not supported by this driver");

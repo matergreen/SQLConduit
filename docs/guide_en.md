@@ -39,11 +39,16 @@ A database connection middleware written in C++17, supporting:
 > - **ODBC — fully implemented** (unixODBC): DSN / connection string, diagnostic records, type mapping, native parameter binding,
 >   query timeout / cancellation, SQL Server / standard savepoint dialects; plus **`SQLPrepare`/`SQLExecute` prepared-statement cache**,
 >   `OUTPUT INSERTED`/`RETURNING` **generated keys**, and large-BLOB **streaming writes**.
+> - **Oracle — fully implemented** (OCI / Instant Client): `OCILogon2` connections, `?` -> `:n` placeholder
+>   rewriting, SQLT-based result mapping, native `OCIBindByPos` parameter binding, LOB streaming reads,
+>   transactions and savepoints, `OCIBreak` cancellation; plus **statement cache** via `OCIStmtPrepare2`
+>   (LRU eviction), `RETURNING ... INTO` **generated keys**, and large-BLOB **streaming writes**.
+>   See [Oracle driver (OCI)](#oracle-driver-oci).
 >
 > Prepared statements and generated keys are implemented per driver; large-parameter streaming (`StreamSource`) currently uses a
-> **buffered-degradation** path uniformly across all three drivers (read fully into a `Blob` then bound as a normal parameter), so
+> **buffered-degradation** path uniformly across all four drivers (read fully into a `Blob` then bound as a normal parameter), so
 > calling code stays identical — true chunked MySQL `send_long_data` / ODBC `SQLPutData` is a future enhancement.
-> All three drivers are controlled by the `DBMW_ENABLE_*` compile-time switches.
+> All four drivers are controlled by the `DBMW_ENABLE_*` compile-time switches.
 
 ---
 
@@ -78,12 +83,13 @@ sudo apt install -y build-essential cmake
 # Enable MySQL: sudo apt install -y default-libmysqlclient-dev
 # Enable PG:     sudo apt install -y libpqxx-dev libpq-dev
 # Enable ODBC:   sudo apt install -y unixodbc-dev
+# Enable Oracle: manually install Oracle Instant Client (Basic + SDK), see "Oracle driver (OCI)"
 
 # 2) Configure + build
 mkdir -p build && cd build
 cmake ..                                   # core layer only
 # Enable drivers example:
-# cmake .. -DDBMW_ENABLE_MYSQL=ON -DDBMW_ENABLE_POSTGRES=ON -DDBMW_ENABLE_ODBC=ON
+# cmake .. -DDBMW_ENABLE_MYSQL=ON -DDBMW_ENABLE_POSTGRES=ON -DDBMW_ENABLE_ODBC=ON -DDBMW_ENABLE_ORACLE=ON
 # Enable the coroutine layer (optional; only task.cpp is bumped to C++20):
 # cmake .. -DDBMW_ENABLE_ASYNC_CORO=ON
 cmake --build .
@@ -103,8 +109,8 @@ You can also run `scripts/setup-wsl.sh` in one shot (installs dependencies and b
 
 On macOS, dependencies are managed with [Homebrew](https://brew.sh) and the compiler is the system **clang++** (install Xcode Command Line Tools first). Homebrew packages live under `/opt/homebrew` (Apple Silicon) or `/usr/local` (Intel); CMake's default search paths may not cover them, so pass `CMAKE_PREFIX_PATH` explicitly to locate the client libraries.
 
-> **Note**: `DBMW_ENABLE_ODBC` is **OFF by default**. Install unixODBC and pass
-> `-DDBMW_ENABLE_ODBC=ON` only when ODBC support is needed.
+> **Note**: `DBMW_ENABLE_ODBC` and `DBMW_ENABLE_ORACLE` are both **OFF by default**. Install unixODBC
+> (or Instant Client for Oracle) and pass the matching switch only when that driver is needed.
 
 ```bash
 # 1) Command-line tools (provides clang++ / make)
@@ -115,12 +121,15 @@ brew install mysql-client libpqxx libpq unixodbc
 #    - mysql-client is keg-only and does not symlink into /usr/local automatically;
 #      it MUST be added to CMAKE_PREFIX_PATH explicitly.
 #    - libpqxx depends on libpq; unixodbc provides the ODBC headers and libodbc.
+#    - Oracle has no Homebrew formula; install Instant Client (Basic + SDK) manually.
 
 # 3) Configure + build (use brew --prefix to locate headers/libs; separate paths with ';')
 mkdir -p build && cd build
 cmake .. \
   -DCMAKE_PREFIX_PATH="$(brew --prefix);$(brew --prefix mysql-client)" \
   -DDBMW_ENABLE_MYSQL=ON -DDBMW_ENABLE_POSTGRES=ON -DDBMW_ENABLE_ODBC=ON
+# Enable Oracle (directory where Instant Client was extracted):
+#   -DDBMW_ENABLE_ORACLE=ON -DOCI_INCLUDE_DIR=.../sdk/include -DOCI_LIBRARY=.../libclntsh.dylib
 cmake --build . -j"$(sysctl -n hw.ncpu)"
 
 ```
@@ -179,7 +188,8 @@ dbmw::common::Params p{ std::string("O'Brien"), std::int64_t(42) };
 auto st = dbmw::DBMW::query("SELECT * FROM t WHERE name = ? AND age > ?", p, rs);
 ```
 
-- PostgreSQL / MySQL / ODBC all use **native parameter binding**.
+- PostgreSQL / MySQL / Oracle / ODBC all use **native parameter binding**. Oracle additionally rewrites
+  `?` to `:n` (1-based) before `OCIBindByPos`; the rewriter skips `?` inside strings, identifiers, and comments.
 - A custom driver that has not implemented native binding returns `NotSupported` by default, never silently degrading to SQL concatenation.
 - Literal interpolation is enabled only for compatible drivers that explicitly override `allowsLiteralInterpolation()`; the scanner skips `?` inside strings, identifiers, and comments.
 - A placeholder count that does not match the parameter count returns `QueryError`, never silently producing wrong SQL.
@@ -231,7 +241,7 @@ auto st = dbmw::DBMW::transaction([](dbmw::core::Session& s) {
 });
 ```
 
-- A handle's lifetime is bound to "the current physical connection" and valid only while the connection / `Session` is alive; once the connection is returned / closed the handle is invalid, and the driver calls `closeAllPrepared()` from `close()` to release the native handle (MySQL `mysql_stmt_close` / PG `DEALLOCATE` / ODBC `SQLFreeHandle`).
+- A handle's lifetime is bound to "the current physical connection" and valid only while the connection / `Session` is alive; once the connection is returned / closed the handle is invalid, and the driver calls `closeAllPrepared()` from `close()` to release the native handle (MySQL `mysql_stmt_close` / PG `DEALLOCATE` / ODBC `SQLFreeHandle` / Oracle `OCIStmtRelease`).
 - The cache lives on the driver connection object; it survives being returned to the pool and is reused when the same connection is borrowed again. Pools are per data source, so prepared statements never leak across sources.
 - `max_per_connection > 0` evicts the least-recently-used handle via LRU; `0` = unlimited (reclaimed naturally when the connection closes).
 - A prepared execution still passes the `DataSource` entry-point `preGate` (once); the result-cache key logic is unchanged; auditing still classifies by SQL text.
@@ -249,12 +259,12 @@ dbmw::common::GeneratedKeys keys;
 ds->execute("INSERT INTO t(name) VALUES('x')", n, keys);
 int64_t id = keys.lastInsertId();            // MySQL auto-increment
 
-// PostgreSQL / ODBC: returned directly via the SQL's own RETURNING / OUTPUT — dbmw does not append it
+// PostgreSQL / Oracle / ODBC: returned directly via the SQL's own RETURNING / OUTPUT — dbmw does not append it
 ds->execute("INSERT INTO t(name) VALUES('x') RETURNING id", n, keys);
 if (!keys.empty()) id = keys.rows[0].asInt64(0);  // take the first column of the RETURNING row
 ```
 
-Unified model: `GeneratedKeys` is always "a result set of the generated columns" — MySQL synthesizes one row / one column via `mysql_insert_id`, while PG/ODBC emit directly via `RETURNING`/`OUTPUT`. **dbmw never appends `RETURNING` to the SQL *you* pass in** (that would change semantics and couple to a dialect), so for PG/ODBC to get the auto-increment id, write `RETURNING id` in your SQL yourself. When there is no `RETURNING` and it is not a MySQL auto-increment, `keys.empty()` is true (not an error). Call `keys.clear()` before reusing the same `GeneratedKeys` object, so a retried statement doesn't mistake stale old rows for this run's generated keys.
+Unified model: `GeneratedKeys` is always "a result set of the generated columns" — MySQL synthesizes one row / one column via `mysql_insert_id`, while PG/Oracle/ODBC emit directly via `RETURNING`/`OUTPUT`. **dbmw never appends `RETURNING` to the SQL *you* pass in** (that would change semantics and couple to a dialect), so for PG/ODBC to get the auto-increment id, write `RETURNING id` in your SQL yourself; on Oracle it must be written as `RETURNING id INTO :2` (`:1` is already taken by `VALUES(?)`) and the driver parses and reads the `RETURNING ... INTO` output binds. When there is no `RETURNING` and it is not a MySQL auto-increment, `keys.empty()` is true (not an error). Call `keys.clear()` before reusing the same `GeneratedKeys` object, so a retried statement doesn't mistake stale old rows for this run's generated keys.
 
 > That constraint applies only to **caller-supplied SQL**. When dbmw generates the SQL itself
 > (the entity-mapping helpers `insertAs` / `insertBatchAs`), dbmw does complete it per dialect —
@@ -274,7 +284,7 @@ ds->execute("INSERT INTO t(id, blob) VALUES(?, ?)", sp, n);   // or query / exec
 
 - `StreamSource(read, totalSize, isBinary)`: a custom `read(buf, n)` callback returns the bytes read this chunk (0 = EOF); there is also a convenience `StreamSource(std::istream&)` constructor. When built from an istream, the stream must stay alive for the duration of the execution.
 - `isBinary=true` means binary (bytea / blob), `false` means text (clob).
-- **All three drivers currently use a buffered-degradation path**: `StreamSource` is read fully into a `Blob` and then bound as a normal parameter (libpq does not support parameter data-at-execution, so PG is this way by nature; true chunked MySQL `send_long_data` / ODBC `SQLPutData` is a future enhancement). Calling code stays identical regardless of driver.
+- **All four drivers currently use a buffered-degradation path**: `StreamSource` is read fully into a `Blob` and then bound as a normal parameter (libpq does not support parameter data-at-execution, so PG is this way by nature; true chunked MySQL `send_long_data` / ODBC `SQLPutData` is a future enhancement). Calling code stays identical regardless of driver.
 - A query containing a `StreamSource` is **not cached** (streamed content is not a fixed value and cannot participate in `cacheKey`); auditing still classifies by SQL text and stream content never enters the log.
 
 ### Configuration
@@ -294,7 +304,7 @@ ds->execute("INSERT INTO t(id, blob) VALUES(?, ?)", sp, n);   // or query / exec
 
 ## Timeouts, cancellation & transaction options
 
-A data source's `query_timeout_ms` maps to PostgreSQL `statement_timeout`, ODBC `SQL_ATTR_QUERY_TIMEOUT`, and the MySQL client read/write timeout. A transaction can additionally set isolation level, read-only, and an overall deadline:
+A data source's `query_timeout_ms` maps to PostgreSQL `statement_timeout`, ODBC `SQL_ATTR_QUERY_TIMEOUT`, and the MySQL client read/write timeout. Oracle has no server-side timeout pushdown (OCI exposes no statement-level timeout attribute); timeouts fall back to `cancel()` issuing `OCIBreak` on the in-flight statement. A transaction can additionally set isolation level, read-only, and an overall deadline:
 
 ```cpp
 dbmw::common::TransactionOptions options;
@@ -334,7 +344,7 @@ dbmw::common::BatchResult result;
 dbmw::DBMW::executeBatch("INSERT INTO t(id, name) VALUES(?, ?)", batch, result);
 ```
 
-**Batch execution is atomic**, with consistent behavior across all three drivers: when the caller has not opened a transaction, the middleware wraps it in one automatically; if any row in the middle fails, the whole batch rolls back and `BatchResult` carries no partial affected-row counts (avoiding a caller mistakenly assuming the earlier rows committed). When the caller is already in a transaction, the outer transaction is reused and the rollback scope is up to the caller.
+**Batch execution is atomic**, with consistent behavior across all four drivers: when the caller has not opened a transaction, the middleware wraps it in one automatically; if any row in the middle fails, the whole batch rolls back and `BatchResult` carries no partial affected-row counts (avoiding a caller mistakenly assuming the earlier rows committed). When the caller is already in a transaction, the outer transaction is reused and the rollback scope is up to the caller.
 
 > Implementation note: a driver that overrides `executeBatch` for higher throughput (array binding / COPY)
 > must also override `inTransaction()` to return the real transaction state and preserve the same atomicity guarantee.
@@ -373,6 +383,7 @@ The facade `DBMW::openCursor` has two overloads: default data source, or a named
 - **PostgreSQL**: server-side cursor `DECLARE CURSOR` + `FETCH FORWARD n` + `CLOSE`. The cursor must live inside a transaction — if already in one it borrows that transaction; otherwise, with `auto_transaction=true`, it opens its own `pqxx::work` as a fallback (committed on close); with `auto_transaction=false` and no transaction it reports `CursorError` directly (no silent degradation). `scrollable=true` only takes effect when the config allows it, otherwise returns `NotSupported`.
 - **MySQL**: unbuffered result set (`mysql_stmt_*` and **not** calling `mysql_stmt_store_result`), consuming by batch `mysql_stmt_fetch` in a stream — results do not land in client memory; no transaction requirement.
 - **ODBC**: real cursor (`SQL_ATTR_CURSOR_TYPE` + `SQLFetch`); with config `allow_scrollable` it sets `SQL_CURSOR_STATIC` for scrolling; other drivers do not support scrolling (`scrollable=true` returns `NotSupported`).
+- **Oracle**: `openCursor` returns `NotSupported` — Oracle has no standalone cursor handle, and a server-side cursor would need `REF CURSOR` binding, which does not line up with the other drivers. Use `queryEach()` row callbacks instead; OCI already fetches in chunks via `OCIStmtFetch2` without materializing the whole result.
 
 ### Configuration & resource guard
 
@@ -650,7 +661,7 @@ Implementation (`src/core/query_cache.cpp`): a global singleton with `std::unord
 
 ### 2. Prepared-statement cache (PreparedCache, per-connection handle cache)
 
-All three drivers (`MySQLConnection` / `PostgresConnection` / `OdbcConnection`) maintain their own per-connection handle cache inside `prepare()`. The facade's `Session::runPreparedQuery` / `runPreparedExec`, when `preparedPathUsable()`, calls `conn->prepare`, which looks up the "current connection" cache internally — that is the **transparent auto-cache** behind `DataSource::query/execute(params)` (usage in the section "Prepared statements" above). The generated-keys path does NOT use this (see caveats below).
+All four drivers (`MySQLConnection` / `PostgresConnection` / `OracleConnection` / `OdbcConnection`) maintain their own per-connection handle cache inside `prepare()`. The facade's `Session::runPreparedQuery` / `runPreparedExec`, when `preparedPathUsable()`, calls `conn->prepare`, which looks up the "current connection" cache internally — that is the **transparent auto-cache** behind `DataSource::query/execute(params)` (usage in the section "Prepared statements" above). The generated-keys path does NOT use this (see caveats below).
 
 Implementation: each connection keeps an SQL-to-handle cache, an LRU list, and a handle-ID-to-cache-key index. The latter validates in O(1) that an explicit handle still belongs to this connection and has not been evicted. The cache survives a return to the pool; `close()` → `closeAllPrepared()` releases native handles and clears every index.
 
@@ -1057,6 +1068,7 @@ Generated-key back-fill takes two paths: column-name match plus a `lastInsertId(
 |---|---|---|
 | MySQL | nothing appended | ✅ `mysql_insert_id` synthesises `insert_id`, matched via the `lastInsertId()` fallback |
 | PostgreSQL | `RETURNING <generated columns>` appended to the INSERT | ✅ matched by column name |
+| Oracle | `RETURNING <generated columns> INTO :<n+1>` appended | ✅ driver parses `RETURNING ... INTO` and reads the output binds |
 | SQL Server | `OUTPUT INSERTED.*` is **not** appended yet | ❌ `item.id` stays unset |
 
 SQL Server is deliberately left out for two reasons: `OUTPUT` sits in a different position than
@@ -1067,7 +1079,8 @@ It will be enabled once verified against a real SQL Server instance.
 Batched inserts: `insertBatchAs` back-fills only when you pass a **named non-const
 `std::vector<T>`** (the entities must be mutable); a temporary or const vector selects the
 non-back-filling overload. Under the hood PostgreSQL collects one `RETURNING` result set per row,
-while MySQL relies on `mysql_insert_id` inside the base-class batch loop.
+Oracle reads back one `RETURNING ... INTO` output bind per row, while MySQL relies on
+`mysql_insert_id` inside the base-class batch loop.
 
 ### Lenient / strict (missing columns configurable; type mismatch and NULL always error)
 
@@ -1092,6 +1105,94 @@ A type mismatch or NULL landing in a non-`optional` member is an **error** (`Err
 - **Redaction**: mapping happens after `afterExecution`, so entities see redacted values.
 - **Async**: `dbmw::async::queryAs<T>` ships in callback / future / coroutine form; mapping runs on the **completion-delivery thread** (a worker by default, the `io_context` thread when asio is injected), so mapping must stay cheap — use streaming `queryEachAs` for large result sets.
 
+## Oracle driver (OCI)
+
+Oracle uses the official **OCI** (Oracle Call Interface) rather than ODBC, gated by
+`DBMW_ENABLE_ORACLE`. Identifiers are quoted with **double quotes** like PostgreSQL, and are
+**not case-folded** — Oracle folds unquoted identifiers to upper case, so dbmw always quotes them,
+meaning you must write the same casing in SQL that you used at `CREATE TABLE` time.
+
+### Dependency & build
+
+OCI is not distributed through system package managers: install the **Oracle Instant Client**
+(Basic or Basic Lite + SDK) manually.
+
+```bash
+# Linux example (Debian / Ubuntu; official zip or rpm both work)
+unzip instantclient-basiclite-linux.x64-*.zip -d /opt/oracle
+unzip instantclient-sdk-linux.x64-*.zip      -d /opt/oracle
+echo /opt/oracle/instantclient_* > /etc/ld.so.conf.d/oracle-instantclient.conf && ldconfig
+
+cmake .. -DDBMW_ENABLE_ORACLE=ON \
+  -DOCI_INCLUDE_DIR=/opt/oracle/instantclient_21_12/sdk/include \
+  -DOCI_LIBRARY=/opt/oracle/instantclient_21_12/libclntsh.so
+```
+
+CMake runs `find_path(oci.h)` + `find_library(clntsh oci)`; when auto-detection fails it issues
+**`FATAL_ERROR`** (it will not silently disable the driver) and tells you to pass the two variables
+above.
+
+### Connection & session setup
+
+`host / port / database` are assembled into a `host:port/service` connect string for `OCILogon2`;
+if `dsn` is configured it is used as-is. Right after connecting, the driver runs **four
+`ALTER SESSION` statements** pinning `NLS_DATE_FORMAT`, `NLS_TIMESTAMP_FORMAT`,
+`NLS_TIMESTAMP_TZ_FORMAT`, and `NLS_NUMERIC_CHARACTERS='.,'`. Result sets are fetched **as text**,
+so without pinning these four the client environment (e.g. `NLS_LANG`) would decide how the same
+SQL parses on different machines.
+
+### Type mapping
+
+| Oracle type | `common::Value` | Notes |
+|---|---|---|
+| `CHAR` / `VARCHAR2` / `CLOB` / `LONG` | `string` / `Clob` | |
+| `NUMBER(p, 0)` with p ≤ 18 | `int64` | no fractional part and no overflow |
+| `NUMBER` beyond the int64 range | `uint64` / `Decimal` | original decimal text preserved |
+| `NUMBER(p, s)` with scale, `BINARY_FLOAT/DOUBLE` | `double` / `Decimal` | `Decimal` wins when scale > 0 |
+| `DATE` / `TIMESTAMP` / `TIMESTAMP WITH TZ` | `Timestamp` | Oracle `DATE` carries a time component, so it is not narrowed to `Date` |
+| `RAW` / `BLOB` | `Blob` | round-trips through hex |
+| `ROWID` / `UROWID` | `string` | |
+| `INTERVAL DS` / `INTERVAL YM` | `string` | **degraded**: `Value` has no interval type — an intentional gap |
+
+LOBs are read via `OCILobRead2` into a `Blob`; anything past `extra.lob_max_bytes` (default 4 MB)
+returns `NotSupported` rather than being silently truncated.
+
+### Placeholders & generated keys
+
+`?` in SQL is rewritten to `:n` (1-based) before `OCIBindByPos`; the rewriter skips `?` inside
+strings, identifiers, and comments, and leaves PL/SQL `:=` alone.
+
+Oracle's `RETURNING` **requires `INTO`**, so hand-written SQL must be:
+
+```cpp
+ds->execute("INSERT INTO t(name) VALUES(?) RETURNING id INTO :2", n, keys);
+```
+
+`:1` is taken by `VALUES(?)`, so returned columns start at `:2`. The driver parses the
+`RETURNING ... INTO` column list and bind positions, binds them as output buffers, and reads them
+back after execution. The entity-mapping `insertAs` / `insertBatchAs` helpers **append
+`RETURNING <generated columns> INTO :<n+1>` automatically**, so you do not write it by hand.
+
+### Transactions & savepoints
+
+`begin()` only sets an internal flag (OCI has no explicit BEGIN — the transaction opens implicitly
+on the first DML); with `TransactionOptions` it issues `SET TRANSACTION READ ONLY` /
+`ISOLATION LEVEL ...`. Savepoints map to `SAVEPOINT` / `ROLLBACK TO SAVEPOINT`; Oracle has **no
+`RELEASE SAVEPOINT`**, so `releaseSavepoint()` is a no-op. `cancel()` issues `OCIBreak`.
+
+### Known boundaries (intentional)
+
+- `Array` / `Composite` parameters return `NotSupported` — never silently bound as NULL;
+- `openCursor()` returns `NotSupported`; use `queryEach()` for streaming;
+- `INTERVAL` degrades to a string;
+- `makeCallPlan` answers `NotSupported` for Oracle procedures with a result set or OUT parameters;
+- `makeDropRoutineSql` answers `NotSupported` (Oracle has no `IF EXISTS`).
+
+The type layer in `oracle_types.h` does not depend on the OCI headers, so
+`tests/dbmw_oracle_types_test.cpp` runs as a pure unit test with no Instant Client. Only
+`tests/dbmw_oracle_integration_test.cpp` needs a real database (connect info via the
+`DBMW_TEST_ORACLE_*` environment variables).
+
 ## Routines and indexes (v0.5.1: lifecycle and call protocol for functions / procedures / indexes)
 
 `dbmw/util.h` provides `dbmw::common::util`. It owns the **call protocol** and the **lifecycle**;
@@ -1101,11 +1202,11 @@ are written by the application in the target dialect.
 ### Dialects
 
 ```cpp
-enum class Dialect { Auto, MySQL, Postgres, SqlServer };
+enum class Dialect { Auto, MySQL, Postgres, SqlServer, Oracle };
 ```
 
 `Auto` is inferred from the data source driver type (`mysql*` -> MySQL, `postgres*` -> Postgres,
-`odbc*` / `mssql*` -> SQL Server). When detection fails it returns `Auto`, and every entry point
+`oracle*` / `ora*` / `oci*` -> Oracle, `odbc*` / `mssql*` -> SQL Server). When detection fails it returns `Auto`, and every entry point
 that must generate SQL then answers `NotSupported` — the middleware **never guesses a dialect**.
 Pass an explicit `Dialect` for custom or mock drivers.
 
@@ -1116,9 +1217,14 @@ Pass an explicit `Dialect` for custom or mock drivers.
 | MySQL | `CALL p(?, ?)` | `CALL p(?, ?)` |
 | PostgreSQL | `CALL p(?, ?)` (procedure) | `SELECT * FROM f(?, ?)` (function) |
 | SQL Server | `EXEC p ?, ?` | `{CALL p(?, ?)}` |
+| Oracle | `BEGIN p(?, ?); END;` | `SELECT * FROM TABLE(f(?, ?))` (table function)<br>`SELECT f(?) FROM DUAL` (scalar function) |
 
 Asking a PostgreSQL procedure for a result set yields `NotSupported` (PG procedures return no
-result set; use a function).
+result set; use a function). Oracle procedures with a result set or OUT parameters also yield
+`NotSupported` (they need `REF CURSOR` / `DBMS_OUTPUT` binding, which does not line up with the
+other dialects); scalar functions go through `DUAL`, table functions through `TABLE()`.
+Oracle has no `CREATE ... IF EXISTS` / `DROP ... IF EXISTS`, so dropping a routine answers
+`NotSupported`.
 
 ### Create / drop
 
@@ -1218,7 +1324,7 @@ dropping blank fragments — so semicolons inside a MySQL procedure body are nev
 MySQL / SQL Server routine bodies contain top-level semicolons (`BEGIN SELECT 1; SELECT 2; END`),
 and the old "multiple statements" rule treated that as two statements, **hard-blocking** it when
 `action=block`. PostgreSQL `$$ ... $$` bodies were already masked as literals, so the bug only ever
-surfaced on MySQL / ODBC.
+surfaced on MySQL / Oracle / ODBC.
 
 `hasMultipleStatements(sql, allowRoutineBody=true)` now masks the whole `BEGIN ... END` region
 (including nested `IF` / `CASE` / `LOOP` blocks) before judging the remainder. Routine bodies pass,
@@ -1521,11 +1627,12 @@ g++ main.cpp $(pkg-config --cflags --libs dbmw) -o my_app
 
 ### Driver client libraries (must read)
 
-When a driver is enabled, the installed package contains **only** `libdbmw.a` and the headers — **not** the corresponding database client library (libpqxx / libmysqlclient / unixODBC). Because dbmw is a static library, these client libraries must be provided by the downstream project, otherwise linking fails with undefined symbols:
+When a driver is enabled, the installed package contains **only** `libdbmw.a` and the headers — **not** the corresponding database client library (libpqxx / libmysqlclient / unixODBC / OCI). Because dbmw is a static library, these client libraries must be provided by the downstream project, otherwise linking fails with undefined symbols:
 
 - Enable MySQL → downstream `apt install default-libmysqlclient-dev` and link `-lmysqlclient`
 - Enable PG     → downstream install `libpqxx-dev libpq-dev`, link `-lpqxx -lpq`
 - Enable ODBC   → downstream install `unixodbc-dev`, link `-lodbc`
+- Enable Oracle → downstream install Instant Client (Basic Lite + SDK), link `-lclntsh`
 
 Neither `find_package(dbmw)` nor `dbmw.pc` auto-appends these links (a static library + pure path dependencies cannot propagate across packages).
 
@@ -1570,7 +1677,7 @@ sequences, flow sequences, single/double quotes, and trailing comments.
 | `query_cache.*` | Query result cache: TTL, entry cap, memory cap, replica-only caching (off by default) |
 | `prepared_cache.*` | Prepared-statement cache: max handles per connection (0 = unlimited, LRU eviction), enabled flag (default true) |
 | `datasources[].name` | Data source name (unique) |
-| `datasources[].type` | `mysql` / `postgres` / `odbc` / custom |
+| `datasources[].type` | `mysql` / `postgres` / `oracle` / `odbc` / custom |
 | `datasources[].host/port/user/password/database` | Connection parameters |
 | `datasources[].dsn` | ODBC data source name |
 | `datasources[].password_env` | Read password from an environment variable, takes precedence over plaintext `password` |

@@ -2,7 +2,7 @@
 
 > English: [README_en.md](README_en.md) · [详细指南](docs/guide.md)
 
-dbmw 为 C++ 应用提供统一的数据库访问层。应用通过同一套 API 使用 MySQL、PostgreSQL
+dbmw 为 C++ 应用提供统一的数据库访问层。应用通过同一套 API 使用 MySQL、PostgreSQL、Oracle
 和 ODBC 数据库，并由中间件集中处理连接池、参数绑定、事务、超时、路由和运行指标。
 
 它适合需要以下能力的服务：
@@ -30,7 +30,8 @@ cmake --build build -j
 
 - `DBMW_ENABLE_MYSQL=ON`：MySQL，需要 libmysqlclient；
 - `DBMW_ENABLE_POSTGRES=ON`：PostgreSQL，需要 libpqxx 和 libpq；
-- `DBMW_ENABLE_ODBC=ON`：SQL Server/Oracle 等 ODBC 数据库，需要 unixODBC；
+- `DBMW_ENABLE_ORACLE=ON`：Oracle，需要 OCI（Oracle Instant Client，Basic + SDK）；
+- `DBMW_ENABLE_ODBC=ON`：SQL Server 等 ODBC 数据库，需要 unixODBC；
 - `DBMW_ENABLE_ASYNC_CORO=ON`：启用 C++20 协程接口。
 
 Linux、macOS 的依赖安装方式见[详细构建说明](docs/guide.md#构建wsl--linux)。
@@ -227,14 +228,16 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-真实数据库集成测试支持 PostgreSQL、MySQL 和 SQL Server（ODBC）。分别通过
-`DBMW_TEST_PG_*`、`DBMW_TEST_MYSQL_*`、`DBMW_TEST_ODBC_*` 环境变量提供连接信息：
+真实数据库集成测试支持 PostgreSQL、MySQL、Oracle 和 SQL Server（ODBC）。分别通过
+`DBMW_TEST_PG_*`、`DBMW_TEST_MYSQL_*`、`DBMW_TEST_ORACLE_*`、`DBMW_TEST_ODBC_*`
+环境变量提供连接信息：
 
 ```bash
 cmake -S . -B build \
   -DDBMW_ENABLE_POSTGRES=ON \
   -DDBMW_ENABLE_MYSQL=ON \
   -DDBMW_ENABLE_ODBC=ON \
+  -DDBMW_ENABLE_ORACLE=ON \
   -DDBMW_BUILD_TESTS=ON \
   -DDBMW_BUILD_INTEGRATION_TESTS=ON
 cmake --build build -j

@@ -661,7 +661,7 @@ groups:
         const bool yamlExampleOk = config::ConfigLoader::loadFromFile(
                 std::string(DBMW_SOURCE_DIR) + "/config/datasource.yaml.example",
                 yamlExample, error);
-        check(yamlExampleOk && yamlExample.datasources.size() == 5 &&
+        check(yamlExampleOk && yamlExample.datasources.size() == 6 &&
               yamlExample.groups.size() == 2,
               "仓库内完整 YAML 配置模板可直接加载（error=" + error + "）");
 #ifdef _WIN32

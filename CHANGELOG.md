@@ -17,6 +17,9 @@ description.
 - Extended entity mapping with dialect-aware `insertAs`, `insertBatchAs`, and `updateAs`, including
   generated-key propagation.
 - Added PostgreSQL array, composite, and geometric value support.
+- Added the Oracle driver (OCI): `OCILogon2` connections, `?` to `:n` placeholder rewriting,
+  SQLT-based type mapping, native parameter binding, LOB reads, transactions and savepoints,
+  statement caching, and generated-key back-fill via `RETURNING ... INTO`.
 - Added YAML configuration support alongside JSON. Both formats use the same validation and runtime
   semantics.
 
@@ -25,7 +28,8 @@ description.
 - Kept the core at C++17 while supporting the optional C++20 coroutine layer on GCC, Clang, and
   MSVC.
 - Tightened failover, write-buffer, session lifecycle, SQL redaction, and idempotency behavior.
-- Expanded mock and live-database coverage for PostgreSQL, MySQL, and ODBC/SQL Server.
+- Expanded mock and live-database coverage for PostgreSQL, MySQL, and ODBC/SQL Server. Oracle unit
+  tests cover the dialect-aware type layer; its live-database tests need a real Oracle instance.
 
 ## [0.5.0]
 

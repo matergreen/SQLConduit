@@ -118,6 +118,15 @@
       "max_result_rows": 50000
     },
     {
+      "name": "ora",
+      "type": "oracle",
+      "host": "127.0.0.1",
+      "port": 1521,
+      "user": "system",
+      "password": "pwd",
+      "database": "FREEPDB1"
+    },
+    {
       "name": "replica_1",
       "type": "mysql",
       "host": "127.0.0.1",

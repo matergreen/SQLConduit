@@ -3,6 +3,7 @@
 
 #include "dbmw/common/types.h"
 #include "dbmw/common/pg_types.h"
+#include "dbmw/common/oracle_types.h"
 #include "dbmw/core/cursor.h"
 #include "dbmw/core/database_manager.h"
 #include "dbmw/dbmw.h"
@@ -869,12 +870,17 @@ namespace dbmw::mapping {
     template<class T>
     std::string insertSqlReturning(std::string table, const common::util::Dialect d) {
         const std::string base = insertSql<T>(table, d);
-        if (d != common::util::Dialect::Postgres) return base;
         std::vector<std::string> gen;
         for (const auto &c: mappingFor<T>().columns())
             if (hasFlag(c.flags, FieldFlags::Generated)) gen.push_back(c.name);
         if (gen.empty()) return base;
-        return base + " RETURNING " + joinIdentifiers(gen, d);
+        if (d == common::util::Dialect::Postgres)
+            return base + " RETURNING " + joinIdentifiers(gen, d);
+        if (d == common::util::Dialect::Oracle) {
+            const std::size_t paramCount = mappingFor<T>().columnNames(WriteCols::Writable).size();
+            return base + common::oracleMakeReturningSuffix(gen, paramCount + 1);
+        }
+        return base;
     }
 
     template<class T>

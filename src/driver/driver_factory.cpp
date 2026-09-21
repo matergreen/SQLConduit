@@ -3,6 +3,7 @@
 #include "dbmw/driver/mysql_driver.h"
 #include "dbmw/driver/postgres_driver.h"
 #include "dbmw/driver/odbc_driver.h"
+#include "dbmw/driver/oracle_driver.h"
 
 namespace dbmw::driver {
     std::unique_ptr<IDriver> createDriver(const std::string &type) {
@@ -13,5 +14,6 @@ namespace dbmw::driver {
         registerMySQLDriver();
         registerPostgresDriver();
         registerOdbcDriver();
+        registerOracleDriver();
     }
 }

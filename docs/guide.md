@@ -27,7 +27,7 @@
   并提示改用 `queryEach()` 流式消费，防止一条漏 LIMIT 的查询吃爆进程内存。
 - **安全配置**：环境变量密码、TLS、驱动错误脱敏与结构化 SQLSTATE。
 - **热加载**：新配置完整创建后原子切换，并在宽限期内排空旧连接池。
-- **多数据库类型**：内置 **MySQL / PostgreSQL / ODBC（SQL Server·Oracle）** 驱动，
+- **多数据库类型**：内置 **MySQL / PostgreSQL / Oracle（OCI）/ ODBC（SQL Server）** 驱动，
   并预留**驱动扩展接口**，新增数据库只需实现 `IDriver` 并注册。
 
 > 状态：核心层（配置/连接池/心跳/事务/参数绑定/门面）已完整实现，
@@ -43,10 +43,14 @@
 > - **ODBC 已完整实现**（unixODBC）：DSN/连接串、诊断记录、类型映射、原生参数绑定、
 >   查询超时/取消、事务与 SQL Server/标准保存点方言；并支持 **`SQLPrepare`/`SQLExecute` 预编译缓存**、
 >   `OUTPUT INSERTED`/`RETURNING` **生成键**、大 BLOB 统一参数接口。
+> - **Oracle 已完整实现**（OCI / Instant Client）：`OCILogon2` 连接、`?` → `:n` 占位符改写、
+>   按 SQLT 类型映射结果集、原生 `OCIBindByPos` 参数绑定、LOB 流式读取、事务与保存点、
+>   `OCIBreak` 取消；并支持 **`OCIStmtPrepare2` 语句缓存**（LRU 淘汰）、
+>   `RETURNING ... INTO` **生成键**、大 BLOB 统一参数接口。详见[Oracle 驱动](#oracle-驱动oci)。
 >
-> 预编译与生成键为三个驱动各自实现；大参数流式（`StreamSource`）当前三驱动统一以**缓冲降级**实现
+> 预编译与生成键为四个驱动各自实现；大参数流式（`StreamSource`）当前四驱动统一以**缓冲降级**实现
 > （一次性读成 `Blob` 再按普通参数绑定），调用代码保持一致，MySQL `send_long_data` / ODBC `SQLPutData` 真分块为后续增强。
-> 三个驱动均由 `DBMW_ENABLE_*` 编译期开关控制。
+> 四个驱动均由 `DBMW_ENABLE_*` 编译期开关控制。
 
 ---
 
@@ -81,6 +85,7 @@ sudo apt install -y build-essential cmake
 # 开启 MySQL:  sudo apt install -y default-libmysqlclient-dev
 # 开启 PG:     sudo apt install -y libpqxx-dev libpq-dev
 # 开启 ODBC:   sudo apt install -y unixodbc-dev
+# 开启 Oracle: 手工装 Oracle Instant Client（Basic + SDK），见「Oracle 驱动（OCI）」
 
 # 2) 配置 + 构建
 mkdir -p build && cd build
@@ -106,8 +111,8 @@ cmake .. -DDBMW_BUILD_TESTS=ON && cmake --build . && ctest --output-on-failure
 
 macOS 用 [Homebrew](https://brew.sh) 管理依赖，编译器走系统 **clang++**（需先装 Xcode Command Line Tools）。Homebrew 的包装在 `/opt/homebrew`（Apple Silicon）或 `/usr/local`（Intel），CMake 默认搜索路径未必覆盖，建议显式用 `CMAKE_PREFIX_PATH` 指明客户端库位置。
 
-> **注意**：`DBMW_ENABLE_ODBC` 默认是 `OFF`。需要 ODBC 时先安装 unixODBC，
-> 再显式传入 `-DDBMW_ENABLE_ODBC=ON`。
+> **注意**：`DBMW_ENABLE_ODBC` 与 `DBMW_ENABLE_ORACLE` 默认都是 `OFF`。需要 ODBC 时先安装 unixODBC，
+> 需要 Oracle 时先装 Instant Client（Basic + SDK），再显式传入对应开关。
 
 ```bash
 # 1) 命令行工具（提供 clang++ / make）
@@ -123,6 +128,8 @@ mkdir -p build && cd build
 cmake .. \
   -DCMAKE_PREFIX_PATH="$(brew --prefix);$(brew --prefix mysql-client)" \
   -DDBMW_ENABLE_MYSQL=ON -DDBMW_ENABLE_POSTGRES=ON -DDBMW_ENABLE_ODBC=ON
+# 启用 Oracle（Instant Client 解压后的目录）：
+#   -DDBMW_ENABLE_ORACLE=ON -DOCI_INCLUDE_DIR=.../sdk/include -DOCI_LIBRARY=.../libclntsh.dylib
 cmake --build . -j"$(sysctl -n hw.ncpu)"
 
 ```
@@ -181,7 +188,8 @@ dbmw::common::Params p{ std::string("O'Brien"), std::int64_t(42) };
 auto st = dbmw::DBMW::query("SELECT * FROM t WHERE name = ? AND age > ?", p, rs);
 ```
 
-- PostgreSQL / MySQL / ODBC 均走**原生参数绑定**。
+- PostgreSQL / MySQL / Oracle / ODBC 均走**原生参数绑定**。
+  其中 Oracle 会把 `?` 改写成 `:n`（1-based）后再 `OCIBindByPos`；改写器会跳过字符串、标识符与注释里的 `?`。
 - 自定义驱动未实现原生绑定时默认返回 `NotSupported`，不会静默退化为 SQL 拼接。
 - 仅明确覆盖 `allowsLiteralInterpolation()` 的兼容驱动才会启用字面量插值；扫描器会跳过
   字符串、标识符与注释里的 `?`。
@@ -239,7 +247,7 @@ auto st = dbmw::DBMW::transaction([](dbmw::core::Session& s) {
 ```
 
 - 句柄生命周期绑定到"当前这条物理连接"，仅在连接/`Session` 存活期内有效；连接归还/关闭后句柄失效，
-  驱动随 `close()` 调 `closeAllPrepared()` 释放原生句柄（MySQL `mysql_stmt_close` / PG `DEALLOCATE` / ODBC `SQLFreeHandle`）。
+  驱动随 `close()` 调 `closeAllPrepared()` 释放原生句柄（MySQL `mysql_stmt_close` / PG `DEALLOCATE` / ODBC `SQLFreeHandle` / Oracle `OCIStmtRelease`）。
 - 缓存挂在驱动连接对象上，连接归还池后保留、下次借到同一连接直接复用；池是每数据源独立的，不会跨数据源串。
 - `max_per_connection > 0` 时按 LRU 驱逐最久未用句柄；`0` = 不限制（靠连接关闭自然回收）。
 - 预编译执行仍经过 `DataSource` 入口的 `preGate`（一次），结果缓存键逻辑不变，审计仍按 SQL 文本分类。
@@ -257,14 +265,16 @@ dbmw::common::GeneratedKeys keys;
 ds->execute("INSERT INTO t(name) VALUES('x')", n, keys);
 int64_t id = keys.lastInsertId();            // MySQL 自增主键
 
-// PostgreSQL / ODBC：靠 SQL 自带 RETURNING / OUTPUT 直出，dbmw 不自动补
+// PostgreSQL / Oracle / ODBC：靠 SQL 自带 RETURNING / OUTPUT 直出，dbmw 不自动补
 ds->execute("INSERT INTO t(name) VALUES('x') RETURNING id", n, keys);
 if (!keys.empty()) id = keys.rows[0].asInt64(0);  // 取 RETURNING 出来的第一列
 ```
 
 统一模型：`GeneratedKeys` 始终是"生成列的结果集"——MySQL 用 `mysql_insert_id` 合成一行一列，
-PG/ODBC 用 `RETURNING`/`OUTPUT` 直出。**dbmw 不会给你自己写的 SQL 自动追加 `RETURNING`**（那会改写语义并耦合方言），
-因此 PG/ODBC 想拿自增 id 就在 SQL 里自己写 `RETURNING id`。无 `RETURNING` 且非 MySQL 自增时 `keys.empty()` 为真（不报错）。
+PG/Oracle/ODBC 用 `RETURNING`/`OUTPUT` 直出。**dbmw 不会给你自己写的 SQL 自动追加 `RETURNING`**（那会改写语义并耦合方言），
+因此 PG/ODBC 想拿自增 id 就在 SQL 里自己写 `RETURNING id`；Oracle 需写成
+`RETURNING id INTO :2`（`:1` 已被 `VALUES(?)` 占用），驱动会解析 `RETURNING ... INTO` 并回读。
+无 `RETURNING` 且非 MySQL 自增时 `keys.empty()` 为真（不报错）。
 复用同一 `GeneratedKeys` 对象前调用 `keys.clear()`，避免重试着法残留旧行被当成这次生成的键。
 
 > 这条约束只针对**调用方传入的 SQL**。SQL 由 dbmw 自己生成的场景（实体映射层的
@@ -287,7 +297,7 @@ ds->execute("INSERT INTO t(id, blob) VALUES(?, ?)", sp, n);   // 或 query / exe
 - `StreamSource(read, totalSize, isBinary)`：自定义 `read(buf, n)` 回调返回本块字节数（0=EOF）；
   也可直接 `StreamSource(std::istream&)` 便捷构造。用 istream 构造时，流必须在本次执行期间保持存活。
 - `isBinary=true` 表二进制（bytea/blob），`false` 表文本（clob）。
-- **当前三驱动统一以缓冲降级实现**：`StreamSource` 一次性读成 `Blob` 再按普通参数绑定
+- **当前四驱动统一以缓冲降级实现**：`StreamSource` 一次性读成 `Blob` 再按普通参数绑定
   （libpq 协议不支持参数 data-at-execution，PG 天然如此；MySQL `send_long_data` / ODBC `SQLPutData` 真分块为后续增强）。
   调用代码保持一致、不受驱动差异影响。
 - 含 `StreamSource` 的查询**不进结果缓存**（流式内容不是定值，无法参与 `cacheKey`），审计照常按 SQL 文本分类、流内容绝不进日志。
@@ -310,7 +320,8 @@ ds->execute("INSERT INTO t(id, blob) VALUES(?, ?)", sp, n);   // 或 query / exe
 ## 超时、取消与事务选项
 
 数据源的 `query_timeout_ms` 会映射到 PostgreSQL `statement_timeout`、ODBC
-`SQL_ATTR_QUERY_TIMEOUT` 和 MySQL 客户端读写期限。事务还可设置隔离级别、只读和整体期限：
+`SQL_ATTR_QUERY_TIMEOUT` 和 MySQL 客户端读写期限。Oracle 不做服务端超时下推
+（OCI 无语句级超时属性），超时由 `cancel()` 走 `OCIBreak` 中断在途语句兜底。事务还可设置隔离级别、只读和整体期限：
 
 ```cpp
 dbmw::common::TransactionOptions options;
@@ -410,6 +421,9 @@ cur->close();   // 显式归还连接；不调也会在析构时关 + 还
   `mysql_stmt_fetch` 流式消费，结果不落客户端内存；无事务要求。
 - **ODBC**：真游标（`SQL_ATTR_CURSOR_TYPE` + `SQLFetch`）；配置 `allow_scrollable` 时设
   `SQL_CURSOR_STATIC` 支持滚动，其余驱动不支持滚动（`scrollable=true` 返回 `NotSupported`）。
+- **Oracle**：`openCursor` 返回 `NotSupported`——Oracle 无独立游标句柄概念，
+  服务端游标需 `REF CURSOR` 绑定，语义与其他驱动不对齐。改用 `queryEach()` 逐行回调流式消费，
+  OCI 侧天然按 `OCIStmtFetch2` 分块取，不落全量结果。
 
 ### 配置与资源护栏
 
@@ -684,7 +698,7 @@ dbmw::DBMW::addInterceptor(std::make_shared<TenantQuotaInterceptor>());
 
 ### 2. 预编译语句缓存（PreparedCache，连接级句柄缓存）
 
-三驱动（`MySQLConnection` / `PostgresConnection` / `OdbcConnection`）各自在 `prepare()` 内维护一份本连接的句柄缓存。门面 `Session::runPreparedQuery` / `runPreparedExec` 在 `preparedPathUsable()` 时调 `conn->prepare`，由驱动内部查"本连接"的缓存——这就是 `DataSource::query/execute(params)` 的**透明自动缓存**（用法见上文「预编译语句复用」）。要生成键时不走这条路径（见下文注意事项）。
+四驱动（`MySQLConnection` / `PostgresConnection` / `OracleConnection` / `OdbcConnection`）各自在 `prepare()` 内维护一份本连接的句柄缓存。门面 `Session::runPreparedQuery` / `runPreparedExec` 在 `preparedPathUsable()` 时调 `conn->prepare`，由驱动内部查"本连接"的缓存——这就是 `DataSource::query/execute(params)` 的**透明自动缓存**（用法见上文「预编译语句复用」）。要生成键时不走这条路径（见下文注意事项）。
 
 实现：每个连接对象持有 SQL→句柄缓存、LRU 链表和句柄 ID→缓存键索引。后者用于 O(1) 验证显式句柄仍属于当前连接且未被淘汰。连接归还池后缓存保留、下次借到同一连接直接复用；连接关闭 `close()` → `closeAllPrepared()` 释放全部原生句柄并清空索引。
 
@@ -1168,7 +1182,7 @@ DBMW::execute("INSERT INTO t (tags, addr, pt) VALUES (?, ?, ?)",
 
 驱动把 `Array` / `Composite` 渲染成 PG 数组 / 行文本后以 **text 参数**下发，
 由服务端按目标列类型推断——所以 SQL 里**不要**再手工 `::text[]` 强转，
-但脱离列上下文的裸 `SELECT $1` 会被 PG 当成 `text`。MySQL / ODBC 收到 `Array` / `Composite`
+但脱离列上下文的裸 `SELECT $1` 会被 PG 当成 `text`。MySQL / Oracle / ODBC 收到 `Array` / `Composite`
 参数直接返回 `NotSupported`，不会静默绑成 NULL。
 
 ### mapping 层绑定
@@ -1197,6 +1211,87 @@ DBMW::execute("INSERT INTO t (tags, addr, pt) VALUES (?, ?, ?)",
 `pg_types.h` 里的文本编解码（数组/复合的元素切分、引号转义、7 种几何语法）不依赖 libpqxx，
 因此有 `tests/dbmw_pg_types_test.cpp` 做纯单元测试，不需要真库。
 
+## Oracle 驱动（OCI）
+
+Oracle 走官方 **OCI**（Oracle Call Interface）而非 ODBC，由 `DBMW_ENABLE_ORACLE` 控制。
+标识符引号与 PG 一致用**双引号**，且**不做大小写折叠**——Oracle 会把未加引号的标识符折成大写，
+dbmw 一律加引号，因此建表时用什么大小写，SQL 里就写什么大小写。
+
+### 依赖与构建
+
+OCI 没有系统包管理器分发，需手工装 **Oracle Instant Client**（Basic 或 Basic Lite + SDK）：
+
+```bash
+# Linux 示例（Debian / Ubuntu，用官方 zip 或 rpm 均可）
+unzip instantclient-basiclite-linux.x64-*.zip -d /opt/oracle
+unzip instantclient-sdk-linux.x64-*.zip      -d /opt/oracle
+echo /opt/oracle/instantclient_* > /etc/ld.so.conf.d/oracle-instantclient.conf && ldconfig
+
+cmake .. -DDBMW_ENABLE_ORACLE=ON \
+  -DOCI_INCLUDE_DIR=/opt/oracle/instantclient_21_12/sdk/include \
+  -DOCI_LIBRARY=/opt/oracle/instantclient_21_12/libclntsh.so
+```
+
+CMake 会 `find_path(oci.h)` + `find_library(clntsh oci)`；自动探测不到时 **直接 `FATAL_ERROR`**
+（不静默关掉驱动），按提示传上面两个变量即可。
+
+### 连接与会话初始化
+
+`host / port / database` 拼成 `host:port/service` 连接串走 `OCILogon2`；配了 `dsn` 就直接用 `dsn`。
+连接成功后**立即执行 4 条 `ALTER SESSION`** 固定 `NLS_DATE_FORMAT`、`NLS_TIMESTAMP_FORMAT`、
+`NLS_TIMESTAMP_TZ_FORMAT` 和 `NLS_NUMERIC_CHARACTERS='.,'`——结果集按**文本**抓取，
+不固定这四项就会被客户端环境变量（如 `NLS_LANG`）左右，同一条 SQL 在不同机器上解析出不同值。
+
+### 类型映射
+
+| Oracle 类型 | `common::Value` | 说明 |
+|---|---|---|
+| `CHAR` / `VARCHAR2` / `CLOB` / `LONG` | `string` / `Clob` | |
+| `NUMBER(p, 0)` p ≤ 18 | `int64` | 无小数且不溢出 |
+| `NUMBER` 超 int64 范围 | `uint64` / `Decimal` | 保留原始十进制文本 |
+| `NUMBER(p, s)` 有小数、`BINARY_FLOAT/DOUBLE` | `double` / `Decimal` | 有小数位优先 `Decimal` |
+| `DATE` / `TIMESTAMP` / `TIMESTAMP WITH TZ` | `Timestamp` | Oracle `DATE` 含时分秒，不退化成 `Date` |
+| `RAW` / `BLOB` | `Blob` | 十六进制往返 |
+| `ROWID` / `UROWID` | `string` | |
+| `INTERVAL DS` / `INTERVAL YM` | `string` | **退化**：`Value` 无 interval 类型，刻意保留为缺口 |
+
+LOB 默认按 `OCILobRead2` 读成 `Blob`，超过 `extra.lob_max_bytes`（默认 4 MB）报 `NotSupported`
+而不是静默截断。
+
+### 占位符与生成键
+
+SQL 里的 `?` 会被改写为 `:n`（1-based）再 `OCIBindByPos`；改写器跳过字符串、标识符与注释里的 `?`，
+PL/SQL 块的 `:=` 不受影响。
+
+Oracle 的 `RETURNING` **必须带 `INTO`**，所以手写 SQL 要写成：
+
+```cpp
+ds->execute("INSERT INTO t(name) VALUES(?) RETURNING id INTO :2", n, keys);
+```
+
+`:1` 已被 `VALUES(?)` 占用，返回列从 `:2` 起。驱动会解析出 `RETURNING ... INTO` 的列与绑定位，
+把它们绑成输出缓冲区并在执行后回读。实体映射层的 `insertAs` / `insertBatchAs` 会**自动**追加
+`RETURNING <Generated 列> INTO :<n+1>`，不需要手写。
+
+### 事务与保存点
+
+`begin()` 只置内部标记（OCI 无显式 BEGIN，事务随首条 DML 隐式开启）；带 `TransactionOptions`
+时下发 `SET TRANSACTION READ ONLY` / `ISOLATION LEVEL ...`。保存点走 `SAVEPOINT` /
+`ROLLBACK TO SAVEPOINT`；Oracle **没有 `RELEASE SAVEPOINT`**，故 `releaseSavepoint()` 是 no-op。
+`cancel()` 走 `OCIBreak` 中断在途语句。
+
+### 已知边界（刻意保留）
+
+- `Array` / `Composite` 参数返回 `NotSupported`，不静默绑 NULL；
+- `openCursor()` 返回 `NotSupported`，流式请用 `queryEach()`；
+- `INTERVAL` 退化为字符串；
+- `makeCallPlan` 对有结果集 / OUT 参数的 Oracle 过程返回 `NotSupported`；
+- `makeDropRoutineSql` 返回 `NotSupported`（Oracle 无 `IF EXISTS`）。
+
+`oracle_types.h` 的类型层不依赖 OCI 头，因此有 `tests/dbmw_oracle_types_test.cpp` 做纯单元测试，
+不需要 Instant Client；需要真机的是 `tests/dbmw_oracle_integration_test.cpp`（用
+`DBMW_TEST_ORACLE_*` 环境变量提供连接信息）。
+
 ## 例程与索引（v0.5.1：函数 / 存储过程 / 索引的生命周期与调用协议）
 
 `dbmw/util.h` 提供 `dbmw::common::util`。它管的是**调用协议**与**生命周期**，
@@ -1205,7 +1300,7 @@ DBMW::execute("INSERT INTO t (tags, addr, pt) VALUES (?, ?, ?)",
 ### 方言
 
 ```cpp
-enum class Dialect { Auto, MySQL, Postgres, SqlServer };
+enum class Dialect { Auto, MySQL, Postgres, SqlServer, Oracle };
 ```
 
 `Auto` 从数据源的驱动类型推断（`mysql*` → MySQL，`postgres*` → Postgres，`odbc*`/`mssql*` → SQL Server）；
@@ -1219,8 +1314,12 @@ enum class Dialect { Auto, MySQL, Postgres, SqlServer };
 | MySQL | `CALL p(?, ?)` | `CALL p(?, ?)` |
 | PostgreSQL | `CALL p(?, ?)`（存储过程） | `SELECT * FROM f(?, ?)`（函数） |
 | SQL Server | `EXEC p ?, ?` | `{CALL p(?, ?)}` |
+| Oracle | `BEGIN p(?, ?); END;` | `SELECT * FROM TABLE(f(?, ?))`（表函数）<br>`SELECT f(?) FROM DUAL`（标量函数） |
 
 PG 存储过程要结果集 → `NotSupported`（PG 的过程不返回结果集，请改用函数）。
+Oracle 过程要结果集或有 OUT 参数 → `NotSupported`（需 `REF CURSOR` / `DBMS_OUTPUT` 绑定，
+语义与其他方言不对齐）；标量函数走 `DUAL`，表函数走 `TABLE()`。
+Oracle 无 `CREATE ... IF EXISTS` 与 `DROP ... IF EXISTS`，删除例程统一返回 `NotSupported`。
 
 ### 创建 / 删除
 
@@ -1615,12 +1714,13 @@ g++ main.cpp $(pkg-config --cflags --libs dbmw) -o my_app
 ### 驱动客户端库（务必阅读）
 
 开启某个驱动后，安装包**只包含** `libdbmw.a` 与头文件，**不含**对应数据库客户端库
-（libpqxx / libmysqlclient / unixODBC）。由于 dbmw 是静态库，这些客户端库需由下游自行
+（libpqxx / libmysqlclient / unixODBC / OCI）。由于 dbmw 是静态库，这些客户端库需由下游自行
 提供，否则链接时报未定义符号：
 
 - 开启 MySQL  → 下游 `apt install default-libmysqlclient-dev` 并链接 `-lmysqlclient`
 - 开启 PG     → 下游装 `libpqxx-dev libpq-dev`，链接 `-lpqxx -lpq`
 - 开启 ODBC   → 下游装 `unixodbc-dev`，链接 `-lodbc`
+- 开启 Oracle → 下游装 Instant Client（Basic Lite + SDK），链接 `-lclntsh`
 
 `find_package(dbmw)` 与 `dbmw.pc` 不会自动补这些链接（静态库 + 纯路径依赖无法跨包传播）。
 
@@ -1672,7 +1772,7 @@ g++ main.cpp $(pkg-config --cflags --libs dbmw) -o my_app
 | `query_cache.*` | 查询结果缓存：TTL、条目数上限、内存上限、仅副本缓存（默认关闭） |
 | `prepared_cache.*` | 预编译语句缓存：每连接最大句柄数（0=不限，LRU 驱逐）、是否启用（默认 true） |
 | `datasources[].name` | 数据源名（唯一） |
-| `datasources[].type` | `mysql` / `postgres` / `odbc` / 自定义 |
+| `datasources[].type` | `mysql` / `postgres` / `oracle` / `odbc` / 自定义 |
 | `datasources[].host/port/user/password/database` | 连接参数 |
 | `datasources[].dsn` | ODBC 数据源名 |
 | `datasources[].password_env` | 从环境变量读取密码，优先于明文 `password` |

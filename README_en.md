@@ -3,7 +3,7 @@
 > [中文](README.md) · [Detailed guide](docs/guide_en.md)
 
 dbmw gives C++ applications a unified database access layer. The same API works with MySQL,
-PostgreSQL, and ODBC databases while the middleware centrally manages connection pooling,
+PostgreSQL, Oracle, and ODBC databases while the middleware centrally manages connection pooling,
 parameter binding, transactions, timeouts, routing, and runtime metrics.
 
 It is intended for services that need to:
@@ -33,7 +33,8 @@ Available switches:
 
 - `DBMW_ENABLE_MYSQL=ON`: MySQL; requires libmysqlclient;
 - `DBMW_ENABLE_POSTGRES=ON`: PostgreSQL; requires libpqxx and libpq;
-- `DBMW_ENABLE_ODBC=ON`: ODBC databases such as SQL Server and Oracle; requires unixODBC;
+- `DBMW_ENABLE_ORACLE=ON`: Oracle; requires OCI (Oracle Instant Client, Basic + SDK);
+- `DBMW_ENABLE_ODBC=ON`: ODBC databases such as SQL Server; requires unixODBC;
 - `DBMW_ENABLE_ASYNC_CORO=ON`: enable the C++20 coroutine API.
 
 See the [detailed build instructions](docs/guide_en.md#building-wsl--linux) for Linux and macOS.
@@ -246,15 +247,16 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-Live integration tests support PostgreSQL, MySQL, and SQL Server (ODBC). Provide connection
-details through the `DBMW_TEST_PG_*`, `DBMW_TEST_MYSQL_*`, and `DBMW_TEST_ODBC_*`
-environment variables:
+Live integration tests support PostgreSQL, MySQL, Oracle, and SQL Server (ODBC). Provide
+connection details through the `DBMW_TEST_PG_*`, `DBMW_TEST_MYSQL_*`, `DBMW_TEST_ORACLE_*`, and
+`DBMW_TEST_ODBC_*` environment variables:
 
 ```bash
 cmake -S . -B build \
   -DDBMW_ENABLE_POSTGRES=ON \
   -DDBMW_ENABLE_MYSQL=ON \
   -DDBMW_ENABLE_ODBC=ON \
+  -DDBMW_ENABLE_ORACLE=ON \
   -DDBMW_BUILD_TESTS=ON \
   -DDBMW_BUILD_INTEGRATION_TESTS=ON
 cmake --build build -j

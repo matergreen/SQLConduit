@@ -14,6 +14,7 @@ endif()
 option(DBMW_ENABLE_MYSQL    "Build MySQL driver (needs libmysqlclient)"      OFF)
 option(DBMW_ENABLE_POSTGRES "Build PostgreSQL driver (needs libpqxx + libpq)" OFF)
 option(DBMW_ENABLE_ODBC     "Build ODBC driver for SQL Server/Oracle"         OFF)
+option(DBMW_ENABLE_ORACLE   "Build Oracle driver (needs OCI / Instant Client)" OFF)
 option(DBMW_BUILD_TESTS     "Build core behaviour tests (no external deps)"   OFF)
 option(DBMW_BUILD_INTEGRATION_TESTS
        "Build integration tests that require live database services"          OFF)
@@ -54,6 +55,7 @@ install(TARGETS nlohmann_json EXPORT dbmwTargets)
 set(DBMW_SOURCES
     src/common/types.cpp
     src/common/pg_types.cpp
+    src/common/oracle_types.cpp
     src/common/context.cpp
     src/common/observer.cpp
     src/common/sql_analyze.cpp
@@ -76,6 +78,7 @@ set(DBMW_SOURCES
     src/driver/mysql_driver.cpp
     src/driver/postgres_driver.cpp
     src/driver/odbc_driver.cpp
+    src/driver/oracle_driver.cpp
     src/dbmw.cpp
     src/exporters/prometheus.cpp
 )
@@ -165,6 +168,19 @@ if(DBMW_ENABLE_ODBC)
     endif()
     target_include_directories(dbmw PRIVATE ${ODBC_INCLUDE_DIR})
     target_link_libraries(dbmw PRIVATE ${ODBC_LIBRARY})
+endif()
+
+if(DBMW_ENABLE_ORACLE)
+    target_compile_definitions(dbmw PRIVATE DBMW_ENABLE_ORACLE)
+    find_path(OCI_INCLUDE_DIR NAMES oci.h)
+    find_library(OCI_LIBRARY  NAMES clntsh oci)
+    if(NOT OCI_INCLUDE_DIR OR NOT OCI_LIBRARY)
+        message(FATAL_ERROR "DBMW_ENABLE_ORACLE=ON but the Oracle client was not found "
+            "(oci.h / libclntsh). Install the Oracle Instant Client Basic + SDK packages and "
+            "pass -DOCI_INCLUDE_DIR=<dir> -DOCI_LIBRARY=<path>.")
+    endif()
+    target_include_directories(dbmw PRIVATE ${OCI_INCLUDE_DIR})
+    target_link_libraries(dbmw PRIVATE ${OCI_LIBRARY})
 endif()
 
 if(DBMW_BUILD_TESTS)

@@ -32,7 +32,7 @@
 namespace dbmw::common::util {
     enum class RoutineKind { Function, Procedure };
 
-    enum class Dialect { Auto, MySQL, Postgres, SqlServer };
+    enum class Dialect { Auto, MySQL, Postgres, SqlServer, Oracle };
 
     struct RoutineRef {
         std::string name;
@@ -150,6 +150,7 @@ namespace dbmw::common::util {
             case Dialect::MySQL: return "mysql";
             case Dialect::Postgres: return "postgres";
             case Dialect::SqlServer: return "sqlserver";
+            case Dialect::Oracle: return "oracle";
             case Dialect::Auto: break;
         }
         return "auto";
@@ -180,6 +181,8 @@ namespace dbmw::common::util {
         if (t.find("postgres") != std::string::npos || t.find("pgsql") != std::string::npos ||
             t == "pg")
             return Dialect::Postgres;
+        if (t.find("oracle") != std::string::npos || t == "ora" || t == "oci")
+            return Dialect::Oracle;
         if (t.find("odbc") != std::string::npos || t.find("sqlserver") != std::string::npos ||
             t.find("mssql") != std::string::npos)
             return Dialect::SqlServer;
@@ -283,6 +286,19 @@ namespace dbmw::common::util {
                           ? "{CALL " + name + parenArgs(argCount) + "}"
                           : "EXEC " + name + (argCount == 0 ? std::string() : " " + csvArgs(argCount));
                 return Status::OK();
+            case Dialect::Oracle:
+                if (ref.kind == RoutineKind::Function)
+                    out = returnsRows
+                              ? "SELECT * FROM TABLE(" + name + parenArgs(argCount) + ")"
+                              : "SELECT " + name + parenArgs(argCount) + " FROM DUAL";
+                else {
+                    if (returnsRows)
+                        return unsupported(
+                            "dbmw::util: oracle procedures can only return rows through a REF "
+                            "CURSOR OUT parameter, which makeCallSql cannot bind");
+                    out = "BEGIN " + name + parenArgs(argCount) + "; END;";
+                }
+                return Status::OK();
             case Dialect::Auto: break;
         }
         return unsupported("dbmw::util: unknown dialect");
@@ -303,6 +319,14 @@ namespace dbmw::common::util {
             return unsupported("dbmw::util: sqlserver OUT/INOUT parameters need DECLARE @var "
                 "<type> before EXEC ... OUTPUT, and dbmw cannot infer the type; return the "
                 "values as a result set instead");
+
+        if (d == Dialect::Oracle && hasOut)
+            return unsupported("dbmw::util: oracle OUT/INOUT parameters need a PL/SQL block "
+                "with bound variables, which the CallPlan model does not carry; return the "
+                "values as a result set instead");
+        if (d == Dialect::Oracle && ref.kind == RoutineKind::Procedure && returnsRows)
+            return unsupported("dbmw::util: oracle procedures can only return rows through a "
+                "REF CURSOR OUT parameter");
 
         if (d == Dialect::Postgres && ref.kind == RoutineKind::Procedure) {
             if (returnsRows)
@@ -381,6 +405,13 @@ namespace dbmw::common::util {
                                                             args.size()));
             return Status::OK();
         }
+        if (d == Dialect::Oracle) {
+            if (ref.kind == RoutineKind::Function)
+                out.callSql = "SELECT " + name + parenArgs(args.size()) + " FROM DUAL";
+            else
+                out.callSql = "BEGIN " + name + parenArgs(args.size()) + "; END;";
+            return Status::OK();
+        }
         return unsupported("dbmw::util: unknown dialect");
     }
 
@@ -439,6 +470,12 @@ namespace dbmw::common::util {
         if (o.cascade && d != Dialect::Postgres)
             return unsupported("dbmw::util: DROP ... CASCADE is only supported by postgres "
                                "(dialect=" + std::string(dialectName(d)) + ")");
+        if (o.ifExists && d == Dialect::Oracle)
+            return unsupported("dbmw::util: oracle has no DROP "
+                               + std::string(ref.kind == RoutineKind::Function
+                                                 ? "FUNCTION"
+                                                 : "PROCEDURE")
+                               + " IF EXISTS; drop first, then ignore ORA-04043");
         const char *kindWord = ref.kind == RoutineKind::Function ? "FUNCTION" : "PROCEDURE";
         std::string s = "DROP ";
         s += kindWord;
@@ -464,8 +501,9 @@ namespace dbmw::common::util {
         if (spec.concurrent && d != Dialect::Postgres)
             return unsupported("dbmw::util: CREATE INDEX CONCURRENTLY is only supported by "
                                "postgres (dialect=" + std::string(dialectName(d)) + ")");
-        if (!spec.usingMethod.empty() && d == Dialect::SqlServer)
-            return unsupported("dbmw::util: sqlserver has no USING clause for CREATE INDEX");
+        if (!spec.usingMethod.empty() && (d == Dialect::SqlServer || d == Dialect::Oracle))
+            return unsupported("dbmw::util: dialect=" + std::string(dialectName(d))
+                               + " has no USING clause for CREATE INDEX");
 
         std::string cols;
         for (std::size_t i = 0; i < spec.columns.size(); ++i) {
@@ -501,7 +539,7 @@ namespace dbmw::common::util {
         std::string s = "DROP INDEX ";
         if (ifExists) s += "IF EXISTS ";
         s += quoteIdent(name, d);
-        if (d != Dialect::Postgres) s += " ON " + quoteIdent(table, d);
+        if (d != Dialect::Postgres && d != Dialect::Oracle) s += " ON " + quoteIdent(table, d);
         out = std::move(s);
         return Status::OK();
     }
@@ -541,9 +579,9 @@ namespace dbmw::common::util {
             if (ifNotExists)
                 return unsupported("dbmw::util: CREATE ROUTINE IF NOT EXISTS is supported by "
                     "no dialect in this matrix; drop first, then create");
-            if (replace && d != Dialect::Postgres)
+            if (replace && d != Dialect::Postgres && d != Dialect::Oracle)
                 return unsupported("dbmw::util: CREATE OR REPLACE is only supported by "
-                                   "postgres (dialect=" + std::string(dialectName(d)) + ")");
+                                   "postgres and oracle (dialect=" + std::string(dialectName(d)) + ")");
             return Status::OK();
         }
     }

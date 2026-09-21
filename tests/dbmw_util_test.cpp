@@ -232,6 +232,7 @@ static void writeConfig() {
     { "name": "my", "type": "mysql", "host": "localhost" },
     { "name": "pg", "type": "postgres", "host": "localhost" },
     { "name": "ms", "type": "odbc", "host": "localhost" },
+    { "name": "ora", "type": "oracle", "host": "localhost" },
     { "name": "pgm", "type": "postgres_mock", "host": "localhost" },
     { "name": "mymock", "type": "mysql_mock", "host": "localhost" }
   ],
@@ -334,6 +335,14 @@ int main() {
               ErrorCode::NotSupported, "Auto 方言 → NotSupported（不猜）");
         check(util::makeCallSql(proc, 1, util::Dialect::Postgres, true, s).code ==
               ErrorCode::NotSupported, "PG 存储过程要结果集 → NotSupported");
+        check(util::makeCallSql(proc, 2, util::Dialect::Oracle, false, s).ok() &&
+              s == "BEGIN \"p\"(?, ?); END;", "Oracle 存储过程: BEGIN \"p\"(?, ?); END;");
+        check(util::makeCallSql(fn, 2, util::Dialect::Oracle, true, s).ok() &&
+              s == "SELECT * FROM TABLE(\"public\".\"f\"(?, ?))", "Oracle 表函数: TABLE(f(?, ?))");
+        check(util::makeCallSql(fn, 1, util::Dialect::Oracle, false, s).ok() &&
+              s == "SELECT \"public\".\"f\"(?) FROM DUAL", "Oracle 标量函数: SELECT f(?) FROM DUAL");
+        check(util::makeCallSql(proc, 1, util::Dialect::Oracle, true, s).code ==
+              ErrorCode::NotSupported, "Oracle 存储过程要结果集 → 需 REF CURSOR，NotSupported");
     }
 
     std::cout << "== U2. detectDialect ==\n";
@@ -341,6 +350,7 @@ int main() {
         check(util::detectDialect("my") == util::Dialect::MySQL, "type=mysql → MySQL");
         check(util::detectDialect("pg") == util::Dialect::Postgres, "type=postgres → Postgres");
         check(util::detectDialect("ms") == util::Dialect::SqlServer, "type=odbc → SqlServer");
+        check(util::detectDialect("ora") == util::Dialect::Oracle, "type=oracle → Oracle");
         check(util::detectDialect("pgm") == util::Dialect::Postgres,
               "type 含 postgres → Postgres");
         check(util::detectDialect("main") == util::Dialect::Auto,

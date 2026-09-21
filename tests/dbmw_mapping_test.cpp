@@ -652,8 +652,8 @@ int main() {
 
         const std::string ms =
                 mapping::insertSqlReturning<User>("users", common::util::Dialect::SqlServer);
-        check(ms.find("OUTPUT") == std::string::npos,
-              "SQL Server：暂不自动补 OUTPUT（trigger 会报错，待真机验证）");
+        check(ms.find(" OUTPUT INSERTED.id VALUES") != std::string::npos,
+              "SQL Server：在 VALUES 前补 OUTPUT INSERTED.id");
 
         const std::string au =
                 mapping::insertSqlReturning<User>("users", common::util::Dialect::Auto);

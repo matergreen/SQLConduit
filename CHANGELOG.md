@@ -14,6 +14,17 @@ description.
   `DBMW_ENABLE_ORACLE=ON`; requires the Oracle Instant Client.
 - Added `Dialect::Oracle` to the dialect machinery — identifier quoting, routine and index helpers,
   and call plans — so the entity mapping layer emits Oracle-compatible SQL.
+- Added an explicit `datasources[].oracle` configuration block for service names or SIDs, client
+  character sets, LOB limits and bind policy, wallets, and server certificate DNs. Legacy
+  `database` and `extra.*` settings remain compatible, with deterministic connection-string
+  precedence and validation for ambiguous or ineffective TLS combinations.
+- Added forward-only OCI statement cursors and Oracle 12c+ implicit multi-result support through
+  `OCIStmtGetNextResult`.
+- Added native OCI array DML for compatible batches, including per-iteration affected-row counts.
+  Generated-key, LOB, oversized-value, and older-client cases safely retain the transactional
+  per-row path.
+- Added safe Oracle routine deletion with `ifExists=true` by suppressing only ORA-04043 inside an
+  anonymous PL/SQL block.
 
 ### Compatibility and reliability
 
@@ -26,6 +37,13 @@ description.
   environment variable for text round-trips.
 - Taught `require_limit_select` that `FETCH FIRST n ROWS ONLY` and `ROWNUM <= n` bound a result set,
   so Oracle paging is no longer rejected.
+- Moved Oracle connection timeouts into the Oracle Net descriptor so connect and transport limits
+  apply before `OCILogon2`; generated TCPS descriptors now carry wallet and server-DN verification
+  semantics explicitly.
+- Fixed prepared-statement cache eviction, mixed LOB-column indexing, locator cleanup, and UTF-8
+  CLOB byte sizing, preventing invalid cache lookups, descriptor leaks, and multibyte truncation.
+- Kept caller-owned transaction semantics for array DML failures while rolling back the complete
+  batch when dbmw owns the transaction.
 
 ## [0.5.1]
 

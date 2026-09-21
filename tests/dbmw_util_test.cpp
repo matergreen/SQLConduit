@@ -232,7 +232,8 @@ static void writeConfig() {
     { "name": "my", "type": "mysql", "host": "localhost" },
     { "name": "pg", "type": "postgres", "host": "localhost" },
     { "name": "ms", "type": "odbc", "host": "localhost" },
-    { "name": "ora", "type": "oracle", "host": "localhost" },
+    { "name": "ora", "type": "oracle", "host": "localhost",
+      "oracle": { "service_name": "FREEPDB1" } },
     { "name": "pgm", "type": "postgres_mock", "host": "localhost" },
     { "name": "mymock", "type": "mysql_mock", "host": "localhost" }
   ],
@@ -327,9 +328,9 @@ int main() {
         check(util::makeCallSql(fn, 1, util::Dialect::Postgres, false, s).ok() &&
               s == "SELECT \"public\".\"f\"(?)", "PG 函数无结果集: SELECT f(?)");
         check(util::makeCallSql(proc, 2, util::Dialect::SqlServer, false, s).ok() &&
-              s == "EXEC \"p\" ?, ?", "SQLServer 无结果集: EXEC \"p\" ?, ?");
+              s == "EXEC dbo.p ?, ?", "SQLServer 无结果集: EXEC dbo.p ?, ?");
         check(util::makeCallSql(proc, 1, util::Dialect::SqlServer, true, s).ok() &&
-              s == "{CALL \"p\"(?)}", "SQLServer 有结果集: {CALL \"p\"(?)}");
+              s == "{CALL dbo.p(?)}", "SQLServer 有结果集: {CALL dbo.p(?)}");
         check(!util::makeCallSql(proc, 1, util::Dialect::Auto, false, s).ok() &&
               util::makeCallSql(proc, 1, util::Dialect::Auto, false, s).code ==
               ErrorCode::NotSupported, "Auto 方言 → NotSupported（不猜）");
@@ -535,6 +536,24 @@ int main() {
         check(util::makeDropRoutineSql(fnRef, util::DropRoutineOptions{},
                                        util::Dialect::SqlServer, s).ok() &&
               s == "DROP FUNCTION IF EXISTS \"f\"", "U12 SQLServer DROP FUNCTION");
+        util::RoutineRef oraRef;
+        oraRef.name = "APP.P";
+        oraRef.kind = util::RoutineKind::Procedure;
+        check(util::makeDropRoutineSql(oraRef, util::DropRoutineOptions{},
+                                       util::Dialect::Oracle, s).ok() &&
+              s == "BEGIN EXECUTE IMMEDIATE 'DROP PROCEDURE \"APP\".\"P\"'; "
+                   "EXCEPTION WHEN OTHERS THEN IF SQLCODE != -4043 THEN RAISE; END IF; END;",
+              "U12 Oracle 通过 PL/SQL 忽略 ORA-04043 实现 IF EXISTS");
+        util::DropRoutineOptions strictDrop;
+        strictDrop.ifExists = false;
+        check(util::makeDropRoutineSql(oraRef, strictDrop, util::Dialect::Oracle, s).ok() &&
+              s == "DROP PROCEDURE \"APP\".\"P\"",
+              "U12 Oracle 严格删除保留原始 DROP 与不存在错误");
+        oraRef.name = "A'B";
+        check(util::makeDropRoutineSql(oraRef, util::DropRoutineOptions{},
+                                       util::Dialect::Oracle, s).ok() &&
+              s.find("DROP PROCEDURE \"A''B\"") != std::string::npos,
+              "U12 Oracle 动态 DDL 正确转义单引号标识符");
     }
 
     std::cout << "== U13/U14. 索引生成 ==\n";

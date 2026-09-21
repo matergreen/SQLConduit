@@ -125,7 +125,7 @@ namespace {
                << "\"host\":\"" << jsonEscape(host) << "\",\"port\":" << port << ','
                << "\"user\":\"" << jsonEscape(user) << "\","
                << "\"password_env\":\"DBMW_TEST_ORACLE_PASSWORD\","
-               << "\"extra\":{\"service_name\":\"" << jsonEscape(service) << "\"},"
+               << "\"oracle\":{\"service_name\":\"" << jsonEscape(service) << "\"},"
                << "\"connection_timeout_ms\":5000,\"query_timeout_ms\":0}";
 
             std::ofstream file(configPath);
@@ -175,6 +175,7 @@ namespace {
         dbmw::common::Blob bigBlob(5000);
         for (std::size_t i = 0; i < bigBlob.size(); ++i)
             bigBlob[i] = static_cast<unsigned char>((i * 7 + 3) & 0xff);
+        const std::string clobText = "Oracle CLOB 中文往返验证";
         const dbmw::common::Decimal amount{"12345.678901234"};
         std::int64_t affected = 0;
         requireOk(dbmw::DBMW::execute(
@@ -182,7 +183,7 @@ namespace {
                       " (\"name\", \"qty\", \"price\", \"payload\", \"doc\", \"big_blob\", "
                       "\"amount\", \"created_at\") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                       Params{std::string("raw-types"), std::int64_t(7), 12.5, payload,
-                             std::string("clob body"), bigBlob, amount, created},
+                             clobText, bigBlob, amount, created},
                       affected), "insert typed row");
         require(affected == 1, "typed insert affected mismatch");
 
@@ -203,7 +204,7 @@ namespace {
         require(price != nullptr && *price == 12.5, "BINARY_DOUBLE round trip");
         const auto *blob = std::get_if<dbmw::common::Blob>(&row.at("payload"));
         require(blob != nullptr && *blob == payload, "RAW round trip to Blob");
-        require(asString(row.at("doc")) == "clob body", "CLOB round trip to string");
+        require(asString(row.at("doc")) == clobText, "UTF-8 CLOB round trip to string");
         const auto *big = std::get_if<dbmw::common::Blob>(&row.at("big_blob"));
         require(big != nullptr && big->size() == bigBlob.size(),
                 "BLOB round trip length (temporary LOB bind)");
@@ -327,6 +328,51 @@ namespace {
                       Params{}, [](const dbmw::common::Row &) { return true; }, streamed),
                   "queryEach");
         require(streamed == 5, "queryEach streamed the wrong number of rows");
+
+        dbmw::common::ParamBatch batch{
+            Params{std::string("array-0"), std::int64_t(10), 2.0,
+                   std::chrono::system_clock::now()},
+            Params{std::string("array-1"), std::int64_t(11), 2.0,
+                   std::chrono::system_clock::now()},
+            Params{std::string("array-2"), std::int64_t(12), 2.0,
+                   std::chrono::system_clock::now()}
+        };
+        dbmw::common::BatchResult batchResult;
+        requireOk(dbmw::DBMW::executeBatch(
+                      "INSERT INTO " + f.table +
+                      " (\"name\", \"qty\", \"price\", \"created_at\") "
+                      "VALUES (?, ?, ?, ?)", batch, batchResult), "OCI array DML");
+        require(batchResult.affected.size() == 3 && batchResult.totalAffected() == 3,
+                "OCI array DML row counts");
+
+        dbmw::core::CursorOptions cursorOptions;
+        cursorOptions.batch_size = 2;
+        std::unique_ptr<dbmw::core::Cursor> cursor;
+        requireOk(dbmw::DBMW::openCursor(
+                      "SELECT \"name\", \"qty\" FROM " + f.table +
+                      " WHERE \"name\" LIKE ? ORDER BY \"name\"",
+                      Params{std::string("array-%")}, cursorOptions, cursor),
+                  "open OCI statement cursor");
+        ResultSet cursorRows;
+        while (cursor->hasNext()) requireOk(cursor->fetch(2, cursorRows), "OCI cursor fetch");
+        require(cursorRows.rowCount() == 3 && cursor->rowsFetched() == 3,
+                "OCI cursor incremental row count");
+        requireOk(cursor->close(), "close OCI statement cursor");
+
+        std::vector<ResultSet> implicitSets;
+        requireOk(dbmw::DBMW::queryAll(
+                      "DECLARE c1 SYS_REFCURSOR; c2 SYS_REFCURSOR; BEGIN "
+                      "OPEN c1 FOR SELECT \"name\" FROM " + f.table +
+                      " WHERE \"name\" LIKE ? ORDER BY \"name\"; "
+                      "DBMS_SQL.RETURN_RESULT(c1); "
+                      "OPEN c2 FOR SELECT \"name\" FROM " + f.table +
+                      " WHERE \"name\" LIKE ? ORDER BY \"name\"; "
+                      "DBMS_SQL.RETURN_RESULT(c2); END;",
+                      Params{std::string("array-%"), std::string("stream-%")}, implicitSets),
+                  "Oracle implicit result sets");
+        require(implicitSets.size() == 2 && implicitSets[0].rowCount() == 3 &&
+                implicitSets[1].rowCount() == 5,
+                "OCIStmtGetNextResult returned both result sets in order");
 
         const Status duplicate = dbmw::DBMW::execute(
             "INSERT INTO " + f.table +

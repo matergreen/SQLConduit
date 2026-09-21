@@ -1,12 +1,21 @@
 #ifndef DBMW_CONFIG_DATASOURCE_CONFIG_H
 #define DBMW_CONFIG_DATASOURCE_CONFIG_H
 
-#include <cstdint>
 #include <string>
 #include <vector>
 #include <map>
 
 namespace dbmw::config {
+    struct OracleConfig {
+        std::string service_name;
+        std::string sid;
+        std::string wallet_location;
+        std::string server_cert_dn;
+        int charset_id = 873;
+        std::int64_t lob_max_bytes = 4194304;
+        std::string blob_bind = "auto";
+    };
+
     struct DataSourceConfig {
         std::string name;
         std::string type;
@@ -26,6 +35,7 @@ namespace dbmw::config {
         std::string tls_ca;
         std::string tls_cert;
         std::string tls_key;
+        OracleConfig oracle;
         std::map<std::string, std::string> extra;
 
         [[nodiscard]] std::string describe() const;

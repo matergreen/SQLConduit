@@ -111,6 +111,22 @@ namespace dbmw::common {
         double parseDoubleSimple(const std::string &s) {
             return std::strtod(s.c_str(), nullptr);
         }
+
+        bool validDescriptorAtom(const std::string &value) {
+            if (value.empty()) return false;
+            for (const unsigned char c: value) {
+                if (c <= 0x20 || c == '(' || c == ')' || c == '=') return false;
+            }
+            return true;
+        }
+
+        bool validQuotedDescriptorValue(const std::string &value) {
+            if (value.empty()) return false;
+            for (const unsigned char c: value) {
+                if (c < 0x20 || c == '"') return false;
+            }
+            return true;
+        }
     }
 
     OracleTypeClass oracleTypeClass(const std::uint16_t sqlt) {
@@ -293,8 +309,9 @@ namespace dbmw::common {
                 static_cast<long long>(hour) * 3600LL +
                 static_cast<long long>(minute) * 60LL +
                 static_cast<long long>(second) - offsetSeconds;
-            out = std::chrono::system_clock::from_time_t(static_cast<std::time_t>(seconds)) +
-                std::chrono::nanoseconds(nanos);
+            out = std::chrono::time_point_cast<Timestamp::duration>(
+                std::chrono::system_clock::from_time_t(static_cast<std::time_t>(seconds)) +
+                std::chrono::nanoseconds(nanos));
             return true;
         }
 
@@ -308,7 +325,8 @@ namespace dbmw::common {
         local.tm_isdst = -1;
         const std::time_t epoch = std::mktime(&local);
         if (epoch == static_cast<std::time_t>(-1)) return false;
-        out = std::chrono::system_clock::from_time_t(epoch) + std::chrono::nanoseconds(nanos);
+        out = std::chrono::time_point_cast<Timestamp::duration>(
+            std::chrono::system_clock::from_time_t(epoch) + std::chrono::nanoseconds(nanos));
         return true;
     }
 
@@ -434,6 +452,68 @@ namespace dbmw::common {
             "ALTER SESSION SET NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF TZH:TZM'",
             "ALTER SESSION SET NLS_NUMERIC_CHARACTERS = '.,'"
         };
+    }
+
+    Status oracleBuildConnectDescriptor(const OracleConnectOptions &options, std::string &out) {
+        out.clear();
+        if (!validDescriptorAtom(options.host))
+            return Status::error(ErrorCode::ConfigError,
+                                 "Oracle host contains characters unsafe for a connect descriptor");
+        if (options.port < 1 || options.port > 65535)
+            return Status::error(ErrorCode::ConfigError, "Oracle port must be in range 1..65535");
+        if (!options.serviceName.empty() && !options.sid.empty())
+            return Status::error(ErrorCode::ConfigError,
+                                 "Oracle service_name and sid are mutually exclusive");
+        if (options.serviceName.empty() && options.sid.empty())
+            return Status::error(ErrorCode::ConfigError,
+                                 "Oracle service_name or sid is required");
+        const std::string &target = options.sid.empty() ? options.serviceName : options.sid;
+        if (!validDescriptorAtom(target))
+            return Status::error(ErrorCode::ConfigError,
+                                 "Oracle service_name or sid contains unsafe characters");
+        if (options.connectionTimeoutMs < 0)
+            return Status::error(ErrorCode::ConfigError,
+                                 "Oracle connection timeout must be >= 0");
+        if (!options.walletLocation.empty() &&
+            !validQuotedDescriptorValue(options.walletLocation))
+            return Status::error(ErrorCode::ConfigError,
+                                 "Oracle wallet_location contains unsafe characters");
+        if (!options.serverCertDn.empty() &&
+            !validQuotedDescriptorValue(options.serverCertDn))
+            return Status::error(ErrorCode::ConfigError,
+                                 "Oracle server_cert_dn contains unsafe characters");
+        if (!options.tlsEnabled &&
+            (!options.walletLocation.empty() || !options.serverCertDn.empty()))
+            return Status::error(ErrorCode::ConfigError,
+                                 "Oracle wallet_location and server_cert_dn require TLS");
+        if (!options.serverCertDn.empty() && !options.tlsVerifyPeer)
+            return Status::error(ErrorCode::ConfigError,
+                                 "Oracle server_cert_dn requires TLS peer verification");
+
+        out = "(DESCRIPTION=";
+        if (options.connectionTimeoutMs > 0) {
+            const std::string timeout = std::to_string(options.connectionTimeoutMs) + "ms";
+            out += "(CONNECT_TIMEOUT=" + timeout + ")";
+            out += "(TRANSPORT_CONNECT_TIMEOUT=" + timeout + ")";
+        }
+        out += "(ADDRESS=(PROTOCOL=";
+        out += options.tlsEnabled ? "TCPS" : "TCP";
+        out += ")(HOST=" + options.host + ")(PORT=" + std::to_string(options.port) + "))";
+        out += "(CONNECT_DATA=(";
+        out += options.sid.empty() ? "SERVICE_NAME=" : "SID=";
+        out += target + "))";
+        if (options.tlsEnabled) {
+            out += "(SECURITY=(SSL_SERVER_DN_MATCH=";
+            out += options.tlsVerifyPeer ? "YES" : "NO";
+            out += ")";
+            if (!options.serverCertDn.empty())
+                out += "(SSL_SERVER_CERT_DN=\"" + options.serverCertDn + "\")";
+            if (!options.walletLocation.empty())
+                out += "(WALLET_LOCATION=\"" + options.walletLocation + "\")";
+            out += ")";
+        }
+        out += ")";
+        return Status::OK();
     }
 
     bool oracleParseReturningInto(const std::string &sql, OracleReturning &out) {

@@ -88,6 +88,20 @@ namespace dbmw::common {
 
     std::vector<std::string> oracleSessionSetupStatements();
 
+    struct OracleConnectOptions {
+        std::string host = "localhost";
+        int port = 1521;
+        std::string serviceName;
+        std::string sid;
+        int connectionTimeoutMs = 5000;
+        bool tlsEnabled = false;
+        bool tlsVerifyPeer = true;
+        std::string walletLocation;
+        std::string serverCertDn;
+    };
+
+    Status oracleBuildConnectDescriptor(const OracleConnectOptions &options, std::string &out);
+
     struct OracleReturning {
         bool present = false;
         std::vector<std::string> columns;

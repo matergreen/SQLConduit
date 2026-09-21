@@ -41,6 +41,50 @@ namespace dbmw::mapping {
 }
 
 int main() {
+    std::cout << "== Oracle 连接描述符 ==\n";
+    {
+        common::OracleConnectOptions options;
+        options.host = "db.internal";
+        options.port = 1522;
+        options.serviceName = "APP_PDB";
+        options.connectionTimeoutMs = 2500;
+        std::string descriptor;
+        const auto plain = common::oracleBuildConnectDescriptor(options, descriptor);
+        check(plain.ok() &&
+              descriptor.find("(CONNECT_TIMEOUT=2500ms)") != std::string::npos &&
+              descriptor.find("(TRANSPORT_CONNECT_TIMEOUT=2500ms)") != std::string::npos &&
+              descriptor.find("(PROTOCOL=TCP)") != std::string::npos &&
+              descriptor.find("(SERVICE_NAME=APP_PDB)") != std::string::npos,
+              "service name、TCP 与登录前超时写入描述符");
+
+        options.serviceName.clear();
+        options.sid = "ORCL";
+        options.tlsEnabled = true;
+        options.walletLocation = "/opt/oracle/wallet";
+        options.serverCertDn = "CN=db.example.com,O=Example";
+        const auto tls = common::oracleBuildConnectDescriptor(options, descriptor);
+        check(tls.ok() && descriptor.find("(PROTOCOL=TCPS)") != std::string::npos &&
+              descriptor.find("(SID=ORCL)") != std::string::npos &&
+              descriptor.find("(SSL_SERVER_DN_MATCH=YES)") != std::string::npos &&
+              descriptor.find("(WALLET_LOCATION=\"/opt/oracle/wallet\")") !=
+                  std::string::npos &&
+              descriptor.find("(SSL_SERVER_CERT_DN=\"CN=db.example.com,O=Example\")") !=
+                  std::string::npos,
+              "SID、TCPS、wallet 与服务端证书 DN 组成明确 TLS 语义");
+
+        options.serviceName = "PDB";
+        check(!common::oracleBuildConnectDescriptor(options, descriptor).ok(),
+              "service_name 与 sid 同时存在时拒绝歧义配置");
+        options.serviceName.clear();
+        options.tlsVerifyPeer = false;
+        check(!common::oracleBuildConnectDescriptor(options, descriptor).ok(),
+              "关闭 peer verification 时拒绝无效的 server_cert_dn");
+        options.serverCertDn.clear();
+        check(common::oracleBuildConnectDescriptor(options, descriptor).ok() &&
+              descriptor.find("(SSL_SERVER_DN_MATCH=NO)") != std::string::npos,
+              "显式关闭 peer verification 会写入 DN_MATCH=NO");
+    }
+
     std::cout << "== Oracle 类型分类 ==\n";
     {
         check(common::oracleTypeClass(common::kSqltNum) == common::OracleTypeClass::Number,

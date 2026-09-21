@@ -421,9 +421,9 @@ cur->close();   // 显式归还连接；不调也会在析构时关 + 还
   `mysql_stmt_fetch` 流式消费，结果不落客户端内存；无事务要求。
 - **ODBC**：真游标（`SQL_ATTR_CURSOR_TYPE` + `SQLFetch`）；配置 `allow_scrollable` 时设
   `SQL_CURSOR_STATIC` 支持滚动，其余驱动不支持滚动（`scrollable=true` 返回 `NotSupported`）。
-- **Oracle**：`openCursor` 返回 `NotSupported`——Oracle 无独立游标句柄概念，
-  服务端游标需 `REF CURSOR` 绑定，语义与其他驱动不对齐。改用 `queryEach()` 逐行回调流式消费，
-  OCI 侧天然按 `OCIStmtFetch2` 分块取，不落全量结果。
+- **Oracle**：前向 OCI statement cursor；`openCursor()` 持有 statement 与 define/LOB 描述符，
+  `fetch(n)` 通过 `OCIStmtFetch2` 增量抓取，`close()` 释放 statement。支持普通参数和 LOB 参数；
+  `scrollable=true` 仍明确返回 `NotSupported`。
 
 ### 配置与资源护栏
 
@@ -1237,11 +1237,46 @@ CMake 会 `find_path(oci.h)` + `find_library(clntsh oci)`；自动探测不到�
 
 ### 连接与会话初始化
 
-`host / port / database` 拼成 `host:port/service` 连接串走 `OCILogon2`；配了 `dsn` 就直接用 `dsn`。
+推荐使用 Oracle 专用配置块，避免把 service name、SID、wallet 和通用数据库字段混在一起：
+
+```yaml
+datasources:
+  - name: ora
+    type: oracle
+    host: db.example.com
+    port: 1521
+    user: app
+    password_env: ORACLE_PASSWORD
+    connection_timeout_ms: 5000
+    query_timeout_ms: 30000
+    tls:
+      enabled: true
+      verify_peer: true
+    oracle:
+      service_name: APP_PDB       # 与 sid 二选一
+      wallet_location: /opt/oracle/wallet
+      server_cert_dn: CN=db.example.com,O=Example
+      charset_id: 873             # AL32UTF8
+      lob_max_bytes: 4194304
+      blob_bind: auto             # auto / raw / lob
+```
+
+连接目标的优先级固定为 `extra.connection_string` > `dsn` > 生成的 Oracle Net 描述符。前两项按原文
+交给 OCI，中间件不会再叠加 `tls`，因此配置了 `dsn` / `extra.connection_string` 时必须把 TCPS 与证书
+校验写进该连接串或 Oracle Net 客户端配置，并且不能同时配置 `tls`，防止出现“看似启用、实际被忽略”。
+生成描述符时必须提供 `oracle.service_name` 或 `oracle.sid`，两者不能共存；旧 `database` 仍作为
+service name 别名，旧 `extra.service_name / sid / charset_id / lob_max_bytes / blob_bind` 也继续兼容，
+但新配置应统一写进 `oracle` 块。
+
+`connection_timeout_ms` 会同时写入 Oracle Net 的 `CONNECT_TIMEOUT` 与
+`TRANSPORT_CONNECT_TIMEOUT`，在 `OCILogon2` 前生效。`tls.enabled=true` 使用 TCPS；
+`verify_peer` 控制 `SSL_SERVER_DN_MATCH`，`server_cert_dn` 可进一步锁定服务端证书 DN，
+`wallet_location` 指定 wallet。Oracle 下 `tls.ca` 仅作为 `oracle.wallet_location` 的兼容别名，
+`tls.cert / tls.key` 不会被 OCI 直接消费，配置时会报错，应把客户端证书和私钥放入 wallet。
 
 环境句柄走 `OCIEnvNlsCreate` 并**显式固定客户端字符集为 AL32UTF8（charset id 873）**，不再依赖
 `NLS_LANG`——未设 `NLS_LANG` 时 OCI 默认按 US7ASCII 解释客户端缓冲区，中文等多字节数据会静默变
-乱码。要换成别的字符集（例如老库的 `UTF8` = 871）就在数据源的 `extra.charset_id` 里写数字。
+乱码。要换成别的字符集（例如老库的 `UTF8` = 871）就设置 `oracle.charset_id`。
 
 连接成功后**立即执行 4 条 `ALTER SESSION`** 固定 `NLS_DATE_FORMAT`、`NLS_TIMESTAMP_FORMAT`、
 `NLS_TIMESTAMP_TZ_FORMAT` 和 `NLS_NUMERIC_CHARACTERS='.,'`——结果集按**文本**抓取，
@@ -1260,7 +1295,7 @@ CMake 会 `find_path(oci.h)` + `find_library(clntsh oci)`；自动探测不到�
 | `ROWID` / `UROWID` | `string` | |
 | `INTERVAL DS` / `INTERVAL YM` | `string` | **退化**：`Value` 无 interval 类型，刻意保留为缺口 |
 
-LOB 默认按 `OCILobRead2` 读成 `Blob`，超过 `extra.lob_max_bytes`（默认 4 MB）报 `NotSupported`
+LOB 默认按 `OCILobRead2` 读成 `Blob`，超过 `oracle.lob_max_bytes`（默认 4 MB）报 `NotSupported`
 而不是静默截断。
 
 **写侧分两种绑定**，因为 Oracle 的 `RAW` 列和 `BLOB` 列接受的参数类型不同，而绑定时无从得知目标列：
@@ -1269,8 +1304,8 @@ LOB 默认按 `OCILobRead2` 读成 `Blob`，超过 `extra.lob_max_bytes`（默�
 |---|---|---|
 | `Blob` ≤ 4000 字节（默认） | `SQLT_BIN` 裸绑定 | `RAW`（以及小值的 `BLOB`，靠服务端隐式转换） |
 | `Blob` > 4000 字节 | 临时 `BLOB` locator（`OCILobCreateTemporary` + `OCILobWrite2` + `SQLT_BLOB`） | `BLOB` |
-| `extra.blob_bind=lob` | 无条件走 locator | `BLOB` |
-| `extra.blob_bind=raw` | 无条件走裸绑定 | `RAW` |
+| `oracle.blob_bind=lob` | 无条件走 locator | `BLOB` |
+| `oracle.blob_bind=raw` | 无条件走裸绑定 | `RAW` |
 
 超过 4000 字节仍走 `SQLT_BIN` 会撞 ORA-01461 / ORA-22835，所以自动切成 locator。
 超过 32767 字节且显式 `blob_bind=raw` 时报 `NotSupported`。
@@ -1315,19 +1350,25 @@ OCI 的 `OCIErrorGet` 并不填充 sqlstate 参数，所以驱动自己维护一
 
 未收录的 ORA 码返回空 SQLSTATE，由调用方传入的 fallback 码兜底——**不臆造 SQLSTATE**。
 
-### 已知边界（刻意保留）
+### 能力状态与后续开发边界
 
-- `Array` / `Composite` 参数返回 `NotSupported`，不静默绑 NULL；
-- `openCursor()` 返回 `NotSupported`，流式请用 `queryEach()`；
-- `INTERVAL` 退化为字符串；
-- `makeCallPlan` 对有结果集 / OUT 参数的 Oracle 过程返回 `NotSupported`；
-- `makeDropRoutineSql` 返回 `NotSupported`（Oracle 无 `IF EXISTS`）；
-- `connection_timeout_ms` 已下推到 `OCI_ATTR_LOGON_TIMEOUT`，`query_timeout_ms` 映射到
-  `OCI_ATTR_CALL_TIME`；`tls` 通过 TCPS 连接串接入，但 CA / 证书仍由客户端 sqlnet（wallet）决定；
-- `executeBatch` 未 override，走基类逐条循环（功能正确，生成键逐行收集）；Oracle 的 array binding
-  是性能增强，待真机验证后再启用；
-- `supportsMultipleResultSets()` 返回 false：dbmw 的同步 `query` 只返回单结果集，Oracle 12c+ 隐式
-  结果集在现有接口模型里无法承载，需要时用 `queryEach()` 或在异步接口里逐取；
+以下条目按原因区分，`NotSupported` 不再笼统表示“不会开发”：
+
+- **需要先扩展公共 API**：Oracle UDT 的 `Array` / `Composite` 绑定需要类型名和属性元数据；
+  强类型 `INTERVAL` 需要给 `common::Value` 增加跨驱动类型；过程 OUT / `REF CURSOR` 需要输出绑定模型。
+  这些不是废弃项，但不会用字符串或 NULL 做不安全的静默降级；当前分别返回 `NotSupported` 或将
+  `INTERVAL` 保真为字符串。
+- **已经补齐驱动能力**：`openCursor()` 使用可暂停的 OCI statement；`queryAll()` 使用
+  `OCIStmtGetNextResult` 顺序读取 Oracle 12c+ 隐式结果集，`supportsMultipleResultSets()` 在客户端
+  OCI 提供该接口时返回 true。
+- **已经接入原生批量优化**：无 `RETURNING`、无 Blob/LOB 且参数可安全文本绑定的批次使用
+  `OCIBindArrayOfStruct` + 单次 `OCIStmtExecute`，并通过 `OCI_ATTR_DML_ROW_COUNT_ARRAY` 返回每次迭代
+  的影响行数。含生成键、LOB、超长值或旧 OCI 缺少 row-count-array 能力时自动回退逐条事务执行，
+  不改变既有语义。自管事务中的 array DML 任一行失败会整体回滚；调用方事务中保持错误由调用方处理。
+- **已经补齐**：`makeDropRoutineSql(..., ifExists=true)` 使用匿名 PL/SQL 执行 `DROP`，只忽略
+  ORA-04043（对象不存在），其他错误继续抛出；`ifExists=false` 仍生成严格的原始 `DROP`。
+- `connection_timeout_ms` 通过 Oracle Net 描述符约束连接与传输建立，`query_timeout_ms` 映射到
+  `OCI_ATTR_CALL_TIME`；TCPS、wallet 与证书 DN 校验均由生成的描述符显式表达；
 - `escapeLiteral` 的 Blob 走 `HEXTORAW`，但 `allowsLiteralInterpolation()` 返回 false，实际不会被调用。
 
 `oracle_types.h` 的类型层不依赖 OCI 头，因此有 `tests/dbmw_oracle_types_test.cpp` 做纯单元测试，
@@ -1361,7 +1402,8 @@ enum class Dialect { Auto, MySQL, Postgres, SqlServer, Oracle };
 PG 存储过程要结果集 → `NotSupported`（PG 的过程不返回结果集，请改用函数）。
 Oracle 过程要结果集或有 OUT 参数 → `NotSupported`（需 `REF CURSOR` / `DBMS_OUTPUT` 绑定，
 语义与其他方言不对齐）；标量函数走 `DUAL`，表函数走 `TABLE()`。
-Oracle 无 `CREATE ... IF EXISTS` 与 `DROP ... IF EXISTS`，删除例程统一返回 `NotSupported`。
+Oracle 无原生 `CREATE ... IF EXISTS`；删除的 `ifExists=true` 由匿名 PL/SQL 包装，只忽略
+ORA-04043，其他数据库错误照常返回。
 
 ### 创建 / 删除
 
@@ -1377,7 +1419,8 @@ d.cascade = true;                 // 仅 PG；其余方言 → NotSupported
 util::dropRoutine(ref, d);
 ```
 
-`replace`（`CREATE OR REPLACE`）仅 PG 支持，`ifNotExists` 三个方言都不支持 → 一律 `NotSupported`。
+`replace`（`CREATE OR REPLACE`）仅 PG 支持，创建时的 `ifNotExists` 各方言都不支持 → 一律
+`NotSupported`。Oracle 删除时的 `ifExists` 由中间件安全模拟。
 
 ### 索引
 
@@ -1818,6 +1861,10 @@ g++ main.cpp $(pkg-config --cflags --libs dbmw) -o my_app
 | `datasources[].host/port/user/password/database` | 连接参数 |
 | `datasources[].dsn` | ODBC 数据源名 |
 | `datasources[].password_env` | 从环境变量读取密码，优先于明文 `password` |
+| `datasources[].oracle.service_name` / `sid` | Oracle 服务名或 SID（二选一） |
+| `datasources[].oracle.wallet_location` / `server_cert_dn` | Oracle TCPS wallet 与可选服务端证书 DN |
+| `datasources[].oracle.charset_id` | OCI 客户端字符集 ID，默认 AL32UTF8（873） |
+| `datasources[].oracle.lob_max_bytes` / `blob_bind` | LOB 读取上限与 Blob 绑定策略（`auto` / `raw` / `lob`） |
 | `datasources[].query_timeout_ms` | 单条语句执行期限 |
 | `datasources[].max_result_rows` | `query()` 单次物化的最大行数；超限返回错误并提示改用 `queryEach()`（0 = 不限制） |
 | `datasources[].tls` | TLS 开关、证书校验、CA/客户端证书与私钥 |

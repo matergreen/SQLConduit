@@ -68,6 +68,24 @@ namespace dbmw::driver {
                                  const common::RowCallback &callback,
                                  std::uint64_t &rows) override;
 
+        common::Status executeBatch(const std::string &sql,
+                                    const common::ParamBatch &batch,
+                                    common::BatchResult &out) override;
+
+        [[nodiscard]] bool supportsMultipleResultSets() const override {
+#if defined(DBMW_ENABLE_ORACLE) && defined(OCI_RESULT_TYPE_SELECT)
+            return true;
+#else
+            return false;
+#endif
+        }
+
+        common::Status queryAll(const std::string &sql,
+                                std::vector<common::ResultSet> &out) override;
+
+        common::Status queryAll(const std::string &sql, const common::Params &params,
+                                std::vector<common::ResultSet> &out) override;
+
         common::Status openCursor(const std::string &sql, const common::Params &params,
                                   const core::CursorOptions &opts,
                                   std::unique_ptr<core::ICursor> &out) override;
@@ -117,7 +135,7 @@ namespace dbmw::driver {
 
         void dropCachedStatement(std::uint64_t id);
 
-        std::string connectString(const config::DataSourceConfig &cfg) const;
+        common::Status connectString(const config::DataSourceConfig &cfg, std::string &out) const;
 
         bool open_ = false;
         bool txOpen_ = false;

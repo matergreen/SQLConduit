@@ -664,6 +664,61 @@ groups:
         check(yamlExampleOk && yamlExample.datasources.size() == 6 &&
               yamlExample.groups.size() == 2,
               "仓库内完整 YAML 配置模板可直接加载（error=" + error + "）");
+
+        const std::string oraclePath =
+                (std::filesystem::temp_directory_path() / "dbmw_oracle_config_test.json").string();
+        {
+            std::ofstream file(oraclePath);
+            file << R"({"datasources":[{
+              "name":"ora","type":"oracle","host":"db.internal","port":1521,
+              "user":"app","password":"pwd","connection_timeout_ms":2500,
+              "tls":{"enabled":true,"verify_peer":true},
+              "oracle":{"service_name":"APP_PDB","wallet_location":"/wallet",
+                        "server_cert_dn":"CN=db.internal","charset_id":871,
+                        "lob_max_bytes":8388608,"blob_bind":"lob"}
+            }]})";
+        }
+        config::GlobalConfig oracleLoaded;
+        error.clear();
+        const bool oracleOk = config::ConfigLoader::loadFromFile(
+                oraclePath, oracleLoaded, error);
+        check(oracleOk && oracleLoaded.datasources.size() == 1 &&
+              oracleLoaded.datasources.front().oracle.service_name == "APP_PDB" &&
+              oracleLoaded.datasources.front().oracle.wallet_location == "/wallet" &&
+              oracleLoaded.datasources.front().oracle.charset_id == 871 &&
+              oracleLoaded.datasources.front().oracle.lob_max_bytes == 8388608 &&
+              oracleLoaded.datasources.front().oracle.blob_bind == "lob",
+              "Oracle 专用配置块解析 service、TLS wallet、字符集与 LOB 语义");
+
+        {
+            std::ofstream file(oraclePath);
+            file << R"({"datasources":[{
+              "name":"legacy","type":"oracle","host":"localhost",
+              "extra":{"service_name":"OLD_PDB","charset_id":"871",
+                       "lob_max_bytes":"1024","blob_bind":"raw"}
+            }]})";
+        }
+        error.clear();
+        const bool legacyOracleOk = config::ConfigLoader::loadFromFile(
+                oraclePath, oracleLoaded, error);
+        check(legacyOracleOk && oracleLoaded.datasources.front().oracle.service_name == "OLD_PDB" &&
+              oracleLoaded.datasources.front().oracle.charset_id == 871 &&
+              oracleLoaded.datasources.front().oracle.lob_max_bytes == 1024 &&
+              oracleLoaded.datasources.front().oracle.blob_bind == "raw",
+              "旧 extra.* Oracle 配置继续兼容并归一到明确字段");
+
+        {
+            std::ofstream file(oraclePath);
+            file << R"({"datasources":[{
+              "name":"ambiguous","type":"oracle","database":"PDB",
+              "oracle":{"sid":"ORCL"}
+            }]})";
+        }
+        error.clear();
+        check(!config::ConfigLoader::loadFromFile(oraclePath, oracleLoaded, error) &&
+              error.find("cannot combine database") != std::string::npos,
+              "Oracle SID 与 database 服务名别名冲突时快速失败");
+        std::remove(oraclePath.c_str());
 #ifdef _WIN32
         (void) _putenv_s("DBMW_TEST_PASSWORD", "");
 #else

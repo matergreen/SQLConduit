@@ -111,7 +111,12 @@ datasources:
     port: 1521
     user: system
     password: pwd
-    database: FREEPDB1
+    connection_timeout_ms: 5000
+    oracle:
+      service_name: FREEPDB1
+      charset_id: 873
+      lob_max_bytes: 4194304
+      blob_bind: auto
   - name: replica_1
     type: mysql
     host: 127.0.0.1

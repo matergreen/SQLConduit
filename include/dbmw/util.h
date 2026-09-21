@@ -216,6 +216,17 @@ namespace dbmw::common::util {
         return out;
     }
 
+    inline std::string quoteStringLiteral(const std::string &value) {
+        std::string out = "'";
+        out.reserve(value.size() + 2);
+        for (const char c: value) {
+            if (c == '\'') out.push_back('\'');
+            out.push_back(c);
+        }
+        out.push_back('\'');
+        return out;
+    }
+
     inline std::size_t stripDelimiterDirectives(std::string &sql) {
         std::size_t removed = 0;
         std::string out;
@@ -481,19 +492,17 @@ namespace dbmw::common::util {
         if (o.cascade && d != Dialect::Postgres)
             return unsupported("dbmw::util: DROP ... CASCADE is only supported by postgres "
                                "(dialect=" + std::string(dialectName(d)) + ")");
-        if (o.ifExists && d == Dialect::Oracle)
-            return unsupported("dbmw::util: oracle has no DROP "
-                               + std::string(ref.kind == RoutineKind::Function
-                                                 ? "FUNCTION"
-                                                 : "PROCEDURE")
-                               + " IF EXISTS; drop first, then ignore ORA-04043");
         const char *kindWord = ref.kind == RoutineKind::Function ? "FUNCTION" : "PROCEDURE";
         std::string s = "DROP ";
         s += kindWord;
-        if (o.ifExists) s += " IF EXISTS";
+        if (o.ifExists && d != Dialect::Oracle) s += " IF EXISTS";
         s += ' ';
         s += quoteIdent(ref.name, d);
         if (o.cascade) s += " CASCADE";
+        if (o.ifExists && d == Dialect::Oracle) {
+            s = "BEGIN EXECUTE IMMEDIATE " + quoteStringLiteral(s) +
+                "; EXCEPTION WHEN OTHERS THEN IF SQLCODE != -4043 THEN RAISE; END IF; END;";
+        }
         out = std::move(s);
         return Status::OK();
     }

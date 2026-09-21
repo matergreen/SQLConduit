@@ -2,6 +2,8 @@
 #include "yaml_parser.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <cerrno>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -37,6 +39,16 @@ namespace dbmw::config {
                                                     return std::isspace(c) != 0;
                                                 });
             return first != content.end() && *first != '{' && *first != '[';
+        }
+
+        bool parseInt64(const std::string &text, std::int64_t &out) {
+            if (text.empty()) return false;
+            errno = 0;
+            char *end = nullptr;
+            const long long value = std::strtoll(text.c_str(), &end, 10);
+            if (errno == ERANGE || end != text.c_str() + text.size()) return false;
+            out = static_cast<std::int64_t>(value);
+            return true;
         }
     }
 
@@ -433,11 +445,6 @@ namespace dbmw::config {
                     cfg.tls_ca = tls.value("ca", std::string());
                     cfg.tls_cert = tls.value("cert", std::string());
                     cfg.tls_key = tls.value("key", std::string());
-                    if (cfg.tls_verify_peer && cfg.tls_enabled && cfg.tls_ca.empty()) {
-                        error = "datasource '" + cfg.name
-                                + "' enables TLS peer verification but tls.ca is empty";
-                        return false;
-                    }
                 }
                 if (d.contains("extra") && d["extra"].is_object()) {
                     for (auto it = d["extra"].begin(); it != d["extra"].end(); ++it) {
@@ -450,6 +457,149 @@ namespace dbmw::config {
                 }
                 if (cfg.type.empty()) {
                     error = "datasource '" + cfg.name + "' missing 'type'";
+                    return false;
+                }
+                if (d.contains("oracle") && cfg.type != "oracle") {
+                    error = "datasource '" + cfg.name
+                            + "' has an oracle block but type is not 'oracle'";
+                    return false;
+                }
+                if (cfg.type == "oracle") {
+                    bool hasService = false;
+                    bool hasSid = false;
+                    bool hasWallet = false;
+                    bool hasServerDn = false;
+                    bool hasCharset = false;
+                    bool hasLobLimit = false;
+                    bool hasBlobBind = false;
+                    if (d.contains("oracle")) {
+                        if (!d["oracle"].is_object()) {
+                            error = "datasource '" + cfg.name + "' oracle must be an object";
+                            return false;
+                        }
+                        const auto &oracle = d["oracle"];
+                        cfg.oracle.service_name = oracle.value("service_name", std::string());
+                        cfg.oracle.sid = oracle.value("sid", std::string());
+                        cfg.oracle.wallet_location = oracle.value(
+                            "wallet_location", std::string());
+                        cfg.oracle.server_cert_dn = oracle.value(
+                            "server_cert_dn", std::string());
+                        cfg.oracle.charset_id = oracle.value("charset_id", cfg.oracle.charset_id);
+                        cfg.oracle.lob_max_bytes = oracle.value(
+                            "lob_max_bytes", cfg.oracle.lob_max_bytes);
+                        cfg.oracle.blob_bind = oracle.value("blob_bind", cfg.oracle.blob_bind);
+                        hasService = oracle.contains("service_name");
+                        hasSid = oracle.contains("sid");
+                        hasWallet = oracle.contains("wallet_location");
+                        hasServerDn = oracle.contains("server_cert_dn");
+                        hasCharset = oracle.contains("charset_id");
+                        hasLobLimit = oracle.contains("lob_max_bytes");
+                        hasBlobBind = oracle.contains("blob_bind");
+                        for (auto it = oracle.begin(); it != oracle.end(); ++it) {
+                            const auto &key = it.key();
+                            if (key != "service_name" && key != "sid" &&
+                                key != "wallet_location" && key != "server_cert_dn" &&
+                                key != "charset_id" && key != "lob_max_bytes" &&
+                                key != "blob_bind") {
+                                error = "unknown oracle field in datasource '" + cfg.name
+                                        + "': " + key;
+                                return false;
+                            }
+                        }
+                    }
+                    const auto legacy = [&cfg](const char *key) -> const std::string * {
+                        const auto it = cfg.extra.find(key);
+                        return it == cfg.extra.end() ? nullptr : &it->second;
+                    };
+                    if (!hasService)
+                        if (const auto *v = legacy("service_name")) cfg.oracle.service_name = *v;
+                    if (!hasSid)
+                        if (const auto *v = legacy("sid")) cfg.oracle.sid = *v;
+                    if (!hasWallet)
+                        if (const auto *v = legacy("wallet_location"))
+                            cfg.oracle.wallet_location = *v;
+                    if (!hasServerDn)
+                        if (const auto *v = legacy("server_cert_dn"))
+                            cfg.oracle.server_cert_dn = *v;
+                    if (!hasCharset) {
+                        if (const auto *v = legacy("charset_id")) {
+                            std::int64_t parsed = 0;
+                            if (!parseInt64(*v, parsed) || parsed < 1 || parsed > 65535) {
+                                error = "datasource '" + cfg.name
+                                        + "' extra.charset_id must be in range 1..65535";
+                                return false;
+                            }
+                            cfg.oracle.charset_id = static_cast<int>(parsed);
+                        }
+                    }
+                    if (!hasLobLimit) {
+                        if (const auto *v = legacy("lob_max_bytes")) {
+                            std::int64_t parsed = 0;
+                            if (!parseInt64(*v, parsed) || parsed < 1) {
+                                error = "datasource '" + cfg.name
+                                        + "' extra.lob_max_bytes must be > 0";
+                                return false;
+                            }
+                            cfg.oracle.lob_max_bytes = parsed;
+                        }
+                    }
+                    if (!hasBlobBind)
+                        if (const auto *v = legacy("blob_bind")) cfg.oracle.blob_bind = *v;
+
+                    if (cfg.oracle.charset_id < 1 || cfg.oracle.charset_id > 65535 ||
+                        cfg.oracle.lob_max_bytes < 1 ||
+                        (cfg.oracle.blob_bind != "auto" && cfg.oracle.blob_bind != "raw" &&
+                         cfg.oracle.blob_bind != "lob")) {
+                        error = "datasource '" + cfg.name + "' has invalid oracle configuration";
+                        return false;
+                    }
+                    if (!cfg.oracle.service_name.empty() && !cfg.oracle.sid.empty()) {
+                        error = "datasource '" + cfg.name
+                                + "' oracle.service_name and oracle.sid are mutually exclusive";
+                        return false;
+                    }
+                    if (!cfg.oracle.sid.empty() && !cfg.database.empty()) {
+                        error = "datasource '" + cfg.name
+                                + "' cannot combine database (service-name alias) with oracle.sid";
+                        return false;
+                    }
+                    const bool rawConnect = cfg.extra.find("connection_string") != cfg.extra.end();
+                    if (!rawConnect && cfg.dsn.empty() && cfg.oracle.service_name.empty() &&
+                        cfg.oracle.sid.empty() && cfg.database.empty()) {
+                        error = "datasource '" + cfg.name
+                                + "' requires oracle.service_name, oracle.sid, database, dsn, or "
+                                  "extra.connection_string";
+                        return false;
+                    }
+                    if ((rawConnect || !cfg.dsn.empty()) && cfg.tls_enabled) {
+                        error = "datasource '" + cfg.name
+                                + "' uses dsn/extra.connection_string; encode TCPS and certificate "
+                                  "verification in that value or Oracle Net configuration instead "
+                                  "of using tls";
+                        return false;
+                    }
+                    if (!cfg.tls_ca.empty() && cfg.oracle.wallet_location.empty())
+                        cfg.oracle.wallet_location = cfg.tls_ca;
+                    if (!cfg.tls_enabled && (!cfg.oracle.wallet_location.empty() ||
+                        !cfg.oracle.server_cert_dn.empty())) {
+                        error = "datasource '" + cfg.name
+                                + "' oracle.wallet_location/server_cert_dn require tls.enabled";
+                        return false;
+                    }
+                    if (!cfg.oracle.server_cert_dn.empty() && !cfg.tls_verify_peer) {
+                        error = "datasource '" + cfg.name
+                                + "' oracle.server_cert_dn requires tls.verify_peer=true";
+                        return false;
+                    }
+                    if (cfg.tls_enabled && (!cfg.tls_cert.empty() || !cfg.tls_key.empty())) {
+                        error = "datasource '" + cfg.name
+                                + "' Oracle TLS does not consume tls.cert/tls.key directly; "
+                                  "configure oracle.wallet_location";
+                        return false;
+                    }
+                } else if (cfg.tls_verify_peer && cfg.tls_enabled && cfg.tls_ca.empty()) {
+                    error = "datasource '" + cfg.name
+                            + "' enables TLS peer verification but tls.ca is empty";
                     return false;
                 }
                 out.datasources.push_back(std::move(cfg));

@@ -383,7 +383,9 @@ The facade `DBMW::openCursor` has two overloads: default data source, or a named
 - **PostgreSQL**: server-side cursor `DECLARE CURSOR` + `FETCH FORWARD n` + `CLOSE`. The cursor must live inside a transaction — if already in one it borrows that transaction; otherwise, with `auto_transaction=true`, it opens its own `pqxx::work` as a fallback (committed on close); with `auto_transaction=false` and no transaction it reports `CursorError` directly (no silent degradation). `scrollable=true` only takes effect when the config allows it, otherwise returns `NotSupported`.
 - **MySQL**: unbuffered result set (`mysql_stmt_*` and **not** calling `mysql_stmt_store_result`), consuming by batch `mysql_stmt_fetch` in a stream — results do not land in client memory; no transaction requirement.
 - **ODBC**: real cursor (`SQL_ATTR_CURSOR_TYPE` + `SQLFetch`); with config `allow_scrollable` it sets `SQL_CURSOR_STATIC` for scrolling; other drivers do not support scrolling (`scrollable=true` returns `NotSupported`).
-- **Oracle**: `openCursor` returns `NotSupported` — Oracle has no standalone cursor handle, and a server-side cursor would need `REF CURSOR` binding, which does not line up with the other drivers. Use `queryEach()` row callbacks instead; OCI already fetches in chunks via `OCIStmtFetch2` without materializing the whole result.
+- **Oracle**: forward-only OCI statement cursor. `openCursor()` owns the statement plus define/LOB
+  descriptors, `fetch(n)` advances through `OCIStmtFetch2`, and `close()` releases the statement.
+  Regular and LOB parameters are supported; `scrollable=true` still returns `NotSupported`.
 
 ### Configuration & resource guard
 
@@ -1134,14 +1136,51 @@ above.
 
 ### Connection & session setup
 
-`host / port / database` are assembled into a `host:port/service` connect string for `OCILogon2`;
-if `dsn` is configured it is used as-is.
+Prefer the Oracle-specific block so that service names, SIDs, wallets, and generic database fields
+do not have overlapping meanings:
+
+```yaml
+datasources:
+  - name: ora
+    type: oracle
+    host: db.example.com
+    port: 1521
+    user: app
+    password_env: ORACLE_PASSWORD
+    connection_timeout_ms: 5000
+    query_timeout_ms: 30000
+    tls:
+      enabled: true
+      verify_peer: true
+    oracle:
+      service_name: APP_PDB       # mutually exclusive with sid
+      wallet_location: /opt/oracle/wallet
+      server_cert_dn: CN=db.example.com,O=Example
+      charset_id: 873             # AL32UTF8
+      lob_max_bytes: 4194304
+      blob_bind: auto             # auto / raw / lob
+```
+
+Connection targets have a fixed precedence: `extra.connection_string` > `dsn` > a generated Oracle
+Net descriptor. The first two are passed to OCI unchanged, so dbmw cannot safely add `tls` settings;
+put TCPS and certificate verification in that value or the Oracle Net client configuration. Combining
+either form with a `tls` block is rejected instead of silently ignoring security settings. Generated
+descriptors require exactly one of `oracle.service_name` and `oracle.sid`. The legacy `database` field
+remains a service-name alias, and the old `extra.service_name / sid / charset_id / lob_max_bytes /
+blob_bind` keys remain compatible, but new configurations should use the `oracle` block.
+
+`connection_timeout_ms` is emitted as both `CONNECT_TIMEOUT` and `TRANSPORT_CONNECT_TIMEOUT`, so it
+applies before `OCILogon2` completes. `tls.enabled=true` selects TCPS; `verify_peer` controls
+`SSL_SERVER_DN_MATCH`, `server_cert_dn` can pin the server certificate DN, and `wallet_location`
+selects the wallet. For Oracle, `tls.ca` is accepted only as a compatibility alias for
+`oracle.wallet_location`. OCI does not consume `tls.cert / tls.key` directly, so those fields are
+rejected; import the client certificate and key into the wallet instead.
 
 The environment handle is created with `OCIEnvNlsCreate` and **pins the client character set to
 AL32UTF8 (charset id 873)** instead of depending on `NLS_LANG`. Without `NLS_LANG`, OCI assumes the
 client buffer is US7ASCII, so multi-byte data such as Chinese is silently mangled. To use a
-different character set (for example `UTF8` = 871 on a legacy database), set the numeric
-`extra.charset_id` on the data source.
+different character set (for example `UTF8` = 871 on a legacy database), set
+`oracle.charset_id` on the data source.
 
 Right after connecting, the driver runs **four
 `ALTER SESSION` statements** pinning `NLS_DATE_FORMAT`, `NLS_TIMESTAMP_FORMAT`,
@@ -1162,7 +1201,7 @@ SQL parses on different machines.
 | `ROWID` / `UROWID` | `string` | |
 | `INTERVAL DS` / `INTERVAL YM` | `string` | **degraded**: `Value` has no interval type — an intentional gap |
 
-LOBs are read via `OCILobRead2` into a `Blob`; anything past `extra.lob_max_bytes` (default 4 MB)
+LOBs are read via `OCILobRead2` into a `Blob`; anything past `oracle.lob_max_bytes` (default 4 MB)
 returns `NotSupported` rather than being silently truncated.
 
 **Writes use one of two binds**, because Oracle's `RAW` and `BLOB` columns accept different parameter
@@ -1172,8 +1211,8 @@ types and the target column is not known at bind time:
 |---|---|---|
 | `Blob` ≤ 4000 bytes (default) | `SQLT_BIN` raw | `RAW` (and small `BLOB` values via server-side implicit conversion) |
 | `Blob` > 4000 bytes | temporary `BLOB` locator (`OCILobCreateTemporary` + `OCILobWrite2` + `SQLT_BLOB`) | `BLOB` |
-| `extra.blob_bind=lob` | always locator | `BLOB` |
-| `extra.blob_bind=raw` | always raw | `RAW` |
+| `oracle.blob_bind=lob` | always locator | `BLOB` |
+| `oracle.blob_bind=raw` | always raw | `RAW` |
 
 Staying on `SQLT_BIN` past 4000 bytes hits ORA-01461 / ORA-22835, so the driver switches to a
 locator automatically. Past 32767 bytes with an explicit `blob_bind=raw` it returns `NotSupported`.
@@ -1221,22 +1260,30 @@ classification and retryability flags are lost:
 An ORA code that is not in the table yields an empty SQLSTATE and falls back to the caller's code —
 the driver **never invents a SQLSTATE**.
 
-### Known boundaries (intentional)
+### Capability status and development boundaries
 
-- `Array` / `Composite` parameters return `NotSupported` — never silently bound as NULL;
-- `openCursor()` returns `NotSupported`; use `queryEach()` for streaming;
-- `INTERVAL` degrades to a string;
-- `makeCallPlan` answers `NotSupported` for Oracle procedures with a result set or OUT parameters;
-- `makeDropRoutineSql` answers `NotSupported` (Oracle has no `IF EXISTS`);
-- `connection_timeout_ms` is pushed down to `OCI_ATTR_LOGON_TIMEOUT` and `query_timeout_ms` maps to
-  `OCI_ATTR_CALL_TIME`; `tls` is wired through a TCPS connect string, but the CA / certificate still
-  depend on the client sqlnet (wallet) configuration;
-- `executeBatch` is not overridden, so it falls back to the base-class per-row loop (correct, with
-  keys collected per row); Oracle array binding is a performance enhancement to enable after live
-  verification;
-- `supportsMultipleResultSets()` returns false: dbmw's synchronous `query` returns a single result
-  set, so Oracle 12c+ implicit result sets cannot be carried by the current interface — use
-  `queryEach()` or fetch them in the async interface when needed;
+The following items are grouped by cause; `NotSupported` no longer ambiguously means "will never
+be developed":
+
+- **Public API extension required**: Oracle UDT `Array` / `Composite` binding needs type names and
+  attribute metadata; typed `INTERVAL` needs a cross-driver addition to `common::Value`; procedure
+  OUT / `REF CURSOR` needs an output-bind model. These are not abandoned, but dbmw will not silently
+  coerce them to strings or NULL. Today they return `NotSupported`, except `INTERVAL`, whose text is
+  preserved losslessly.
+- **Driver capabilities now implemented**: `openCursor()` uses a pausable OCI statement, while
+  `queryAll()` reads Oracle 12c+ implicit results in order through `OCIStmtGetNextResult`.
+  `supportsMultipleResultSets()` returns true when the client OCI exposes that interface.
+- **Native batch optimization now implemented**: batches without `RETURNING`, Blob/LOB values, or
+  oversized text use `OCIBindArrayOfStruct` plus one `OCIStmtExecute`, with per-iteration counts from
+  `OCI_ATTR_DML_ROW_COUNT_ARRAY`. Generated-key, LOB, oversized-value, and older-client cases safely
+  fall back to the transactional per-row implementation. A failure rolls back the whole array DML
+  when dbmw owns the transaction; caller-owned transactions remain under caller control.
+- **Now implemented**: `makeDropRoutineSql(..., ifExists=true)` uses an anonymous PL/SQL block and
+  suppresses only ORA-04043 (object does not exist); every other error is re-raised. With
+  `ifExists=false`, it emits a strict plain `DROP`.
+- `connection_timeout_ms` constrains connection and transport establishment in the Oracle Net
+  descriptor, while `query_timeout_ms` maps to `OCI_ATTR_CALL_TIME`; TCPS, the wallet, and server DN
+  verification are represented explicitly in generated descriptors;
 - `escapeLiteral`'s Blob path uses `HEXTORAW`, but `allowsLiteralInterpolation()` returns false, so it
   is never actually invoked.
 
@@ -1275,8 +1322,8 @@ Asking a PostgreSQL procedure for a result set yields `NotSupported` (PG procedu
 result set; use a function). Oracle procedures with a result set or OUT parameters also yield
 `NotSupported` (they need `REF CURSOR` / `DBMS_OUTPUT` binding, which does not line up with the
 other dialects); scalar functions go through `DUAL`, table functions through `TABLE()`.
-Oracle has no `CREATE ... IF EXISTS` / `DROP ... IF EXISTS`, so dropping a routine answers
-`NotSupported`.
+Oracle has no native `CREATE ... IF EXISTS`. For a drop with `ifExists=true`, dbmw wraps `DROP` in
+anonymous PL/SQL and suppresses only ORA-04043; every other database error is returned normally.
 
 ### Create / drop
 
@@ -1729,6 +1776,10 @@ sequences, flow sequences, single/double quotes, and trailing comments.
 | `query_cache.*` | Query result cache: TTL, entry cap, memory cap, replica-only caching (off by default) |
 | `prepared_cache.*` | Prepared-statement cache: max handles per connection (0 = unlimited, LRU eviction), enabled flag (default true) |
 | `datasources[].name` | Data source name (unique) |
+| `datasources[].oracle.service_name` / `sid` | Oracle service name or SID (mutually exclusive) |
+| `datasources[].oracle.wallet_location` / `server_cert_dn` | Oracle TCPS wallet and optional server certificate DN |
+| `datasources[].oracle.charset_id` | OCI client character-set ID; defaults to AL32UTF8 (873) |
+| `datasources[].oracle.lob_max_bytes` / `blob_bind` | LOB read cap and Blob bind strategy (`auto` / `raw` / `lob`) |
 | `datasources[].type` | `mysql` / `postgres` / `oracle` / `odbc` / custom |
 | `datasources[].host/port/user/password/database` | Connection parameters |
 | `datasources[].dsn` | ODBC data source name |

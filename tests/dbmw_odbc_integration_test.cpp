@@ -373,7 +373,7 @@ namespace {
 
         dbmw::async::util::Options callAllOpts;
         auto mr = dbmw::async::util::callAll(
-            "SELECT dbmw_it_aadd(?, ?)",
+            "SELECT dbo.dbmw_it_aadd(?, ?)",
             dbmw::common::Params{std::int64_t(6), std::int64_t(7)}, callAllOpts).get();
         require(mr.status.ok(), "async callAll failed: " + mr.status.message);
         require(!mr.sets.empty() && !mr.sets.front().rows().empty(), "async callAll set missing");

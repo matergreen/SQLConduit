@@ -319,6 +319,7 @@ namespace dbmw::driver {
             }
             if (out) out->setFields(names);
             if (delivered) *delivered = 0;
+            if (columns == 0) return common::Status::OK();
 
             for (;;) {
                 const SQLRETURN rc = SQLFetch(stmt);
@@ -1120,12 +1121,13 @@ namespace dbmw::driver {
             !executionCompleted(rc))
             return odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, raw,
                              "SQLExecDirect(execute/keys)");
+        const auto st = fetchRows(stmt.get(), out.rows);
+        if (!st.ok()) return st;
         SQLLEN rows = 0;
         if (const SQLRETURN rc = SQLRowCount(raw, &rows); !succeeded(rc))
             return odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, raw, "SQLRowCount");
-        affected = rows < 0 ? 0 : static_cast<std::int64_t>(rows);
-        const auto st = fetchRows(stmt.get(), out.rows);
-        if (!st.ok()) return st;
+        affected = rows < 0 ? static_cast<std::int64_t>(out.rows.rows().size())
+                            : static_cast<std::int64_t>(rows);
         return common::Status::OK();
 #else
         (void) sql;
@@ -1153,13 +1155,14 @@ namespace dbmw::driver {
         if (const SQLRETURN rc = SQLExecute(raw); !executionCompleted(rc))
             return odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, raw,
                              "SQLExecute(keys)");
+        const auto st = fetchRows(stmt.get(), out.rows);
+        if (!st.ok()) return st;
         SQLLEN rows = 0;
         if (const SQLRETURN rc = SQLRowCount(stmt.get(), &rows); !succeeded(rc))
             return odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, stmt.get(),
                              "SQLRowCount");
-        affected = rows < 0 ? 0 : static_cast<std::int64_t>(rows);
-        const auto st = fetchRows(stmt.get(), out.rows);
-        if (!st.ok()) return st;
+        affected = rows < 0 ? static_cast<std::int64_t>(out.rows.rows().size())
+                            : static_cast<std::int64_t>(rows);
         return common::Status::OK();
 #else
         (void) sql;

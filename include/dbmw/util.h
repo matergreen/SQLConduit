@@ -281,11 +281,17 @@ namespace dbmw::common::util {
                     out = "CALL " + name + parenArgs(argCount);
                 }
                 return Status::OK();
-            case Dialect::SqlServer:
-                out = returnsRows
-                          ? "{CALL " + name + parenArgs(argCount) + "}"
-                          : "EXEC " + name + (argCount == 0 ? std::string() : " " + csvArgs(argCount));
+            case Dialect::SqlServer: {
+                const std::string qualified = ref.name.find('.') == std::string::npos
+                                                  ? "dbo." + ref.name : ref.name;
+                if (ref.kind == RoutineKind::Function)
+                    out = "SELECT " + qualified + parenArgs(argCount);
+                else
+                    out = returnsRows
+                              ? "{CALL " + qualified + parenArgs(argCount) + "}"
+                              : "EXEC " + qualified + (argCount == 0 ? std::string() : " " + csvArgs(argCount));
                 return Status::OK();
+            }
             case Dialect::Oracle:
                 if (ref.kind == RoutineKind::Function)
                     out = returnsRows
@@ -397,12 +403,17 @@ namespace dbmw::common::util {
             return Status::OK();
         }
         if (d == Dialect::SqlServer) {
-            out.callSql = returnsRows
-                              ? "{CALL " + name + parenArgs(args.size()) + "}"
-                              : "EXEC " + name + (args.empty()
-                                                      ? std::string()
-                                                      : " " + csvArgs(
-                                                            args.size()));
+            const std::string qualified = ref.name.find('.') == std::string::npos
+                                              ? "dbo." + ref.name : ref.name;
+            if (ref.kind == RoutineKind::Function)
+                out.callSql = "SELECT " + qualified + parenArgs(args.size());
+            else
+                out.callSql = returnsRows
+                                  ? "{CALL " + qualified + parenArgs(args.size()) + "}"
+                                  : "EXEC " + qualified + (args.empty()
+                                                          ? std::string()
+                                                          : " " + csvArgs(
+                                                                args.size()));
             return Status::OK();
         }
         if (d == Dialect::Oracle) {

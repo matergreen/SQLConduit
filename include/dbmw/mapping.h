@@ -880,6 +880,17 @@ namespace dbmw::mapping {
             const std::size_t paramCount = mappingFor<T>().columnNames(WriteCols::Writable).size();
             return base + common::oracleMakeReturningSuffix(gen, paramCount + 1);
         }
+        if (d == common::util::Dialect::SqlServer) {
+            const auto pos = base.find(" VALUES");
+            if (pos != std::string::npos) {
+                std::string cols;
+                for (std::size_t i = 0; i < gen.size(); ++i) {
+                    if (i) cols += ',';
+                    cols += "INSERTED." + gen[i];
+                }
+                return base.substr(0, pos) + " OUTPUT " + cols + base.substr(pos);
+            }
+        }
         return base;
     }
 

@@ -1228,8 +1228,17 @@ the driver **never invents a SQLSTATE**.
 - `INTERVAL` degrades to a string;
 - `makeCallPlan` answers `NotSupported` for Oracle procedures with a result set or OUT parameters;
 - `makeDropRoutineSql` answers `NotSupported` (Oracle has no `IF EXISTS`);
-- `connection_timeout_ms` is not pushed down (OCI would need `OCI_ATTR_LOGON_TIMEOUT`), and `tls`
-  is not wired up (it requires a wallet).
+- `connection_timeout_ms` is pushed down to `OCI_ATTR_LOGON_TIMEOUT` and `query_timeout_ms` maps to
+  `OCI_ATTR_CALL_TIME`; `tls` is wired through a TCPS connect string, but the CA / certificate still
+  depend on the client sqlnet (wallet) configuration;
+- `executeBatch` is not overridden, so it falls back to the base-class per-row loop (correct, with
+  keys collected per row); Oracle array binding is a performance enhancement to enable after live
+  verification;
+- `supportsMultipleResultSets()` returns false: dbmw's synchronous `query` returns a single result
+  set, so Oracle 12c+ implicit result sets cannot be carried by the current interface — use
+  `queryEach()` or fetch them in the async interface when needed;
+- `escapeLiteral`'s Blob path uses `HEXTORAW`, but `allowsLiteralInterpolation()` returns false, so it
+  is never actually invoked.
 
 The type layer in `oracle_types.h` does not depend on the OCI headers, so
 `tests/dbmw_oracle_types_test.cpp` runs as a pure unit test with no Instant Client. Only

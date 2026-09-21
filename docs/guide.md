@@ -1322,7 +1322,13 @@ OCI 的 `OCIErrorGet` 并不填充 sqlstate 参数，所以驱动自己维护一
 - `INTERVAL` 退化为字符串；
 - `makeCallPlan` 对有结果集 / OUT 参数的 Oracle 过程返回 `NotSupported`；
 - `makeDropRoutineSql` 返回 `NotSupported`（Oracle 无 `IF EXISTS`）；
-- `connection_timeout_ms` 未下推（OCI 应走 `OCI_ATTR_LOGON_TIMEOUT`），`tls` 未接入（需 wallet）。
+- `connection_timeout_ms` 已下推到 `OCI_ATTR_LOGON_TIMEOUT`，`query_timeout_ms` 映射到
+  `OCI_ATTR_CALL_TIME`；`tls` 通过 TCPS 连接串接入，但 CA / 证书仍由客户端 sqlnet（wallet）决定；
+- `executeBatch` 未 override，走基类逐条循环（功能正确，生成键逐行收集）；Oracle 的 array binding
+  是性能增强，待真机验证后再启用；
+- `supportsMultipleResultSets()` 返回 false：dbmw 的同步 `query` 只返回单结果集，Oracle 12c+ 隐式
+  结果集在现有接口模型里无法承载，需要时用 `queryEach()` 或在异步接口里逐取；
+- `escapeLiteral` 的 Blob 走 `HEXTORAW`，但 `allowsLiteralInterpolation()` 返回 false，实际不会被调用。
 
 `oracle_types.h` 的类型层不依赖 OCI 头，因此有 `tests/dbmw_oracle_types_test.cpp` 做纯单元测试，
 不需要 Instant Client；需要真机的是 `tests/dbmw_oracle_integration_test.cpp`（用

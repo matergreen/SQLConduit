@@ -187,8 +187,16 @@ namespace dbmw::driver {
         std::string service = cfg.database;
         if (const auto it = cfg.extra.find("service_name"); it != cfg.extra.end())
             service = it->second;
-        if (service.empty()) return host + ":" + std::to_string(port);
-        return "//" + host + ":" + std::to_string(port) + "/" + service;
+        if (!cfg.tls_enabled) {
+            if (service.empty()) return host + ":" + std::to_string(port);
+            return "//" + host + ":" + std::to_string(port) + "/" + service;
+        }
+        if (service.empty())
+            return "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCPS)(HOST=" + host +
+                   ")(PORT=" + std::to_string(port) + ")))";
+        return "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCPS)(HOST=" + host +
+               ")(PORT=" + std::to_string(port) + "))(CONNECT_DATA=(SERVICE_NAME=" + service +
+               ")))";
     }
 #endif
 
@@ -238,9 +246,17 @@ namespace dbmw::driver {
             return mapped;
         }
 
+#ifdef OCI_ATTR_LOGON_TIMEOUT
+        if (cfg.connection_timeout_ms > 0) {
+            ub4 logonTimeout = static_cast<ub4>(cfg.connection_timeout_ms);
+            (void) OCIAttrSet(svc_, OCI_HTYPE_SVCCTX, &logonTimeout, 0,
+                              OCI_ATTR_LOGON_TIMEOUT, err_);
+        }
+#endif
+
 #ifdef OCI_ATTR_CALL_TIME
         if (cfg.query_timeout_ms > 0) {
-            ub4 callTime = static_cast<ub4>(cfg.query_timeout_ms) * 1000u;
+            ub4 callTime = static_cast<ub4>(cfg.query_timeout_ms);
             (void) OCIAttrSet(svc_, OCI_HTYPE_SVCCTX, &callTime, 0, OCI_ATTR_CALL_TIME, err_);
         }
 #endif

@@ -157,6 +157,7 @@ namespace {
                           "\"price\" BINARY_DOUBLE NOT NULL, "
                           "\"payload\" RAW(64), "
                           "\"doc\" CLOB, "
+                          "\"big_blob\" BLOB, "
                           "\"amount\" NUMBER(30,9), "
                           "\"created_at\" TIMESTAMP NOT NULL)", affected), "create table");
         }
@@ -171,14 +172,17 @@ namespace {
 
         const dbmw::common::Timestamp created = std::chrono::system_clock::now();
         const dbmw::common::Blob payload{0x00, 0x01, 0x7f, 0x80, 0xff};
+        dbmw::common::Blob bigBlob(5000);
+        for (std::size_t i = 0; i < bigBlob.size(); ++i)
+            bigBlob[i] = static_cast<unsigned char>((i * 7 + 3) & 0xff);
         const dbmw::common::Decimal amount{"12345.678901234"};
         std::int64_t affected = 0;
         requireOk(dbmw::DBMW::execute(
                       "INSERT INTO " + f.table +
-                      " (\"name\", \"qty\", \"price\", \"payload\", \"doc\", \"amount\", "
-                      "\"created_at\") VALUES (?, ?, ?, ?, ?, ?, ?)",
+                      " (\"name\", \"qty\", \"price\", \"payload\", \"doc\", \"big_blob\", "
+                      "\"amount\", \"created_at\") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                       Params{std::string("raw-types"), std::int64_t(7), 12.5, payload,
-                             std::string("clob body"), amount, created},
+                             std::string("clob body"), bigBlob, amount, created},
                       affected), "insert typed row");
         require(affected == 1, "typed insert affected mismatch");
 
@@ -189,8 +193,8 @@ namespace {
 
         ResultSet rows;
         requireOk(dbmw::DBMW::query(
-                      "SELECT \"id\", \"qty\", \"price\", \"payload\", \"doc\", \"amount\", "
-                      "\"created_at\" FROM " + f.table + " WHERE \"name\" = ?",
+                      "SELECT \"id\", \"qty\", \"price\", \"payload\", \"doc\", \"big_blob\", "
+                      "\"amount\", \"created_at\" FROM " + f.table + " WHERE \"name\" = ?",
                       Params{std::string("raw-types")}, rows), "read raw row back");
         require(rows.rowCount() == 1, "raw row count mismatch");
         const auto &row = rows.rows()[0];
@@ -200,6 +204,11 @@ namespace {
         const auto *blob = std::get_if<dbmw::common::Blob>(&row.at("payload"));
         require(blob != nullptr && *blob == payload, "RAW round trip to Blob");
         require(asString(row.at("doc")) == "clob body", "CLOB round trip to string");
+        const auto *big = std::get_if<dbmw::common::Blob>(&row.at("big_blob"));
+        require(big != nullptr && big->size() == bigBlob.size(),
+                "BLOB round trip length (temporary LOB bind)");
+        if (big && big->size() == bigBlob.size())
+            require(*big == bigBlob, "BLOB round trip content");
         const auto *dec = std::get_if<dbmw::common::Decimal>(&row.at("amount"));
         require(dec != nullptr && dec->value == amount.value, "NUMBER(30,9) round trip to Decimal");
         const auto *ts = std::get_if<dbmw::common::Timestamp>(&row.at("created_at"));
@@ -329,7 +338,8 @@ namespace {
                 "ORA-00001 should map to ConstraintViolation, got " +
                 std::string(dbmw::common::errorCodeToString(duplicate.code)));
         require(duplicate.nativeCode == 1, "ORA-00001 should be recorded as nativeCode=1");
-        std::cout << "  unique violation sqlstate=" << duplicate.sqlState << "\n";
+        require(duplicate.sqlState == "23000",
+                "ORA-00001 should map to SQLSTATE 23000, got '" + duplicate.sqlState + "'");
     }
 }
 

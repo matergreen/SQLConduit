@@ -1509,6 +1509,17 @@ groups:
         check(!common::sql::hasLimitClause(
                   "WITH picked AS (SELECT id FROM t LIMIT 1) SELECT * FROM picked"),
               "CTE 内层 LIMIT 不能替外层 SELECT 过审");
+        check(common::sql::hasRowLimitClause(
+                  "SELECT * FROM users FETCH FIRST 10 ROWS ONLY"),
+              "Oracle FETCH FIRST n ROWS ONLY 视为有行数上限");
+        check(common::sql::hasRowLimitClause("SELECT * FROM users fetch next 5 rows only"),
+              "Oracle FETCH NEXT 大小写不敏感");
+        check(common::sql::hasRowLimitClause("SELECT * FROM users WHERE ROWNUM <= 10"),
+              "Oracle ROWNUM <= n 视为有行数上限");
+        check(!common::sql::hasRowLimitClause("SELECT * FROM users ORDER BY rownum"),
+              "ORDER BY ROWNUM 不限制行数，不算有上限");
+        check(!common::sql::hasRowLimitClause("SELECT * FROM users"),
+              "无分页的 SELECT 仍被判定为无上限");
         check(common::sql::hasMultipleStatements("SELECT 1; DELETE FROM users") &&
               !common::sql::hasMultipleStatements("SELECT ';' AS value; -- tail"),
               "多语句可检出，字面量与尾部分号不误报");

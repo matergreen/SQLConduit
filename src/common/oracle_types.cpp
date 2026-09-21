@@ -565,4 +565,46 @@ namespace dbmw::common {
         }
         return s;
     }
+
+    std::string oracleSqlState(const int oraCode) {
+        const int code = oraCode < 0 ? -oraCode : oraCode;
+        switch (code) {
+            case 1: return "23000";
+            case 54: return "40001";
+            case 60: return "40001";
+            case 903: return "42000";
+            case 904: return "42S22";
+            case 911: return "42000";
+            case 923: return "42000";
+            case 933: return "42000";
+            case 942: return "42S02";
+            case 955: return "42710";
+            case 1013: return "57014";
+            case 1017: return "28000";
+            case 1400: return "23502";
+            case 1401: return "22001";
+            case 1408: return "42701";
+            case 1438: return "22003";
+            case 1461: return "22001";
+            case 1722: return "22018";
+            case 1830: return "22008";
+            case 1843: return "22007";
+            case 1858: return "22007";
+            case 2290: return "23514";
+            case 2291: return "23503";
+            case 2292: return "23503";
+            case 3113: return "08S01";
+            case 3114: return "08S01";
+            case 3135: return "08S01";
+            case 8177: return "40001";
+            case 12162: return "08001";
+            case 12170: return "08001";
+            case 12514: return "08001";
+            case 12537: return "08S01";
+            case 12541: return "08001";
+            case 12899: return "22001";
+            case 22835: return "22001";
+            default: return std::string();
+        }
+    }
 }

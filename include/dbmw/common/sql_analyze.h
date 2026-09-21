@@ -28,6 +28,8 @@ namespace dbmw::common::sql {
 
     bool hasLimitClause(const std::string &sql);
 
+    bool hasRowLimitClause(const std::string &sql);
+
     bool hasMultipleStatements(const std::string &sql);
 
     bool hasMultipleStatements(const std::string &sql, bool allowRoutineBody);

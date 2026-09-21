@@ -320,8 +320,8 @@ ds->execute("INSERT INTO t(id, blob) VALUES(?, ?)", sp, n);   // 或 query / exe
 ## 超时、取消与事务选项
 
 数据源的 `query_timeout_ms` 会映射到 PostgreSQL `statement_timeout`、ODBC
-`SQL_ATTR_QUERY_TIMEOUT` 和 MySQL 客户端读写期限。Oracle 不做服务端超时下推
-（OCI 无语句级超时属性），超时由 `cancel()` 走 `OCIBreak` 中断在途语句兜底。事务还可设置隔离级别、只读和整体期限：
+`SQL_ATTR_QUERY_TIMEOUT` 和 MySQL 客户端读写期限；Oracle 映射到 `OCI_ATTR_CALL_TIME`
+（服务端调用超时）。此外 `cancel()` 会走 `OCIBreak` 中断在途语句。事务还可设置隔离级别、只读和整体期限：
 
 ```cpp
 dbmw::common::TransactionOptions options;
@@ -1238,6 +1238,11 @@ CMake 会 `find_path(oci.h)` + `find_library(clntsh oci)`；自动探测不到�
 ### 连接与会话初始化
 
 `host / port / database` 拼成 `host:port/service` 连接串走 `OCILogon2`；配了 `dsn` 就直接用 `dsn`。
+
+环境句柄走 `OCIEnvNlsCreate` 并**显式固定客户端字符集为 AL32UTF8（charset id 873）**，不再依赖
+`NLS_LANG`——未设 `NLS_LANG` 时 OCI 默认按 US7ASCII 解释客户端缓冲区，中文等多字节数据会静默变
+乱码。要换成别的字符集（例如老库的 `UTF8` = 871）就在数据源的 `extra.charset_id` 里写数字。
+
 连接成功后**立即执行 4 条 `ALTER SESSION`** 固定 `NLS_DATE_FORMAT`、`NLS_TIMESTAMP_FORMAT`、
 `NLS_TIMESTAMP_TZ_FORMAT` 和 `NLS_NUMERIC_CHARACTERS='.,'`——结果集按**文本**抓取，
 不固定这四项就会被客户端环境变量（如 `NLS_LANG`）左右，同一条 SQL 在不同机器上解析出不同值。
@@ -1257,6 +1262,18 @@ CMake 会 `find_path(oci.h)` + `find_library(clntsh oci)`；自动探测不到�
 
 LOB 默认按 `OCILobRead2` 读成 `Blob`，超过 `extra.lob_max_bytes`（默认 4 MB）报 `NotSupported`
 而不是静默截断。
+
+**写侧分两种绑定**，因为 Oracle 的 `RAW` 列和 `BLOB` 列接受的参数类型不同，而绑定时无从得知目标列：
+
+| 条件 | 绑定方式 | 适用列 |
+|---|---|---|
+| `Blob` ≤ 4000 字节（默认） | `SQLT_BIN` 裸绑定 | `RAW`（以及小值的 `BLOB`，靠服务端隐式转换） |
+| `Blob` > 4000 字节 | 临时 `BLOB` locator（`OCILobCreateTemporary` + `OCILobWrite2` + `SQLT_BLOB`） | `BLOB` |
+| `extra.blob_bind=lob` | 无条件走 locator | `BLOB` |
+| `extra.blob_bind=raw` | 无条件走裸绑定 | `RAW` |
+
+超过 4000 字节仍走 `SQLT_BIN` 会撞 ORA-01461 / ORA-22835，所以自动切成 locator。
+超过 32767 字节且显式 `blob_bind=raw` 时报 `NotSupported`。
 
 ### 占位符与生成键
 
@@ -1280,13 +1297,32 @@ ds->execute("INSERT INTO t(name) VALUES(?) RETURNING id INTO :2", n, keys);
 `ROLLBACK TO SAVEPOINT`；Oracle **没有 `RELEASE SAVEPOINT`**，故 `releaseSavepoint()` 是 no-op。
 `cancel()` 走 `OCIBreak` 中断在途语句。
 
+### 错误与 SQLSTATE
+
+OCI 的 `OCIErrorGet` 并不填充 sqlstate 参数，所以驱动自己维护一张 `ORA-xxxxx → SQLSTATE` 表
+（`common::oracleSqlState()`）。这不是装饰——`Status::databaseError()` 是**靠 SQLSTATE 反推
+`ErrorCode` 的**，缺了它错误分类和可重试标记就全丢：
+
+| ORA | SQLSTATE | 推导结果 |
+|---|---|---|
+| ORA-00001 唯一约束 | `23000` | `ConstraintViolation` |
+| ORA-01400 NOT NULL | `23502` | `ConstraintViolation` |
+| ORA-02290 / 02291 / 02292 检查/外键 | `23514` / `23503` | `ConstraintViolation` |
+| ORA-00060 / 00054 / 08177 | `40001` | `Deadlock`，`retryable=true` |
+| ORA-01013 取消 | `57014` | `Cancelled` |
+| ORA-03113 / 03114 / 03135 连接断开 | `08S01` | `connectionBroken=true` |
+| ORA-00942 / 00904 / 00933 | `42S02` / `42S22` / `42000` | 沿用调用方的 fallback |
+
+未收录的 ORA 码返回空 SQLSTATE，由调用方传入的 fallback 码兜底——**不臆造 SQLSTATE**。
+
 ### 已知边界（刻意保留）
 
 - `Array` / `Composite` 参数返回 `NotSupported`，不静默绑 NULL；
 - `openCursor()` 返回 `NotSupported`，流式请用 `queryEach()`；
 - `INTERVAL` 退化为字符串；
 - `makeCallPlan` 对有结果集 / OUT 参数的 Oracle 过程返回 `NotSupported`；
-- `makeDropRoutineSql` 返回 `NotSupported`（Oracle 无 `IF EXISTS`）。
+- `makeDropRoutineSql` 返回 `NotSupported`（Oracle 无 `IF EXISTS`）；
+- `connection_timeout_ms` 未下推（OCI 应走 `OCI_ATTR_LOGON_TIMEOUT`），`tls` 未接入（需 wallet）。
 
 `oracle_types.h` 的类型层不依赖 OCI 头，因此有 `tests/dbmw_oracle_types_test.cpp` 做纯单元测试，
 不需要 Instant Client；需要真机的是 `tests/dbmw_oracle_integration_test.cpp`（用

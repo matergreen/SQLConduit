@@ -221,6 +221,39 @@ int main() {
               "MySQL 方言不追加任何 RETURNING");
     }
 
+    std::cout << "== ORA -> SQLSTATE 映射 ==\n";
+    {
+        using dbmw::common::oracleSqlState;
+        check(oracleSqlState(1) == "23000", "ORA-00001 唯一约束 -> 23000");
+        check(oracleSqlState(1400) == "23502", "ORA-01400 NOT NULL -> 23502");
+        check(oracleSqlState(2291) == "23503", "ORA-02291 外键 -> 23503");
+        check(oracleSqlState(2290) == "23514", "ORA-02290 检查约束 -> 23514");
+        check(oracleSqlState(60) == "40001", "ORA-00060 死锁 -> 40001");
+        check(oracleSqlState(8177) == "40001", "ORA-08177 串行化冲突 -> 40001");
+        check(oracleSqlState(54) == "40001", "ORA-00054 资源忙 -> 40001");
+        check(oracleSqlState(1013) == "57014", "ORA-01013 取消 -> 57014");
+        check(oracleSqlState(942) == "42S02", "ORA-00942 表不存在 -> 42S02");
+        check(oracleSqlState(904) == "42S22", "ORA-00904 无效列 -> 42S22");
+        check(oracleSqlState(933) == "42000", "ORA-00933 语法错误 -> 42000");
+        check(oracleSqlState(1017) == "28000", "ORA-01017 认证失败 -> 28000");
+        check(oracleSqlState(3113) == "08S01", "ORA-03113 连接断开 -> 08S01");
+        check(oracleSqlState(12541) == "08001", "ORA-12541 无监听 -> 08001");
+        check(oracleSqlState(-1) == "23000", "负值 ORA 码按绝对值归一");
+        check(oracleSqlState(99999).empty(), "未收录的 ORA 码返回空，不臆造 SQLSTATE");
+
+        const auto dup = dbmw::common::Status::databaseError(
+            dbmw::common::ErrorCode::QueryError, "ORA-00001", oracleSqlState(1), 1);
+        check(dup.code == dbmw::common::ErrorCode::ConstraintViolation,
+              "ORA-00001 经 databaseError 归类为 ConstraintViolation");
+        const auto dead = dbmw::common::Status::databaseError(
+            dbmw::common::ErrorCode::QueryError, "ORA-00060", oracleSqlState(60), 60);
+        check(dead.code == dbmw::common::ErrorCode::Deadlock && dead.retryable,
+              "ORA-00060 归类为可重试的 Deadlock");
+        const auto lost = dbmw::common::Status::databaseError(
+            dbmw::common::ErrorCode::QueryError, "ORA-03113", oracleSqlState(3113), 3113);
+        check(lost.connectionBroken, "ORA-03113 标记为 connectionBroken");
+    }
+
     std::cout << "\n通过 " << g_passed << " 项，失败 " << g_failed << " 项\n";
     return g_failed == 0 ? 0 : 1;
 }

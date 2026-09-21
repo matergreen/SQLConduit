@@ -108,7 +108,7 @@ namespace dbmw::core {
 
         const bool isCursor = (type == common::OperationType::Select);
         if (policy->require_limit_select && !isCursor && kind == StatementKind::Select &&
-            !hasLimitClause(sql)) {
+            !common::sql::hasRowLimitClause(sql)) {
             return verdict(policy->block, policy->log_blocked,
                            "SELECT without LIMIT clause", sql, warned_, blocked_);
         }

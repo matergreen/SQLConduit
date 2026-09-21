@@ -99,6 +99,8 @@ namespace dbmw::common {
 
     std::string oracleMakeReturningSuffix(const std::vector<std::string> &columns,
                                           std::size_t firstBind);
+
+    std::string oracleSqlState(int oraCode);
 }
 
 #endif

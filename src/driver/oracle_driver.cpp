@@ -72,9 +72,79 @@ namespace dbmw::driver {
             bool &active_;
         };
 
+        const ub2 kCharsetAl32Utf8 = 873;
+
+        ub2 resolveClientCharset(const config::DataSourceConfig &cfg) {
+            const auto it = cfg.extra.find("charset_id");
+            if (it == cfg.extra.end()) return kCharsetAl32Utf8;
+            const char *s = it->second.c_str();
+            char *end = nullptr;
+            const long v = std::strtol(s, &end, 10);
+            if (end == s || v <= 0 || v >= 65536) return kCharsetAl32Utf8;
+            return static_cast<ub2>(v);
+        }
+
         bool ociOk(const sword rc) {
             return rc == OCI_SUCCESS || rc == OCI_SUCCESS_WITH_INFO;
         }
+
+        enum class LobBindMode { Auto, Raw, Lob };
+
+        LobBindMode resolveLobBindMode(const config::DataSourceConfig &cfg) {
+            const auto it = cfg.extra.find("blob_bind");
+            if (it == cfg.extra.end()) return LobBindMode::Auto;
+            if (it->second == "lob") return LobBindMode::Lob;
+            if (it->second == "raw") return LobBindMode::Raw;
+            return LobBindMode::Auto;
+        }
+
+        const std::size_t kDirectBindLimit = 4000;
+
+        class LobBindGuard {
+        public:
+            LobBindGuard(OCIEnv *env, OCISvcCtx *svc, OCIError *err)
+                : env_(env), svc_(svc), err_(err) {}
+
+            ~LobBindGuard() { release(); }
+
+            LobBindGuard(const LobBindGuard &) = delete;
+
+            LobBindGuard &operator=(const LobBindGuard &) = delete;
+
+            OCILobLocator *createBlob(const std::vector<unsigned char> &data) {
+                void *p = nullptr;
+                if (!ociOk(OCIDescriptorAlloc(env_, &p, OCI_DTYPE_LOB, 0, nullptr))) return nullptr;
+                auto *loc = static_cast<OCILobLocator *>(p);
+                if (!ociOk(OCILobCreateTemporary(svc_, err_, loc, 0, SQLCS_IMPLICIT, OCI_TEMP_BLOB,
+                                                 0, OCI_DURATION_SESSION))) {
+                    OCIDescriptorFree(loc, OCI_DTYPE_LOB);
+                    return nullptr;
+                }
+                locs_.push_back(loc);
+                oraub8 byteAmt = static_cast<oraub8>(data.size());
+                oraub8 charAmt = 0;
+                const sword wrc = OCILobWrite2(svc_, err_, loc, &byteAmt, &charAmt, 1,
+                                               const_cast<unsigned char *>(data.data()),
+                                               static_cast<oraub8>(data.size()), OCI_ONE_PIECE,
+                                               nullptr, nullptr, 0, SQLCS_IMPLICIT);
+                if (!ociOk(wrc)) return nullptr;
+                return loc;
+            }
+
+            void release() {
+                for (auto *l: locs_) {
+                    OCILobFreeTemporary(svc_, err_, l);
+                    OCIDescriptorFree(l, OCI_DTYPE_LOB);
+                }
+                locs_.clear();
+            }
+
+        private:
+            OCIEnv *env_;
+            OCISvcCtx *svc_;
+            OCIError *err_;
+            std::vector<OCILobLocator *> locs_;
+        };
 
         common::Status oracleError(OCIError *err, const common::ErrorCode fallback,
                                    const char *where) {
@@ -87,6 +157,7 @@ namespace dbmw::driver {
             std::string state(reinterpret_cast<const char *>(stateBuf));
             while (!msg.empty() && (msg.back() == '\n' || msg.back() == '\r')) msg.pop_back();
             if (msg.empty()) msg = "OCI call failed";
+            if (state.size() != 5) state = common::oracleSqlState(static_cast<int>(code));
             return common::Status::databaseError(fallback,
                                                  std::string("Oracle ") + where + ": " + msg,
                                                  std::move(state), code);
@@ -132,11 +203,12 @@ namespace dbmw::driver {
             if (v > 0) lobMaxBytes_ = v;
         }
 
-        sword rc = OCIEnvCreate(&env_, OCI_THREADED, nullptr, nullptr, nullptr, nullptr, 0,
-                                nullptr);
+        const ub2 clientCharset = resolveClientCharset(cfg);
+        sword rc = OCIEnvNlsCreate(&env_, OCI_THREADED, nullptr, nullptr, nullptr, nullptr, 0,
+                                   nullptr, clientCharset, clientCharset);
         if (!ociOk(rc))
             return common::Status::error(common::ErrorCode::ConnectionFailed,
-                                         "Oracle: OCIEnvCreate failed");
+                                         "Oracle: OCIEnvNlsCreate failed");
         rc = OCIHandleAlloc(env_, reinterpret_cast<void **>(&err_), OCI_HTYPE_ERROR, 0, nullptr);
         if (!ociOk(rc)) {
             OCIHandleFree(env_, OCI_HTYPE_ENV);
@@ -266,6 +338,7 @@ namespace dbmw::driver {
         std::vector<sb2> inds;
         std::vector<ub2> rlens;
         std::vector<ub2> rcs;
+        std::vector<OCILobLocator *> lobLocs;
         static char kEmpty[1] = {0};
 
         const std::size_t totalBinds = params.size() +
@@ -276,22 +349,36 @@ namespace dbmw::driver {
         rlens.reserve(totalBinds + 1);
         rcs.reserve(totalBinds + 1);
 
+        const LobBindMode lobMode = resolveLobBindMode(cfg_);
+        LobBindGuard lobGuard(env_, svc_, err_);
+
         for (const auto &v: params) {
             const auto bind = common::oracleBindValue(v);
             textBufs.emplace_back();
             rawBufs.emplace_back();
+            lobLocs.emplace_back(nullptr);
             if (bind.unsupported)
                 return common::Status::error(common::ErrorCode::NotSupported,
                                              "Oracle: cannot bind value of type " +
                                              common::valueToString(v));
             if (bind.raw.has_value()) {
-                if (bind.raw->size() > 32767)
-                    return common::Status::error(
-                        common::ErrorCode::NotSupported,
-                        "Oracle: binary parameter of " + std::to_string(bind.raw->size()) +
-                        " bytes exceeds the 32767 byte direct bind limit; use a temporary LOB");
-                rawBufs.back() = *bind.raw;
-                textBufs.back().assign(1, '\0');
+                if (lobMode == LobBindMode::Lob ||
+                    (lobMode == LobBindMode::Auto && bind.raw->size() > kDirectBindLimit)) {
+                    auto *loc = lobGuard.createBlob(*bind.raw);
+                    if (loc == nullptr)
+                        return oracleError(err_, common::ErrorCode::QueryError, "lob bind");
+                    lobLocs.back() = loc;
+                    textBufs.back().assign(1, '\0');
+                } else {
+                    if (bind.raw->size() > 32767)
+                        return common::Status::error(
+                            common::ErrorCode::NotSupported,
+                            "Oracle: binary parameter of " + std::to_string(bind.raw->size()) +
+                            " bytes exceeds the 32767 byte direct bind limit; set "
+                            "extra.blob_bind=lob to bind it as a temporary BLOB");
+                    rawBufs.back() = *bind.raw;
+                    textBufs.back().assign(1, '\0');
+                }
             } else if (bind.text.has_value()) {
                 textBufs.back().assign(bind.text->begin(), bind.text->end());
                 textBufs.back().push_back('\0');
@@ -310,6 +397,7 @@ namespace dbmw::driver {
                 outBufs.emplace_back(512, '\0');
                 textBufs.emplace_back(512, '\0');
                 rawBufs.emplace_back();
+                lobLocs.emplace_back(nullptr);
                 inds.push_back(0);
                 rlens.push_back(0);
                 rcs.push_back(0);
@@ -317,6 +405,16 @@ namespace dbmw::driver {
         }
 
         for (std::size_t i = 0; i < totalBinds; ++i) {
+            OCIBind *bindHandle = nullptr;
+            if (lobLocs[i] != nullptr) {
+                const sword brc = OCIBindByPos(
+                    stmt, &bindHandle, err_, static_cast<ub4>(i + 1), &lobLocs[i],
+                    static_cast<sb4>(sizeof(OCILobLocator *)),
+                    static_cast<ub2>(common::kSqltBlob), &inds[i], &rlens[i], &rcs[i], 0, nullptr,
+                    OCI_DEFAULT);
+                if (!ociOk(brc)) return oracleError(err_, common::ErrorCode::QueryError, "bind");
+                continue;
+            }
             const bool isRaw = !rawBufs[i].empty();
             const ub2 dty = isRaw ? static_cast<ub2>(common::kSqltBin)
                                   : static_cast<ub2>(common::kSqltStr);
@@ -328,7 +426,6 @@ namespace dbmw::driver {
                                     ? 0
                                     : static_cast<sb4>(isRaw ? rawBufs[i].size()
                                                              : textBufs[i].size());
-            OCIBind *bindHandle = nullptr;
             const sword brc = OCIBindByPos(stmt, &bindHandle, err_, static_cast<ub4>(i + 1),
                                            valuep, valueSz, dty, &inds[i], &rlens[i], &rcs[i], 0,
                                            nullptr, OCI_DEFAULT);

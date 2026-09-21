@@ -463,6 +463,49 @@ namespace dbmw::common::sql {
         return containsTopLevelKeyword(maskLiteralRegions(sql), "LIMIT");
     }
 
+    bool hasRowLimitClause(const std::string &sql) {
+        if (hasLimitClause(sql)) return true;
+        const std::string masked = maskLiteralRegions(sql);
+        const std::size_t n = masked.size();
+        int depth = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            const char c = masked[i];
+            if (c == '(') {
+                ++depth;
+                continue;
+            }
+            if (c == ')') {
+                if (depth > 0) --depth;
+                continue;
+            }
+            if (depth != 0) continue;
+            if (!std::isalpha(static_cast<unsigned char>(c))) continue;
+            if (i > 0 && (std::isalnum(static_cast<unsigned char>(masked[i - 1])) ||
+                          masked[i - 1] == '_'))
+                continue;
+            std::size_t p = i;
+            std::string word;
+            while (p < n && (std::isalnum(static_cast<unsigned char>(masked[p])) ||
+                             masked[p] == '_')) {
+                word += static_cast<char>(std::toupper(static_cast<unsigned char>(masked[p])));
+                ++p;
+            }
+            std::size_t q = p;
+            while (q < n && std::isspace(static_cast<unsigned char>(masked[q]))) ++q;
+            if (word == "FETCH") {
+                std::string next;
+                while (q < n && std::isalpha(static_cast<unsigned char>(masked[q]))) {
+                    next += static_cast<char>(std::toupper(static_cast<unsigned char>(masked[q])));
+                    ++q;
+                }
+                if (next == "FIRST" || next == "NEXT") return true;
+            } else if (word == "ROWNUM") {
+                if (q < n && (masked[q] == '<' || masked[q] == '=')) return true;
+            }
+        }
+        return false;
+    }
+
     bool hasMultipleStatements(const std::string &sql) {
         return hasMultipleStatements(sql, false);
     }

@@ -304,7 +304,7 @@ ds->execute("INSERT INTO t(id, blob) VALUES(?, ?)", sp, n);   // or query / exec
 
 ## Timeouts, cancellation & transaction options
 
-A data source's `query_timeout_ms` maps to PostgreSQL `statement_timeout`, ODBC `SQL_ATTR_QUERY_TIMEOUT`, and the MySQL client read/write timeout. Oracle has no server-side timeout pushdown (OCI exposes no statement-level timeout attribute); timeouts fall back to `cancel()` issuing `OCIBreak` on the in-flight statement. A transaction can additionally set isolation level, read-only, and an overall deadline:
+A data source's `query_timeout_ms` maps to PostgreSQL `statement_timeout`, ODBC `SQL_ATTR_QUERY_TIMEOUT`, and the MySQL client read/write timeout; on Oracle it maps to `OCI_ATTR_CALL_TIME` (a server-side call timeout). Independently, `cancel()` issues `OCIBreak` on the in-flight statement. A transaction can additionally set isolation level, read-only, and an overall deadline:
 
 ```cpp
 dbmw::common::TransactionOptions options;
@@ -1135,7 +1135,15 @@ above.
 ### Connection & session setup
 
 `host / port / database` are assembled into a `host:port/service` connect string for `OCILogon2`;
-if `dsn` is configured it is used as-is. Right after connecting, the driver runs **four
+if `dsn` is configured it is used as-is.
+
+The environment handle is created with `OCIEnvNlsCreate` and **pins the client character set to
+AL32UTF8 (charset id 873)** instead of depending on `NLS_LANG`. Without `NLS_LANG`, OCI assumes the
+client buffer is US7ASCII, so multi-byte data such as Chinese is silently mangled. To use a
+different character set (for example `UTF8` = 871 on a legacy database), set the numeric
+`extra.charset_id` on the data source.
+
+Right after connecting, the driver runs **four
 `ALTER SESSION` statements** pinning `NLS_DATE_FORMAT`, `NLS_TIMESTAMP_FORMAT`,
 `NLS_TIMESTAMP_TZ_FORMAT`, and `NLS_NUMERIC_CHARACTERS='.,'`. Result sets are fetched **as text**,
 so without pinning these four the client environment (e.g. `NLS_LANG`) would decide how the same
@@ -1156,6 +1164,19 @@ SQL parses on different machines.
 
 LOBs are read via `OCILobRead2` into a `Blob`; anything past `extra.lob_max_bytes` (default 4 MB)
 returns `NotSupported` rather than being silently truncated.
+
+**Writes use one of two binds**, because Oracle's `RAW` and `BLOB` columns accept different parameter
+types and the target column is not known at bind time:
+
+| Condition | Bind | Works with |
+|---|---|---|
+| `Blob` ≤ 4000 bytes (default) | `SQLT_BIN` raw | `RAW` (and small `BLOB` values via server-side implicit conversion) |
+| `Blob` > 4000 bytes | temporary `BLOB` locator (`OCILobCreateTemporary` + `OCILobWrite2` + `SQLT_BLOB`) | `BLOB` |
+| `extra.blob_bind=lob` | always locator | `BLOB` |
+| `extra.blob_bind=raw` | always raw | `RAW` |
+
+Staying on `SQLT_BIN` past 4000 bytes hits ORA-01461 / ORA-22835, so the driver switches to a
+locator automatically. Past 32767 bytes with an explicit `blob_bind=raw` it returns `NotSupported`.
 
 ### Placeholders & generated keys
 
@@ -1180,13 +1201,35 @@ on the first DML); with `TransactionOptions` it issues `SET TRANSACTION READ ONL
 `ISOLATION LEVEL ...`. Savepoints map to `SAVEPOINT` / `ROLLBACK TO SAVEPOINT`; Oracle has **no
 `RELEASE SAVEPOINT`**, so `releaseSavepoint()` is a no-op. `cancel()` issues `OCIBreak`.
 
+### Errors and SQLSTATE
+
+OCI's `OCIErrorGet` does not populate its sqlstate argument, so the driver maintains its own
+`ORA-xxxxx -> SQLSTATE` table (`common::oracleSqlState()`). This is not cosmetic:
+`Status::databaseError()` **derives `ErrorCode` from the SQLSTATE**, so without it the error
+classification and retryability flags are lost:
+
+| ORA | SQLSTATE | Derived result |
+|---|---|---|
+| ORA-00001 unique constraint | `23000` | `ConstraintViolation` |
+| ORA-01400 NOT NULL | `23502` | `ConstraintViolation` |
+| ORA-02290 / 02291 / 02292 check / foreign key | `23514` / `23503` | `ConstraintViolation` |
+| ORA-00060 / 00054 / 08177 | `40001` | `Deadlock`, `retryable=true` |
+| ORA-01013 cancellation | `57014` | `Cancelled` |
+| ORA-03113 / 03114 / 03135 connection lost | `08S01` | `connectionBroken=true` |
+| ORA-00942 / 00904 / 00933 | `42S02` / `42S22` / `42000` | caller's fallback code |
+
+An ORA code that is not in the table yields an empty SQLSTATE and falls back to the caller's code —
+the driver **never invents a SQLSTATE**.
+
 ### Known boundaries (intentional)
 
 - `Array` / `Composite` parameters return `NotSupported` — never silently bound as NULL;
 - `openCursor()` returns `NotSupported`; use `queryEach()` for streaming;
 - `INTERVAL` degrades to a string;
 - `makeCallPlan` answers `NotSupported` for Oracle procedures with a result set or OUT parameters;
-- `makeDropRoutineSql` answers `NotSupported` (Oracle has no `IF EXISTS`).
+- `makeDropRoutineSql` answers `NotSupported` (Oracle has no `IF EXISTS`);
+- `connection_timeout_ms` is not pushed down (OCI would need `OCI_ATTR_LOGON_TIMEOUT`), and `tls`
+  is not wired up (it requires a wallet).
 
 The type layer in `oracle_types.h` does not depend on the OCI headers, so
 `tests/dbmw_oracle_types_test.cpp` runs as a pure unit test with no Instant Client. Only

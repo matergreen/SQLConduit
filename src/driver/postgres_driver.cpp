@@ -1,5 +1,6 @@
 #include "sqlconduit/driver/postgres_driver.h"
 #include "sqlconduit/driver/driver_registry.h"
+#include "sqlconduit/common/pg_types.h"
 
 #include <optional>
 #include <algorithm>

@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdio>
 #include <vector>
+#include <cstdint>
 
 namespace sqlconduit::common
 {

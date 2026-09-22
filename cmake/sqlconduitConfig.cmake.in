@@ -2,6 +2,15 @@
 
 include(CMakeFindDependencyMacro)
 
+set(SQLCONDUIT_DRIVER_DEP_NAMES "@SQLCONDUIT_DRIVER_DEP_NAMES@")
+
+include("${CMAKE_CURRENT_LIST_DIR}/sqlconduitDriverDeps.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/sqlconduitTargets.cmake")
+
+if(SQLCONDUIT_DRIVER_DEP_NAMES)
+    sqlconduit_resolve_driver_deps(_sqlconduit_driver_libs)
+    set_property(TARGET sqlconduit::sqlconduit APPEND PROPERTY
+                 INTERFACE_LINK_LIBRARIES ${_sqlconduit_driver_libs})
+endif()
 
 check_required_components(sqlconduit)

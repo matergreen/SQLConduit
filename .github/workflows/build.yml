@@ -49,13 +49,13 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build
+          sudo apt-get install -y ninja-build pkg-config
           sudo apt-get install -y default-libmysqlclient-dev libpqxx-dev libpq-dev unixodbc-dev
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install ninja mysql-client libpqxx libpq unixodbc
+          brew install ninja pkg-config mysql-client libpqxx libpq unixodbc
 
       - name: Configure CMAKE_PREFIX_PATH (macOS)
         if: runner.os == 'macOS'
@@ -103,6 +103,34 @@ jobs:
             ctest --test-dir build -C Release -R sqlconduit_coro_test --output-on-failure
           else
             ctest --test-dir build -C Release --output-on-failure
+          fi
+
+      - name: Consumer smoke test (installed package)
+        if: runner.os != 'Windows' && matrix.drivers == 'ON'
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$PWD/smoke-prefix"
+          cmake --install build --config Release --prefix "$prefix"
+
+          echo "== via find_package =="
+          cmake -S tests/consumer -B smoke-find-package -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$prefix"
+          cmake --build smoke-find-package
+          ./smoke-find-package/sqlconduit_consumer_smoke
+
+          echo "== via pkg-config (static link) =="
+          if [ "${{ runner.os }}" != "Linux" ]; then
+            echo "skipped on macOS: Homebrew dependencies are outside the default"
+            echo "linker search path, so a pkg-config consumer must add -L itself"
+          else
+            export PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
+            pkg-config --exists sqlconduit
+            pkg-config --libs --static sqlconduit
+            ${CXX:-c++} -std=c++17 tests/consumer/main.cpp \
+              $(pkg-config --cflags sqlconduit) \
+              $(pkg-config --libs --static sqlconduit) -o smoke-pkgconfig
+            ./smoke-pkgconfig
           fi
 
       - name: Install to dist

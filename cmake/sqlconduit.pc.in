@@ -8,4 +8,5 @@ Description: C++17 database middleware - pooled connections, heartbeat, multi-dr
 URL: https://github.com/matergreen/sqlconduit
 Version: @PROJECT_VERSION@
 Libs: -L${libdir} -lsqlconduit
+Libs.private: @SQLCONDUIT_PC_LIBS_PRIVATE@
 Cflags: -I${includedir}

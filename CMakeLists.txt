@@ -16,23 +16,20 @@ option(SQLCONDUIT_ENABLE_POSTGRES "Build PostgreSQL driver (needs libpqxx + libp
 option(SQLCONDUIT_ENABLE_ODBC     "Build ODBC driver for SQL Server/Oracle"         OFF)
 option(SQLCONDUIT_ENABLE_ORACLE   "Build Oracle driver (needs OCI / Instant Client)" OFF)
 option(SQLCONDUIT_BUILD_TESTS     "Build core behaviour tests (no external deps)"   OFF)
+option(SQLCONDUIT_INSTALL         "Generate install and package config rules"       ON)
 option(SQLCONDUIT_BUILD_INTEGRATION_TESTS
        "Build integration tests that require live database services"          OFF)
 option(SQLCONDUIT_ENABLE_ASYNC_CORO "Build the C++20 coroutine layer (task.h)"     OFF)
 
 set(_nl_inc_dir "")
-set(_nl_install_src "")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann/json.hpp")
     set(_nl_inc_dir "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
-    set(_nl_install_src "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann/json.hpp")
-    message(STATUS "sqlconduit: using vendored nlohmann/json (will install into include/nlohmann/)")
+    message(STATUS "sqlconduit: using vendored nlohmann/json")
 else()
     find_package(nlohmann_json QUIET)
     if(nlohmann_json_FOUND AND TARGET nlohmann_json::nlohmann_json)
         get_target_property(_nl_inc_dir nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
-        find_file(_nl_install_src NAMES nlohmann/json.hpp HINTS ${_nl_inc_dir}
-                  NO_DEFAULT_PATH REQUIRED)
-        message(STATUS "sqlconduit: using system nlohmann_json (will install a copy)")
+        message(STATUS "sqlconduit: using system nlohmann_json")
     else()
         include(FetchContent)
         FetchContent_Declare(nlohmann_json
@@ -40,17 +37,9 @@ else()
             GIT_TAG        v3.11.3)
         FetchContent_MakeAvailable(nlohmann_json)
         set(_nl_inc_dir "${nlohmann_json_SOURCE_DIR}/single_include")
-        set(_nl_install_src "${nlohmann_json_SOURCE_DIR}/single_include/nlohmann/json.hpp")
-        message(STATUS "sqlconduit: fetched nlohmann_json via FetchContent (will install a copy)")
+        message(STATUS "sqlconduit: fetched nlohmann_json via FetchContent")
     endif()
 endif()
-
-add_library(nlohmann_json INTERFACE)
-target_include_directories(nlohmann_json INTERFACE
-    $<BUILD_INTERFACE:${_nl_inc_dir}>
-    $<INSTALL_INTERFACE:include>)
-install(FILES ${_nl_install_src} DESTINATION include/nlohmann)
-install(TARGETS nlohmann_json EXPORT sqlconduitTargets)
 
 set(SQLCONDUIT_SOURCES
     src/common/types.cpp
@@ -96,13 +85,36 @@ else()
 endif()
 
 add_library(sqlconduit STATIC ${SQLCONDUIT_SOURCES} ${SQLCONDUIT_CORO_OBJ})
-target_include_directories(sqlconduit PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>)
-target_link_libraries(sqlconduit PUBLIC nlohmann_json)
+add_library(sqlconduit::sqlconduit ALIAS sqlconduit)
+target_include_directories(sqlconduit
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${_nl_inc_dir})
 if(SQLCONDUIT_ENABLE_ASYNC_CORO)
     target_compile_definitions(sqlconduit PUBLIC SQLCONDUIT_ENABLE_ASYNC_CORO=1)
 endif()
+
+# The library owns worker threads, so static consumers need the thread flag too.
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+if(CMAKE_THREAD_LIBS_INIT)
+    target_link_libraries(sqlconduit PUBLIC ${CMAKE_THREAD_LIBS_INIT})
+endif()
+
+# Driver client libraries are validated here, linked through BUILD_INTERFACE so the
+# installed export stays free of absolute paths, and re-resolved in the consumer's
+# own environment by the installed sqlconduitDriverDeps.cmake.
+function(sqlconduit_add_driver_dep name)
+    set_property(GLOBAL APPEND PROPERTY SQLCONDUIT_DRIVER_DEP_NAMES "${name}")
+    foreach(_lib IN LISTS ARGN)
+        target_link_libraries(sqlconduit PRIVATE "$<BUILD_INTERFACE:${_lib}>")
+        get_filename_component(_pcname "${_lib}" NAME_WE)
+        string(REGEX REPLACE "^lib" "" _pcname "${_pcname}")
+        set_property(GLOBAL APPEND PROPERTY SQLCONDUIT_PC_LIBS_PRIVATE "-l${_pcname}")
+    endforeach()
+endfunction()
 
 if(SQLCONDUIT_ENABLE_MYSQL)
     target_compile_definitions(sqlconduit PRIVATE SQLCONDUIT_ENABLE_MYSQL)
@@ -113,7 +125,7 @@ if(SQLCONDUIT_ENABLE_MYSQL)
             "Run: sudo apt install -y default-libmysqlclient-dev")
     endif()
     target_include_directories(sqlconduit PRIVATE ${MYSQL_INCLUDE_DIR})
-    target_link_libraries(sqlconduit PRIVATE ${MYSQL_LIBRARY})
+    sqlconduit_add_driver_dep(MYSQL "${MYSQL_LIBRARY}")
 endif()
 
 if(SQLCONDUIT_ENABLE_POSTGRES)
@@ -155,7 +167,7 @@ if(SQLCONDUIT_ENABLE_POSTGRES)
     endif()
 
     target_include_directories(sqlconduit PRIVATE ${PQXX_INCLUDE_DIR} ${PQ_INCLUDE_DIR})
-    target_link_libraries(sqlconduit PRIVATE ${PQXX_LIBRARY} ${PQ_LIBRARY})
+    sqlconduit_add_driver_dep(POSTGRES "${PQXX_LIBRARY}" "${PQ_LIBRARY}")
 endif()
 
 if(SQLCONDUIT_ENABLE_ODBC)
@@ -167,7 +179,7 @@ if(SQLCONDUIT_ENABLE_ODBC)
             "Run: sudo apt install -y unixodbc-dev")
     endif()
     target_include_directories(sqlconduit PRIVATE ${ODBC_INCLUDE_DIR})
-    target_link_libraries(sqlconduit PRIVATE ${ODBC_LIBRARY})
+    sqlconduit_add_driver_dep(ODBC "${ODBC_LIBRARY}")
 endif()
 
 if(SQLCONDUIT_ENABLE_ORACLE)
@@ -180,7 +192,7 @@ if(SQLCONDUIT_ENABLE_ORACLE)
             "pass -DOCI_INCLUDE_DIR=<dir> -DOCI_LIBRARY=<path>.")
     endif()
     target_include_directories(sqlconduit PRIVATE ${OCI_INCLUDE_DIR})
-    target_link_libraries(sqlconduit PRIVATE ${OCI_LIBRARY})
+    sqlconduit_add_driver_dep(ORACLE "${OCI_LIBRARY}")
 endif()
 
 if(SQLCONDUIT_BUILD_TESTS)
@@ -188,8 +200,22 @@ if(SQLCONDUIT_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
+if(NOT SQLCONDUIT_INSTALL)
+    return()
+endif()
+
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
+
+get_property(SQLCONDUIT_DRIVER_DEP_NAMES GLOBAL PROPERTY SQLCONDUIT_DRIVER_DEP_NAMES)
+get_property(SQLCONDUIT_PC_LIBS_PRIVATE GLOBAL PROPERTY SQLCONDUIT_PC_LIBS_PRIVATE)
+if(CMAKE_THREAD_LIBS_INIT)
+    list(APPEND SQLCONDUIT_PC_LIBS_PRIVATE "${CMAKE_THREAD_LIBS_INIT}")
+endif()
+if(SQLCONDUIT_PC_LIBS_PRIVATE)
+    list(REMOVE_DUPLICATES SQLCONDUIT_PC_LIBS_PRIVATE)
+    string(REPLACE ";" " " SQLCONDUIT_PC_LIBS_PRIVATE "${SQLCONDUIT_PC_LIBS_PRIVATE}")
+endif()
 
 install(TARGETS sqlconduit
         EXPORT sqlconduitTargets
@@ -211,6 +237,8 @@ install(FILES
     "${CMAKE_CURRENT_BINARY_DIR}/sqlconduitConfig.cmake"
     "${CMAKE_CURRENT_BINARY_DIR}/sqlconduitConfigVersion.cmake"
     DESTINATION "${_sqlconduit_cmake_dir}")
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/sqlconduitDriverDeps.cmake"
+        DESTINATION "${_sqlconduit_cmake_dir}")
 install(EXPORT sqlconduitTargets
         NAMESPACE sqlconduit::
         DESTINATION "${_sqlconduit_cmake_dir}")

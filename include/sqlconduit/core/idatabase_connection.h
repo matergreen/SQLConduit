@@ -4,6 +4,7 @@
 #include "sqlconduit/common/types.h"
 #include "sqlconduit/config/datasource_config.h"
 #include "sqlconduit/core/cursor.h"
+#include <memory>
 #include <string>
 #include <vector>
 

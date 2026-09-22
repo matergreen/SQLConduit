@@ -1,5 +1,6 @@
 #include "sqlconduit/driver/oracle_driver.h"
 #include "sqlconduit/driver/driver_registry.h"
+#include "sqlconduit/common/oracle_types.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -222,12 +223,14 @@ namespace sqlconduit::driver
                             return common::Status::error(common::ErrorCode::NotSupported,
                                                          "Oracle: raw bind exceeds 32767 bytes");
                         storage.raw[i] = *value.raw;
+                        storage.lengths[i] = static_cast<ub2>(storage.raw[i].size());
                     }
                 }
                 else if (value.text)
                 {
                     storage.text[i].assign(value.text->begin(), value.text->end());
                     storage.text[i].push_back('\0');
+                    storage.lengths[i] = static_cast<ub2>(storage.text[i].size());
                 }
                 else storage.indicators[i] = -1;
 
@@ -435,7 +438,7 @@ namespace sqlconduit::driver
                                                         ? maxBytes + 1
                                                         : length * 4 + 1;
                             std::string text(static_cast<std::size_t>(capacity), '\0');
-                            oraub8 bytes = capacity, chars = length;
+                            oraub8 bytes = 0, chars = length;
                             rc = OCILobRead2(svc_, err_, lobs_[i], &bytes, &chars, 1, text.data(),
                                              capacity, OCI_ONE_PIECE, nullptr, nullptr, 0,
                                              SQLCS_IMPLICIT);
@@ -856,8 +859,21 @@ namespace sqlconduit::driver
             {
                 textBufs.back().assign(1, '\0');
             }
-            inds.push_back(bind.isNull() ? -1 : 0);
-            rlens.push_back(0);
+            if (bind.isNull())
+            {
+                inds.push_back(-1);
+                rlens.push_back(0);
+            }
+            else if (bind.raw.has_value())
+            {
+                inds.push_back(0);
+                rlens.push_back(static_cast<ub2>(rawBufs.back().size()));
+            }
+            else
+            {
+                inds.push_back(0);
+                rlens.push_back(static_cast<ub2>(textBufs.back().size()));
+            }
             rcs.push_back(0);
         }
 
@@ -1086,7 +1102,7 @@ namespace sqlconduit::driver
                                                     ? maxBytes + 1
                                                     : length * 4 + 1;
                         std::string text(static_cast<std::size_t>(capacity), '\0');
-                        oraub8 byteAmount = capacity;
+                        oraub8 byteAmount = 0;
                         oraub8 charAmount = length;
                         oraub8 offset = 1;
                         rc = OCILobRead2(svc_, err_, colLobs[i], &byteAmount, &charAmount, offset,
@@ -1110,11 +1126,11 @@ namespace sqlconduit::driver
                             continue;
                         }
                         common::Blob bytes(static_cast<std::size_t>(length));
-                        oraub8 amount = 0;
+                        oraub8 amount = length;
                         oraub8 offset = 1;
                         rc = OCILobRead2(svc_, err_, colLobs[i], &amount, nullptr, offset,
                                          bytes.data(), static_cast<oraub8>(bytes.size()),
-                                         OCI_ONE_PIECE, nullptr, nullptr, 0, 0);
+                                         OCI_ONE_PIECE, nullptr, nullptr, 0, SQLCS_IMPLICIT);
                         if (!ociOk(rc))
                             return oracleError(err_, common::ErrorCode::QueryError, "lob read");
                         bytes.resize(static_cast<std::size_t>(amount));
@@ -1400,11 +1416,7 @@ namespace sqlconduit::driver
             auto* child = static_cast<OCIStmt*>(result);
             common::ResultSet set;
             const auto status = readSet(child, set);
-            const sword releaseRc = OCIStmtRelease(child, err_, nullptr, 0, OCI_DEFAULT);
             if (!status.ok()) return status;
-            if (!ociOk(releaseRc))
-                return oracleError(err_, common::ErrorCode::QueryError,
-                                   "implicit result release");
             out.push_back(std::move(set));
         }
         return common::Status::OK();
@@ -1593,11 +1605,9 @@ namespace sqlconduit::driver
                 if (!ociOk(rc))
                     return oracleError(err_, common::ErrorCode::QueryError,
                                        "REF CURSOR allocate");
-                rc = OCIBindByPos(stmt, &bind, err_, static_cast<ub4>(i + 1), &cursors[i],
-                                  static_cast<sb4>(sizeof(OCIStmt*)),
-                                  static_cast<ub2>(common::kSqltCur), &input.indicators[i],
-                                  &input.lengths[i], &input.returnCodes[i], 0, nullptr,
-                                  OCI_DEFAULT);
+                rc = OCIBindByPos(stmt, &bind, err_, static_cast<ub4>(i + 1), &cursors[i], 0,
+                                  static_cast<ub2>(common::kSqltRset), nullptr, nullptr, nullptr,
+                                  0, nullptr, OCI_DEFAULT);
             }
             else if (outputDirection)
             {
@@ -1672,6 +1682,7 @@ namespace sqlconduit::driver
                     input.text[i].push_back('\0');
                     data = input.text[i].data();
                     size = static_cast<sb4>(input.text[i].size());
+                    input.lengths[i] = static_cast<ub2>(input.text[i].size());
                 }
                 else input.indicators[i] = -1;
                 rc = OCIBindByPos(stmt, &bind, err_, static_cast<ub4>(i + 1), data, size, sqlt,
@@ -2167,11 +2178,13 @@ namespace sqlconduit::driver
                     }
                 }
                 else rawBuffers[i] = *value.raw;
+                lengths[i] = static_cast<ub2>(rawBuffers[i].size());
             }
             else if (value.text)
             {
                 textBuffers[i].assign(value.text->begin(), value.text->end());
                 textBuffers[i].push_back('\0');
+                lengths[i] = static_cast<ub2>(textBuffers[i].size());
             }
             else
             {

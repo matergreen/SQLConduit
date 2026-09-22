@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-SRC=/mnt/d/chiang/sqlconduit
+SRC=/mnt/d/chiang/dbmw
 PW="${SQLCONDUIT_TEST_ORACLE_PASSWORD:-SqlConduit!Test123}"
 IMAGE=container-registry.oracle.com/database/free:latest
 BUILD=/root/sqlconduit/build-it
@@ -8,7 +8,7 @@ CLNT=/opt/oracle_client
 
 echo "==> sync source from $SRC (excluding build dir)"
 mkdir -p /root/sqlconduit
-tar -cf - -C "$SRC" CMakeLists.txt src include tests cmake | tar -xf - -C /root/sqlconduit
+tar -cf - -C "$SRC" CMakeLists.txt src include tests cmake third_party | tar -xf - -C /root/sqlconduit
 
 echo "==> ensure image $IMAGE"
 docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "==> pulling $IMAGE"; docker pull "$IMAGE"; }

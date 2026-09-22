@@ -403,8 +403,7 @@ namespace sqlconduit::common
         case OracleTypeClass::Number:
             {
                 const bool floatish = sqlt == kSqltFlt || sqlt == kSqltBfloat ||
-                    sqlt == kSqltBdouble || sqlt == kSqltIbfloat || sqlt == kSqltIbdouble ||
-                    scale < 0;
+                    sqlt == kSqltBdouble || sqlt == kSqltIbfloat || sqlt == kSqltIbdouble;
                 if (floatish) return Value{parseDoubleSimple(text)};
                 const bool hasFraction = text.find('.') != std::string::npos ||
                     text.find('e') != std::string::npos || text.find('E') != std::string::npos;

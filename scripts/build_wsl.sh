@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-SRC=/mnt/d/chiang/sqlconduit
+SRC=/mnt/d/chiang/dbmw
 WORK=/root/sqlconduit
 BUILD=$WORK/build-it
 ENABLE_ODBC="${ENABLE_ODBC:-ON}"

@@ -6,6 +6,7 @@
 #include "sqlconduit/config/datasource_config.h"
 #include "sqlconduit/driver/idriver.h"
 
+#include <cstdint>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>

@@ -1,6 +1,7 @@
 #ifndef SQLCONDUIT_CONFIG_DATASOURCE_CONFIG_H
 #define SQLCONDUIT_CONFIG_DATASOURCE_CONFIG_H
 
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <map>

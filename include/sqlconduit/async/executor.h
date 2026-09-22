@@ -1,6 +1,7 @@
 #ifndef SQLCONDUIT_ASYNC_EXECUTOR_H
 #define SQLCONDUIT_ASYNC_EXECUTOR_H
 
+#include <cstdint>
 #include <chrono>
 #include <cstddef>
 #include <functional>

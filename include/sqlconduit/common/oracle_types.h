@@ -51,7 +51,8 @@ namespace sqlconduit::common
     static constexpr std::uint16_t kSqltBlob = 113;
     static constexpr std::uint16_t kSqltBfile = 114;
     static constexpr std::uint16_t kSqltCfile = 115;
-    static constexpr std::uint16_t kSqltRdd = 116;
+    static constexpr std::uint16_t kSqltRdd = 104;
+    static constexpr std::uint16_t kSqltRset = 116;
     static constexpr std::uint16_t kSqltTimestamp = 187;
     static constexpr std::uint16_t kSqltTimestampTz = 188;
     static constexpr std::uint16_t kSqltIntervalYm = 189;

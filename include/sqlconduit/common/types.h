@@ -1,6 +1,7 @@
 #ifndef SQLCONDUIT_COMMON_TYPES_H
 #define SQLCONDUIT_COMMON_TYPES_H
 
+#include <cstdint>
 #include <chrono>
 #include <functional>
 #include <iosfwd>

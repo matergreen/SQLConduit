@@ -1,6 +1,7 @@
 #ifndef SQLCONDUIT_COMMON_SQL_ANALYZE_H
 #define SQLCONDUIT_COMMON_SQL_ANALYZE_H
 
+#include <cstdint>
 #include <string>
 #include <vector>
 

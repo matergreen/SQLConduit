@@ -1107,6 +1107,95 @@ A type mismatch or NULL landing in a non-`optional` member is an **error** (`Err
 - **Redaction**: mapping happens after `afterExecution`, so entities see redacted values.
 - **Async**: `sqlconduit::async::queryAs<T>` ships in callback / future / coroutine form; mapping runs on the **completion-delivery thread** (a worker by default, the `io_context` thread when asio is injected), so mapping must stay cheap — use streaming `queryEachAs` for large result sets.
 
+## PostgreSQL arrays / composites / geometric types
+
+Previously PostgreSQL `ANYARRAY`, row types, and geometric types all degraded to raw strings in the
+driver (`{1,2,3}` / `(a,b)` / `(1,2)`). `common::Value` now carries two more alternatives for them;
+geometric types ride on `Json` holding the **canonical PG text**.
+
+### The two new Value alternatives
+
+```cpp
+struct Array     { std::vector<Value> items; };                          // may nest
+struct Composite { std::vector<std::pair<std::string, Value>> fields; }; // ordered + lookup by name
+
+using ValueBase = std::variant<..., Blob, Array, Composite>;
+struct Value : ValueBase { using ValueBase::ValueBase; };
+```
+
+`Value` changed from a `variant` **alias into a derived struct** — the only workable shape for a
+recursive variant (since C++17 `std::vector<T>` allows an incomplete `T`). The existing
+`std::get_if<T>(&v)` / `std::holds_alternative<T>(v)` / `std::get<T>(v)` all keep working; **the one
+exception is `std::visit`**, whose support for derived variants differs across standard library
+implementations, so use `common::visitValue(visitor, v)` uniformly.
+
+`Composite::find(name)` returns `const Value *`, or `nullptr` on a miss (defined in `types.cpp`,
+because instantiating `std::pair<std::string, Value>` requires `Value` to be complete).
+
+### Read side
+
+| Column type | Before | Now |
+|---|---|---|
+| `INT4[]` / `TEXT[]` | `"{1,2,3}"` string | `Array`, each element restored per its own OID (`int64` / `string` …) |
+| `INT4[][]` multidimensional | `"{{1,2},{3,4}}"` | `Array` nesting `Array` |
+| Named composite type (`CREATE TYPE ... AS` / table row type) | `"(a,b)"` string | `Composite`, field names and types read from `pg_attribute` |
+| `RECORD` (anonymous `ROW(...)`) | string | **still a string** — the server exposes no field metadata, so it cannot be split |
+| `point` / `lseg` / `path` / `box` / `polygon` / `line` / `circle` | `"(1,2)"` string | `Json{ canonical PG text }`, parsed by the 7 structs such as `PgPoint` |
+| NULL array element | folded into the string | `nullptr` (so `{NULL,a}` stays distinguishable from the empty string in `{,a}`) |
+
+Geometric values ride on `Json` rather than gaining a new alternative so that they can be **written
+back verbatim**: a PG `point` column does not accept `{"x":1,"y":2}`, only `(1,2)`. Call
+`common::pgGeometryToJson(...)` yourself when you want structured JSON.
+
+### Write side (parameter binding)
+
+```cpp
+common::Array tags;  tags.items = {Value{"red"}, Value{"blue"}};
+common::Composite addr; addr.fields = {{"city", Value{"Shanghai"}}, {"zip", Value{"200000"}}};
+
+SQLConduit::execute("INSERT INTO t (tags, addr, pt) VALUES (?, ?, ?)",
+              Params{ Value{tags}, Value{addr},
+                      Value{common::Json{common::pgFormatPoint(common::PgPoint{1, 2})}} }, n);
+```
+
+The driver renders `Array` / `Composite` into PG array / row text and sends them as a **text
+parameter**, leaving the target column type to be inferred by the server — so do **not** add a manual
+`::text[]` cast in the SQL. A bare `SELECT $1` with no column context will be treated as `text` by
+PG. MySQL, Oracle, and ODBC return `NotSupported` for `Array` / `Composite` parameters instead of
+silently binding NULL.
+
+### Mapping-layer binding
+
+| Member type | Bind target |
+|---|---|
+| `std::vector<int>` / `std::vector<std::string>` / … | `Array` (each element goes through the element converter) |
+| `std::vector<std::vector<int>>` | nested `Array` |
+| `std::optional<std::vector<T>>` | NULL → `nullopt` |
+| `common::Array` / `common::Composite` | passed through unchanged |
+| `common::PgPoint` / `PgLine` / `PgLseg` / `PgBox` / `PgPath` / `PgPolygon` / `PgCircle` | `Json` (PG text), both directions |
+
+The 7 geometric structs live in `include/sqlconduit/common/pg_types.h`, with matching
+`pgParseXxx` / `pgFormatXxx`, and are usable without a driver (`src/common/pg_types.cpp` does not
+link libpqxx).
+
+### OID metadata cache
+
+A composite type's OID is **assigned at runtime**, so the driver must consult `pg_type` /
+`pg_attribute` to learn how many fields that OID has and of what types. On the **first result set a
+connection produces**, the driver lazily loads the full `pg_type` plus composite field tables and
+caches them:
+
+- Type changes made afterwards are not automatically visible. After creating a type, call
+  `PostgresConnection::refreshTypeCache()` (a method outside `IDatabaseConnection`, so you need the
+  concrete type in hand);
+- Fallback: reading an unknown type in the user range (OID ≥ 16384) marks the cache stale and
+  **reloads once on the next statement**;
+- A load failure never fails the query — it degrades to raw strings, exactly as before.
+
+The text codecs in `pg_types.h` (array/composite element splitting, quote escaping, the 7 geometric
+grammars) do not depend on libpqxx, which is why `tests/sqlconduit_pg_types_test.cpp` can unit-test
+them without a live database.
+
 ## Oracle driver (OCI)
 
 Oracle uses the official **OCI** (Oracle Call Interface) rather than ODBC, gated by
@@ -1721,7 +1810,7 @@ const auto text  = sqlconduit::exporters::toPrometheusText(pools, slow);
 
 ## Installation & downstream integration
 
-SQLConduit can be installed as a CMake package; downstream uses `find_package(sqlconduit)` directly (nlohmann/json ships with the package, no separate `find_package` needed):
+SQLConduit can be installed as a CMake package; downstream uses `find_package(sqlconduit)` directly:
 
 ```bash
 mkdir -p build && cd build
@@ -1743,27 +1832,41 @@ add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE sqlconduit::sqlconduit)
 ```
 
-`sqlconduit::sqlconduit`'s PUBLIC dependency (`sqlconduit::nlohmann_json`) is pulled in automatically with the package. Be sure to call
-`SQLConduit::shutdown()` before exit, to reclaim the pool and heartbeat threads.
+`sqlconduit::sqlconduit` exports only its own include path and the required compile definitions; the
+link arguments for the driver client libraries are resolved from the local environment during
+`find_package` (see the next section). nlohmann/json is a purely build-time private dependency — it is
+neither installed nor exported, so it cannot conflict with a system or sibling `nlohmann_json` header.
+Be sure to call `SQLConduit::shutdown()` before exit, to reclaim the pool and heartbeat threads. When
+embedding SQLConduit as a subproject, pass `-DSQLCONDUIT_INSTALL=OFF` so it adds no install rules to
+the parent project.
 
 ### Non-CMake projects (pkg-config)
 
-A `sqlconduit.pc` is generated on install:
+A `sqlconduit.pc` is generated on install. Only the static library is shipped and the driver
+dependencies live in `Libs.private`, so `--static` is **required** to expand them into real library
+names:
 
 ```bash
-g++ main.cpp $(pkg-config --cflags --libs sqlconduit) -o my_app
+g++ main.cpp $(pkg-config --cflags sqlconduit) \
+    $(pkg-config --libs --static sqlconduit) -o my_app
 ```
 
 ### Driver client libraries (must read)
 
-When a driver is enabled, the installed package contains **only** `libsqlconduit.a` and the headers — **not** the corresponding database client library (libpqxx / libmysqlclient / unixODBC / OCI). Because SQLConduit is a static library, these client libraries must be provided by the downstream project, otherwise linking fails with undefined symbols:
+When a driver is enabled, the installed package contains **only** `libsqlconduit.a` and the headers — **not** the corresponding database client library (libpqxx / libmysqlclient / unixODBC / OCI). Because SQLConduit is a static library, those client libraries still have to be installed on the downstream machine, but **the link arguments are resolved by the package itself**: `sqlconduitConfig.cmake` loads the installed `sqlconduitDriverDeps.cmake`, which re-discovers the driver libraries this build was compiled with in the **downstream build environment** and appends them to `sqlconduit::sqlconduit`. That is why no absolute path appears in the export set and the install prefix can be relocated as a whole.
 
-- Enable MySQL → downstream `apt install default-libmysqlclient-dev` and link `-lmysqlclient`
-- Enable PG     → downstream install `libpqxx-dev libpq-dev`, link `-lpqxx -lpq`
-- Enable ODBC   → downstream install `unixodbc-dev`, link `-lodbc`
-- Enable Oracle → downstream install Instant Client (Basic Lite + SDK), link `-lclntsh`
+The downstream machine only needs the matching client development packages:
 
-Neither `find_package(sqlconduit)` nor `sqlconduit.pc` auto-appends these links (a static library + pure path dependencies cannot propagate across packages).
+- Enable MySQL → `apt install default-libmysqlclient-dev`
+- Enable PG → install `libpqxx-dev libpq-dev`
+- Enable ODBC → install `unixodbc-dev`
+- Enable Oracle → install Instant Client (Basic + SDK)
+
+If a library is missing, `find_package` fails during configuration and names the driver it could not satisfy. The Oracle client is usually not on the default search path, so either:
+
+- pass `-DSQLCONDUIT_OCI_LIBRARY_DIR=/path/to/instantclient/lib` in the **downstream** project;
+- or set the `ORACLE_HOME` / `LD_LIBRARY_PATH` environment variables (both are honoured);
+- or point `CMAKE_PREFIX_PATH` / `CMAKE_LIBRARY_PATH` at the client directory.
 
 > **Expected behavior (out-of-the-box notes)**
 > - `SQLCONDUIT_ENABLE_*` are all OFF by default; a driver not enabled at compile time returns `DriverDisabled` on call.

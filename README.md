@@ -245,8 +245,69 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
+## 集成到你的工程
+
+SQLConduit 以静态库发布。库本身依赖的驱动客户端库（libmysqlclient / libpqxx+libpq /
+libodbc / libclntsh）不会写死安装时的绝对路径，而是在**你的**构建环境里重新查找，
+因此安装目录可以整体搬迁，换机器只需装好对应客户端开发包。
+
+### 方式一：find_package（推荐）
+
+```bash
+cmake -S . -B build -DSQLCONDUIT_ENABLE_POSTGRES=ON ...
+cmake --build build -j
+cmake --install build --prefix /your/prefix
+```
+
+```cmake
+find_package(sqlconduit REQUIRED)
+target_link_libraries(your_target PRIVATE sqlconduit::sqlconduit)
+```
+
+Oracle 客户端通常不在默认搜索路径。这个路径要在**你自己的工程**上指定（包在安装时不记录任何
+客户端路径）：
+
+```bash
+cmake -S . -B build -DCMAKE_PREFIX_PATH=/your/prefix \
+  -DSQLCONDUIT_OCI_LIBRARY_DIR=/path/to/instantclient/lib
+```
+
+`ORACLE_HOME` 与 `LD_LIBRARY_PATH` 也会被自动采纳。
+
+### 方式二：pkg-config
+
+```bash
+g++ -std=c++17 app.cpp $(pkg-config --cflags sqlconduit) \
+    $(pkg-config --libs --static sqlconduit) -o app
+```
+
+只发行静态库，驱动依赖位于 `Libs.private`，所以**必须带 `--static`** 才会展开成实际库名；
+若目标平台要求线程链接标志（如 `-pthread`），也会一并带上。macOS/Homebrew 下依赖不在默认
+链接路径，需要自行追加 `-L`（例如 `-L$(brew --prefix libpq)/lib`）或用 `find_package` 方式。
+
+### 方式三：FetchContent / add_subdirectory
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(sqlconduit
+    GIT_REPOSITORY https://github.com/matergreen/SQLConduit.git
+    GIT_TAG        v0.6.0)
+FetchContent_MakeAvailable(sqlconduit)
+
+target_link_libraries(your_target PRIVATE sqlconduit::sqlconduit)
+```
+
+作为子项目时，驱动开关（`SQLCONDUIT_ENABLE_*`）在你的工程里同样是普通 CMake 选项；
+若不想让上层工程产生安装规则，传 `-DSQLCONDUIT_INSTALL=OFF`。
+
+### 方式四：预编译包
+
+[Releases](https://github.com/matergreen/SQLConduit/releases) 提供各平台压缩包
+（Linux x86_64/aarch64 的 gcc 与 clang、macOS arm64、Windows MSVC），解压后：
+`include/`、`lib/`、`lib/cmake/sqlconduit/`、`lib/pkgconfig/`。
+
 ## 详细文档
 
-连接池、异步 API、实体映射、例程与脚本、PostgreSQL 类型、故障转移、可观测性、
+连接池、异步 API、实体映射、例程与脚本、PostgreSQL 类型、游标、故障转移、可观测性、
 错误码、配置项和驱动扩展等内容见 [SQLConduit 详细指南](docs/guide.md)。
 版本功能摘要见 [CHANGELOG](CHANGELOG.md)。

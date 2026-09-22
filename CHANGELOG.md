@@ -31,6 +31,22 @@ description.
 - Added `IntervalYearMonth`, `IntervalDaySecond`, `TypedArray`, and `TypedComposite` to the public
   value model so interval and Oracle UDT semantics no longer depend on string guessing.
 
+### Packaging and integration
+
+- Made the installed CMake package relocatable. The driver client libraries are no longer written
+  into the export set as absolute paths: a `sqlconduitDriverDeps.cmake` module now ships with the
+  package and re-resolves them in the consumer's build environment, so an install prefix can be
+  moved between machines and only needs the matching client development packages installed.
+- Populated `Libs.private` in `sqlconduit.pc` with the enabled driver libraries and the platform
+  thread flag, so `pkg-config --libs --static sqlconduit` produces a link line that actually
+  resolves.
+- Added `SQLCONDUIT_INSTALL` (default `ON`). Set it to `OFF` to consume SQLConduit through
+  `FetchContent` or `add_subdirectory` without contributing install rules to the parent project.
+- Demoted nlohmann/json to a purely build-time private dependency and stopped installing a copy of
+  it, removing header conflicts with a system or sibling `nlohmann_json`.
+- Added a consumer smoke test that installs the package into a scratch prefix and builds a minimal
+  out-of-tree project through both `find_package` and, on Linux, `pkg-config`.
+
 ### Compatibility and reliability
 
 - Mapped Oracle error codes to SQLSTATE so failures classify consistently with the other drivers:
@@ -49,6 +65,16 @@ description.
   CLOB byte sizing, preventing invalid cache lookups, descriptor leaks, and multibyte truncation.
 - Kept caller-owned transaction semantics for array DML failures while rolling back the complete
   batch when SQLConduit owns the transaction.
+- Fixed Oracle OCI defects found by running the integration suite against a live database: input
+  binds now pass the real `alenp` length (previously the driver bound empty strings, which Oracle
+  treats as NULL), CLOB and BLOB reads pass the correct byte/char amounts, implicit result-set child
+  handles are no longer released with `OCIStmtRelease`, REF CURSOR OUT parameters bind as
+  `SQLT_RSET` with the canonical null indicator/length/return-code pointers, and un-scaled `NUMBER`
+  columns — including identity columns, which describe as scale -127 — now map to integers instead
+  of doubles.
+- Added the missing `<cstdint>` and `<memory>` includes across the public headers so the library
+  compiles from a clean tree with `SQLCONDUIT_ENABLE_ORACLE=ON`; several headers had been relying on
+  transitive includes.
 
 ## [0.5.1]
 

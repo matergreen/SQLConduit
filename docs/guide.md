@@ -1789,7 +1789,7 @@ const auto text  = sqlconduit::exporters::toPrometheusText(pools, slow);
 
 ## 安装与下游集成
 
-SQLConduit 可作为 CMake 包安装，下游用 `find_package(sqlconduit)` 直接接入（nlohmann/json 随包自带，无需再 `find_package`）：
+SQLConduit 可作为 CMake 包安装，下游用 `find_package(sqlconduit)` 直接接入：
 
 ```bash
 mkdir -p build && cd build
@@ -1811,29 +1811,41 @@ add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE sqlconduit::sqlconduit)
 ```
 
-`sqlconduit::sqlconduit` 的 PUBLIC 依赖（`sqlconduit::nlohmann_json`）随包自动带入。`SQLConduit::shutdown()`
-退出前务必调用，回收连接池与心跳线程。
+`sqlconduit::sqlconduit` 只导出自身头文件路径与必需的编译定义；驱动客户端库的链接参数在
+`find_package` 时按本机环境解析（见下节）。nlohmann/json 是纯构建期私有依赖，不随包安装也不导出，
+因此不会与系统或其它依赖的同名头文件冲突。`SQLConduit::shutdown()` 退出前务必调用，回收连接池与
+心跳线程。把 SQLConduit 当子项目用时传 `-DSQLCONDUIT_INSTALL=OFF`，上层工程不会多出安装规则。
 
 ### 非 CMake 工程（pkg-config）
 
-安装后会生成 `sqlconduit.pc`：
+安装后会生成 `sqlconduit.pc`。只发行静态库，驱动依赖挂在 `Libs.private`，所以**必须带 `--static`**
+才会展开成实际库名：
 
 ```bash
-g++ main.cpp $(pkg-config --cflags --libs sqlconduit) -o my_app
+g++ main.cpp $(pkg-config --cflags sqlconduit) \
+    $(pkg-config --libs --static sqlconduit) -o my_app
 ```
 
 ### 驱动客户端库（务必阅读）
 
 开启某个驱动后，安装包**只包含** `libsqlconduit.a` 与头文件，**不含**对应数据库客户端库
-（libpqxx / libmysqlclient / unixODBC / OCI）。由于 SQLConduit 是静态库，这些客户端库需由下游自行
-提供，否则链接时报未定义符号：
+（libpqxx / libmysqlclient / unixODBC / OCI）。由于 SQLConduit 是静态库，这些客户端库仍需装在下游
+机器上，但**链接参数由包自己解析**：`sqlconduitConfig.cmake` 会载入随包安装的
+`sqlconduitDriverDeps.cmake`，在**下游的构建环境里**重新查找本次编译启用的驱动库，再追加到
+`sqlconduit::sqlconduit`。导出文件里因此不出现任何绝对路径，安装目录可以整体搬迁。
 
-- 开启 MySQL  → 下游 `apt install default-libmysqlclient-dev` 并链接 `-lmysqlclient`
-- 开启 PG     → 下游装 `libpqxx-dev libpq-dev`，链接 `-lpqxx -lpq`
-- 开启 ODBC   → 下游装 `unixodbc-dev`，链接 `-lodbc`
-- 开启 Oracle → 下游装 Instant Client（Basic Lite + SDK），链接 `-lclntsh`
+下游只需装好对应的客户端开发包：
 
-`find_package(sqlconduit)` 与 `sqlconduit.pc` 不会自动补这些链接（静态库 + 纯路径依赖无法跨包传播）。
+- 开启 MySQL  → `apt install default-libmysqlclient-dev`
+- 开启 PG     → 装 `libpqxx-dev libpq-dev`
+- 开启 ODBC   → 装 `unixodbc-dev`
+- 开启 Oracle → 装 Instant Client（Basic + SDK）
+
+缺库时 `find_package` 会直接报错并指明缺的是哪个驱动。Oracle 客户端通常不在默认搜索路径，可以：
+
+- 在**下游**工程传 `-DSQLCONDUIT_OCI_LIBRARY_DIR=/path/to/instantclient/lib`；
+- 或设置环境变量 `ORACLE_HOME` / `LD_LIBRARY_PATH`（会被自动采纳）；
+- 或把 `CMAKE_PREFIX_PATH` / `CMAKE_LIBRARY_PATH` 指向客户端目录。
 
 > **预期行为（开箱提示）**
 > - 默认 `SQLCONDUIT_ENABLE_*` 全 OFF；未编译期启用的驱动，调用返回 `DriverDisabled`。

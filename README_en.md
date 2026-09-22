@@ -265,9 +265,74 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
+## Integrating into your project
+
+SQLConduit ships as a static library. The driver client libraries it depends on
+(libmysqlclient / libpqxx+libpq / libodbc / libclntsh) are not baked into the package as absolute
+paths — they are resolved again in **your** build environment, so an install prefix can be moved as
+a whole and the target machine only needs the matching client development packages.
+
+### Option 1: find_package (recommended)
+
+```bash
+cmake -S . -B build -DSQLCONDUIT_ENABLE_POSTGRES=ON ...
+cmake --build build -j
+cmake --install build --prefix /your/prefix
+```
+
+```cmake
+find_package(sqlconduit REQUIRED)
+target_link_libraries(your_target PRIVATE sqlconduit::sqlconduit)
+```
+
+The Oracle client is usually not on the default search path. Point at it from **your own project**
+(the package records no client path when it is installed):
+
+```bash
+cmake -S . -B build -DCMAKE_PREFIX_PATH=/your/prefix \
+  -DSQLCONDUIT_OCI_LIBRARY_DIR=/path/to/instantclient/lib
+```
+
+`ORACLE_HOME` and `LD_LIBRARY_PATH` are honoured as well.
+
+### Option 2: pkg-config
+
+```bash
+g++ -std=c++17 app.cpp $(pkg-config --cflags sqlconduit) \
+    $(pkg-config --libs --static sqlconduit) -o app
+```
+
+Only the static library is shipped and the driver dependencies live in `Libs.private`, so `--static`
+is **required** to expand them into real library names; the platform thread flag (`-pthread`) is
+carried along where the toolchain needs it. On macOS/Homebrew the dependencies are not on the
+default link path — add `-L` yourself (for example `-L$(brew --prefix libpq)/lib`) or use
+`find_package`.
+
+### Option 3: FetchContent / add_subdirectory
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(sqlconduit
+    GIT_REPOSITORY https://github.com/matergreen/SQLConduit.git
+    GIT_TAG        v0.6.0)
+FetchContent_MakeAvailable(sqlconduit)
+
+target_link_libraries(your_target PRIVATE sqlconduit::sqlconduit)
+```
+
+As a subproject the driver switches (`SQLCONDUIT_ENABLE_*`) are ordinary CMake options in your
+build; pass `-DSQLCONDUIT_INSTALL=OFF` if you do not want SQLConduit to contribute install rules to
+the parent project.
+
+### Option 4: pre-built archives
+
+[Releases](https://github.com/matergreen/SQLConduit/releases) publish an archive per platform
+(Linux x86_64/aarch64 for gcc and clang, macOS arm64, Windows MSVC). Unpacking gives you `include/`,
+`lib/`, `lib/cmake/sqlconduit/`, and `lib/pkgconfig/`.
+
 ## Detailed documentation
 
 See the [SQLConduit detailed guide](docs/guide_en.md) for connection pooling, asynchronous APIs,
-entity mapping, routines and scripts, PostgreSQL types, cursors, failover, observability,
-configuration, and driver extensions.
+entity mapping, routines and scripts, PostgreSQL types, cursors, failover, observability, error
+codes, configuration, and driver extensions.
 See the [changelog](CHANGELOG.md) for release highlights.

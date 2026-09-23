@@ -80,6 +80,12 @@ if(SQLCONDUIT_BUILD_INTEGRATION_TESTS AND SQLCONDUIT_ENABLE_MYSQL)
     add_executable(sqlconduit_mysql_integration_test sqlconduit_mysql_integration_test.cpp)
     target_link_libraries(sqlconduit_mysql_integration_test PRIVATE sqlconduit)
     add_test(NAME sqlconduit_mysql_integration_test COMMAND sqlconduit_mysql_integration_test)
+
+    # Dedicated reproduction for a MySQL driver savepoint bug. Expected to fail
+    # until the driver's savepoint/rollbackToSavepoint/releaseSavepoint are fixed.
+    add_executable(sqlconduit_mysql_savepoint_repro_test sqlconduit_mysql_savepoint_repro_test.cpp)
+    target_link_libraries(sqlconduit_mysql_savepoint_repro_test PRIVATE sqlconduit)
+    add_test(NAME sqlconduit_mysql_savepoint_repro_test COMMAND sqlconduit_mysql_savepoint_repro_test)
 endif()
 
 if(SQLCONDUIT_BUILD_INTEGRATION_TESTS AND SQLCONDUIT_ENABLE_ODBC)
@@ -116,6 +122,9 @@ if(Threads_FOUND)
     endif()
     if(TARGET sqlconduit_mysql_integration_test)
         target_link_libraries(sqlconduit_mysql_integration_test PRIVATE Threads::Threads)
+    endif()
+    if(TARGET sqlconduit_mysql_savepoint_repro_test)
+        target_link_libraries(sqlconduit_mysql_savepoint_repro_test PRIVATE Threads::Threads)
     endif()
     if(TARGET sqlconduit_odbc_integration_test)
         target_link_libraries(sqlconduit_odbc_integration_test PRIVATE Threads::Threads)

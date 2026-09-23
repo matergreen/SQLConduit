@@ -114,7 +114,7 @@ namespace sqlconduit {
                 return future;
             }
 
-            const auto context = common::ContextScope::current();
+            const auto& context = common::ContextScope::current();
             const auto timeoutMs = asyncTimeoutMs.load(std::memory_order_acquire);
             auto task = [promise, source = std::move(source), context,
                         timeoutMs, fn = std::move(fn)]() mutable {

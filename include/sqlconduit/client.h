@@ -7,6 +7,7 @@
 #include "sqlconduit/config/datasource_config.h"
 #include "sqlconduit/core/database_manager.h"
 #include "sqlconduit/core/interceptor.h"
+#include "sqlconduit/driver/driver_registry.h"
 
 #include <chrono>
 #include <cstdint>
@@ -32,6 +33,9 @@ namespace sqlconduit {
         Client(const Client &) = delete;
 
         Client &operator=(const Client &) = delete;
+
+        // Registers a driver only for this Client. Call before init().
+        [[nodiscard]] common::Status addDriver(driver::DriverRegistration registration);
 
         [[nodiscard]] common::Status init(const std::string &configPath);
 

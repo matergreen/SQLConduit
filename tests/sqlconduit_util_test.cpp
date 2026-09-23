@@ -277,6 +277,14 @@ int main() {
         "postgres_mock", [] { return std::make_unique<MainDriver>(); });
     driver::DriverRegistry::instance().registerDriver(
         "mysql_mock", [] { return std::make_unique<MainDriver>(); });
+    driver::DriverRegistry::instance().registerDriver(
+        "mysql", [] { return std::make_unique<MainDriver>(); });
+    driver::DriverRegistry::instance().registerDriver(
+        "postgres", [] { return std::make_unique<MainDriver>(); });
+    driver::DriverRegistry::instance().registerDriver(
+        "odbc", [] { return std::make_unique<MainDriver>(); });
+    driver::DriverRegistry::instance().registerDriver(
+        "oracle", [] { return std::make_unique<MainDriver>(); });
 
     writeConfig();
     if (!g_client.init(g_configPath).ok()) {

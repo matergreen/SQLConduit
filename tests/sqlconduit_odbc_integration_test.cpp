@@ -1,6 +1,7 @@
 #include "sqlconduit/sqlconduit.h"
 #include "sqlconduit/mapping.h"
 #include "sqlconduit/util.h"
+#include "sqlconduit/drivers/odbc.h"
 
 #include <chrono>
 #include <cstdio>
@@ -103,6 +104,7 @@ namespace {
         }
 
         void start() {
+            requireOk(g_client.addDriver(sqlconduit::drivers::odbc()), "register ODBC driver");
             const auto host = env("SQLCONDUIT_TEST_ODBC_HOST", "127.0.0.1");
             const auto port = env("SQLCONDUIT_TEST_ODBC_PORT", "1433");
             const auto user = env("SQLCONDUIT_TEST_ODBC_USER", "sa");

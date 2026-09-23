@@ -2,6 +2,7 @@
 #include "sqlconduit/sqlconduit.h"
 #include "sqlconduit/mapping.h"
 #include "sqlconduit/util.h"
+#include "sqlconduit/drivers/oracle.h"
 
 #include <chrono>
 #include <cstdio>
@@ -127,6 +128,8 @@ namespace {
         }
 
         void start() {
+            requireOk(g_client.addDriver(sqlconduit::drivers::oracle()),
+                      "register Oracle driver");
             const std::string host = env("SQLCONDUIT_TEST_ORACLE_HOST", "127.0.0.1");
             const std::string port = env("SQLCONDUIT_TEST_ORACLE_PORT", "1521");
             const std::string user = env("SQLCONDUIT_TEST_ORACLE_USER", "system");

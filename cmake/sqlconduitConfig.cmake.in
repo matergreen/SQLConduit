@@ -2,15 +2,38 @@
 
 include(CMakeFindDependencyMacro)
 
-set(SQLCONDUIT_DRIVER_DEP_NAMES "@SQLCONDUIT_DRIVER_DEP_NAMES@")
+set(_sqlconduit_built_components "@SQLCONDUIT_BUILT_COMPONENTS@")
 
 include("${CMAKE_CURRENT_LIST_DIR}/sqlconduitDriverDeps.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/sqlconduitTargets.cmake")
 
-if(SQLCONDUIT_DRIVER_DEP_NAMES)
-    sqlconduit_resolve_driver_deps(_sqlconduit_driver_libs)
-    set_property(TARGET sqlconduit::sqlconduit APPEND PROPERTY
-                 INTERFACE_LINK_LIBRARIES ${_sqlconduit_driver_libs})
+if(NOT sqlconduit_FIND_COMPONENTS)
+    set(sqlconduit_FIND_COMPONENTS Core)
+endif()
+
+foreach(_sqlconduit_component IN LISTS sqlconduit_FIND_COMPONENTS)
+    list(FIND _sqlconduit_built_components "${_sqlconduit_component}" _sqlconduit_index)
+    if(_sqlconduit_index EQUAL -1)
+        set(sqlconduit_${_sqlconduit_component}_FOUND FALSE)
+        set(sqlconduit_NOT_FOUND_MESSAGE
+            "SQLConduit component '${_sqlconduit_component}' was not built in this package")
+        continue()
+    endif()
+
+    set(sqlconduit_${_sqlconduit_component}_FOUND TRUE)
+    if(NOT _sqlconduit_component STREQUAL "Core")
+        string(TOUPPER "${_sqlconduit_component}" SQLCONDUIT_DRIVER_DEP_NAMES)
+        sqlconduit_resolve_driver_deps(_sqlconduit_driver_libs)
+        string(TOLOWER "${_sqlconduit_component}" _sqlconduit_target_name)
+        set_property(TARGET "sqlconduit::${_sqlconduit_target_name}" APPEND PROPERTY
+                     INTERFACE_LINK_LIBRARIES ${_sqlconduit_driver_libs})
+    endif()
+endforeach()
+
+# Core is always present, even when only a driver component was requested.
+set(sqlconduit_Core_FOUND TRUE)
+if(TARGET sqlconduit::core)
+    set(sqlconduit_FOUND TRUE)
 endif()
 
 check_required_components(sqlconduit)

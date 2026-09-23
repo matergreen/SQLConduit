@@ -78,13 +78,15 @@ Use `?` placeholders. Values are bound natively by the driver:
 
 ```cpp
 #include "sqlconduit/sqlconduit.h"
+#include "sqlconduit/drivers/postgres.h"
 
 #include <cstdint>
 #include <string>
 
 int main() {
     sqlconduit::Client client;
-    auto status = client.init("config/datasources.json");
+    auto status = client.addDriver(sqlconduit::drivers::postgres());
+    if (status.ok()) status = client.init("config/datasources.json");
     if (!status.ok()) return 1;
 
     sqlconduit::common::ResultSet rows;
@@ -116,7 +118,8 @@ topology, and closes its pools on destruction. After a successful
 
 ```cpp
 sqlconduit::Client client;
-auto status = client.init("config/datasources.json");
+auto status = client.addDriver(sqlconduit::drivers::postgres());
+if (status.ok()) status = client.init("config/datasources.json");
 if (!status.ok()) return 1;
 
 sqlconduit::common::ResultSet rows;
@@ -300,10 +303,8 @@ ctest --test-dir build --output-on-failure
 
 ## Integrating into your project
 
-SQLConduit ships as a static library. The driver client libraries it depends on
-(libmysqlclient / libpqxx+libpq / libodbc / libclntsh) are not baked into the package as absolute
-paths — they are resolved again in **your** build environment, so an install prefix can be moved as
-a whole and the target machine only needs the matching client development packages.
+SQLConduit ships as a core static library plus four optional driver archives. A consumer linking
+one driver does not need the client SDKs for the other databases.
 
 ### Option 1: find_package (recommended)
 
@@ -314,8 +315,19 @@ cmake --install build --prefix /your/prefix
 ```
 
 ```cmake
-find_package(sqlconduit REQUIRED)
-target_link_libraries(your_target PRIVATE sqlconduit::sqlconduit)
+find_package(sqlconduit REQUIRED COMPONENTS Postgres)
+target_link_libraries(your_target PRIVATE sqlconduit::postgres)
+```
+
+Register the selected driver before initialization:
+
+```cpp
+#include <sqlconduit/client.h>
+#include <sqlconduit/drivers/postgres.h>
+
+sqlconduit::Client client;
+auto status = client.addDriver(sqlconduit::drivers::postgres());
+if (status.ok()) status = client.init("database.json");
 ```
 
 The Oracle client is usually not on the default search path. Point at it from **your own project**
@@ -331,15 +343,13 @@ cmake -S . -B build -DCMAKE_PREFIX_PATH=/your/prefix \
 ### Option 2: pkg-config
 
 ```bash
-g++ -std=c++17 app.cpp $(pkg-config --cflags sqlconduit) \
-    $(pkg-config --libs --static sqlconduit) -o app
+g++ -std=c++17 app.cpp $(pkg-config --cflags sqlconduit-postgres) \
+    $(pkg-config --libs --static sqlconduit-postgres) -o app
 ```
 
-Only the static library is shipped and the driver dependencies live in `Libs.private`, so `--static`
-is **required** to expand them into real library names; the platform thread flag (`-pthread`) is
-carried along where the toolchain needs it. On macOS/Homebrew the dependencies are not on the
-default link path — add `-L` yourself (for example `-L$(brew --prefix libpq)/lib`) or use
-`find_package`.
+The core package is `sqlconduit`; driver packages are `sqlconduit-mysql`,
+`sqlconduit-postgres`, `sqlconduit-odbc`, and `sqlconduit-oracle`. For complex static-link
+environments, prefer `find_package`.
 
 ### Option 3: FetchContent / add_subdirectory
 
@@ -350,7 +360,7 @@ FetchContent_Declare(sqlconduit
     GIT_TAG        v0.7.0)
 FetchContent_MakeAvailable(sqlconduit)
 
-target_link_libraries(your_target PRIVATE sqlconduit::sqlconduit)
+target_link_libraries(your_target PRIVATE sqlconduit::postgres)
 ```
 
 As a subproject the driver switches (`SQLCONDUIT_ENABLE_*`) are ordinary CMake options in your

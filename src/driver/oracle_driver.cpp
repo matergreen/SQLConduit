@@ -1,4 +1,5 @@
 #include "sqlconduit/driver/oracle_driver.h"
+#include "sqlconduit/drivers/oracle.h"
 #include "sqlconduit/driver/driver_registry.h"
 #include "sqlconduit/common/oracle_types.h"
 
@@ -2212,9 +2213,12 @@ namespace sqlconduit::driver {
         open_ = false;
     }
 
-    void registerOracleDriver() {
-        DriverRegistry::instance().registerDriver("oracle", [] {
-            return std::unique_ptr<IDriver>(new OracleDriver());
-        });
+}
+
+namespace sqlconduit::drivers {
+    driver::DriverRegistration oracle() {
+        return {"oracle", [] {
+            return std::unique_ptr<driver::IDriver>(new driver::OracleDriver());
+        }};
     }
 }

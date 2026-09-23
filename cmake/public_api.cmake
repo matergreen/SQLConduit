@@ -24,13 +24,12 @@ set(SQLCONDUIT_FROZEN_PUBLIC_HEADERS
     sqlconduit/core/rate_limiter.h
     sqlconduit/core/sql_auditor.h
     sqlconduit/core/write_buffer.h
-    sqlconduit/driver/driver_factory.h
     sqlconduit/driver/driver_registry.h
     sqlconduit/driver/idriver.h
-    sqlconduit/driver/mysql_driver.h
-    sqlconduit/driver/odbc_driver.h
-    sqlconduit/driver/oracle_driver.h
-    sqlconduit/driver/postgres_driver.h
+    sqlconduit/drivers/mysql.h
+    sqlconduit/drivers/odbc.h
+    sqlconduit/drivers/oracle.h
+    sqlconduit/drivers/postgres.h
     sqlconduit/exporters/prometheus.h
     sqlconduit/mapping.h
     sqlconduit/sqlconduit.h

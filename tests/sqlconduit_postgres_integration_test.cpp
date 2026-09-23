@@ -2,6 +2,7 @@
 #include "sqlconduit/sqlconduit.h"
 #include "sqlconduit/mapping.h"
 #include "sqlconduit/util.h"
+#include "sqlconduit/drivers/postgres.h"
 
 #include <atomic>
 #include <chrono>
@@ -157,6 +158,8 @@ namespace {
         }
 
         void start() {
+            requireOk(g_client.addDriver(sqlconduit::drivers::postgres()),
+                      "register PostgreSQL driver");
             const std::string host = env("SQLCONDUIT_TEST_PG_HOST", "127.0.0.1");
             const std::string port = env("SQLCONDUIT_TEST_PG_PORT", "5432");
             const std::string user = env("SQLCONDUIT_TEST_PG_USER", "postgres");

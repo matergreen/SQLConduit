@@ -8,6 +8,14 @@ description.
 
 ### Public API foundation
 
+- **Breaking (preview packaging/API):** split the monolithic static archive into
+  `sqlconduit::core` plus independently linkable `mysql`, `postgres`, `odbc`, and `oracle`
+  components. `Client::addDriver()` now registers a selected driver for one client before
+  initialization; core-only consumers no longer need any database client SDK installed.
+- Replaced installed concrete driver headers (which exposed vendor SDK types) with lightweight
+  `sqlconduit/drivers/*.h` registration factories, and removed `registerBuiltinDrivers()`.
+- Added component-aware CMake package discovery and per-component pkg-config files. A database
+  client library is discovered only when its matching component is requested.
 - Added a move-only, RAII `sqlconduit::Client` with configuration-file and programmatic
   initialization, explicit lifecycle errors, reload, synchronous statement/session/cursor APIs,
   pool statistics, and dynamic data-source/group management.

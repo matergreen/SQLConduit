@@ -138,6 +138,19 @@ int main() {
     driver::DriverRegistry::instance().registerDriver(
         "client-test", [] { return std::make_unique<ClientTestDriver>(); });
 
+    Client locallyRegistered;
+    Client missingRegistration;
+    auto localConfig = makeConfig("local");
+    localConfig.datasources.front().type = "local-only";
+    check(locallyRegistered.addDriver({
+              "local-only", [] { return std::make_unique<ClientTestDriver>(); }}).ok(),
+          "client accepts a driver registration before init");
+    check(locallyRegistered.init(localConfig).ok(),
+          "client initializes with its own registered driver");
+    check(missingRegistration.init(localConfig).code == common::ErrorCode::UnknownDriver,
+          "client-local driver registration does not leak to another client");
+    locallyRegistered.shutdown(std::chrono::milliseconds(0));
+
     Client first;
     Client second;
 

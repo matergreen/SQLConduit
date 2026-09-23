@@ -6,6 +6,7 @@
 #include "sqlconduit/core/heartbeat_manager.h"
 #include "sqlconduit/core/rate_limiter.h"
 #include "sqlconduit/core/write_buffer.h"
+#include "sqlconduit/driver/driver_registry.h"
 #include "sqlconduit/common/observer.h"
 #include "sqlconduit/common/types.h"
 #include "sqlconduit/core/cursor.h"
@@ -596,6 +597,8 @@ namespace sqlconduit {
 
             explicit DatabaseManager(std::shared_ptr<detail::RuntimeServices> services);
 
+            void addDriver(driver::DriverRegistration registration);
+
             [[nodiscard]] common::Status validateGroupRefs(
                 const config::DataSourceGroupConfig &cfg,
                 const std::unordered_map<std::string, std::shared_ptr<ConnectionPool> > &candidates,
@@ -637,6 +640,7 @@ namespace sqlconduit {
             std::unique_ptr<detail::StatsReporter> statsReporter_;
             std::shared_ptr<detail::PoolCollectorLease> poolCollectorLease_;
             std::shared_ptr<detail::RuntimeServices> services_;
+            driver::DriverRegistry drivers_;
         };
     }
 }

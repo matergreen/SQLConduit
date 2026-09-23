@@ -121,7 +121,6 @@ namespace sqlconduit::driver {
         }
     };
 
-    void registerOdbcDriver();
 }
 
 #endif

@@ -165,7 +165,6 @@ namespace sqlconduit::driver {
         }
     };
 
-    void registerOracleDriver();
 }
 
 #endif

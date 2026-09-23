@@ -158,7 +158,6 @@ namespace sqlconduit::driver {
         }
     };
 
-    void registerMySQLDriver();
 }
 
 #endif

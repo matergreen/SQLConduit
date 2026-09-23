@@ -75,13 +75,15 @@ SQL 使用 `?` 占位，参数由驱动原生绑定：
 
 ```cpp
 #include "sqlconduit/sqlconduit.h"
+#include "sqlconduit/drivers/postgres.h"
 
 #include <cstdint>
 #include <string>
 
 int main() {
     sqlconduit::Client client;
-    auto status = client.init("config/datasources.json");
+    auto status = client.addDriver(sqlconduit::drivers::postgres());
+    if (status.ok()) status = client.init("config/datasources.json");
     if (!status.ok()) return 1;
 
     sqlconduit::common::ResultSet rows;
@@ -112,7 +114,8 @@ client.query("analytics", "SELECT count(*) FROM events", rows);
 
 ```cpp
 sqlconduit::Client client;
-auto status = client.init("config/datasources.json");
+auto status = client.addDriver(sqlconduit::drivers::postgres());
+if (status.ok()) status = client.init("config/datasources.json");
 if (!status.ok()) return 1;
 
 sqlconduit::common::ResultSet rows;
@@ -280,9 +283,8 @@ ctest --test-dir build --output-on-failure
 
 ## 集成到你的工程
 
-SQLConduit 以静态库发布。库本身依赖的驱动客户端库（libmysqlclient / libpqxx+libpq /
-libodbc / libclntsh）不会写死安装时的绝对路径，而是在**你的**构建环境里重新查找，
-因此安装目录可以整体搬迁，换机器只需装好对应客户端开发包。
+SQLConduit 以一个核心静态库和四个可选驱动静态库发布。只使用某个驱动时，不需要安装
+其他数据库的客户端开发包。
 
 ### 方式一：find_package（推荐）
 
@@ -293,9 +295,21 @@ cmake --install build --prefix /your/prefix
 ```
 
 ```cmake
-find_package(sqlconduit REQUIRED)
-target_link_libraries(your_target PRIVATE sqlconduit::sqlconduit)
+find_package(sqlconduit REQUIRED COMPONENTS Postgres)
+target_link_libraries(your_target PRIVATE sqlconduit::postgres)
 ```
+
+```cpp
+#include <sqlconduit/client.h>
+#include <sqlconduit/drivers/postgres.h>
+
+sqlconduit::Client client;
+auto status = client.addDriver(sqlconduit::drivers::postgres());
+if (status.ok()) status = client.init("database.json");
+```
+
+只需要不依赖数据库 SDK 的公共类型和基础能力时，使用 `COMPONENTS Core` 与
+`sqlconduit::core`。多个数据库可同时列出组件并链接对应目标。
 
 Oracle 客户端通常不在默认搜索路径。这个路径要在**你自己的工程**上指定（包在安装时不记录任何
 客户端路径）：
@@ -310,13 +324,13 @@ cmake -S . -B build -DCMAKE_PREFIX_PATH=/your/prefix \
 ### 方式二：pkg-config
 
 ```bash
-g++ -std=c++17 app.cpp $(pkg-config --cflags sqlconduit) \
-    $(pkg-config --libs --static sqlconduit) -o app
+g++ -std=c++17 app.cpp $(pkg-config --cflags sqlconduit-postgres) \
+    $(pkg-config --libs --static sqlconduit-postgres) -o app
 ```
 
-只发行静态库，驱动依赖位于 `Libs.private`，所以**必须带 `--static`** 才会展开成实际库名；
-若目标平台要求线程链接标志（如 `-pthread`），也会一并带上。macOS/Homebrew 下依赖不在默认
-链接路径，需要自行追加 `-L`（例如 `-L$(brew --prefix libpq)/lib`）或用 `find_package` 方式。
+核心包名为 `sqlconduit`，驱动包名为 `sqlconduit-mysql`、`sqlconduit-postgres`、
+`sqlconduit-odbc`、`sqlconduit-oracle`。静态链接驱动时仍需确保对应客户端库位于链接路径；
+复杂环境推荐使用 `find_package`。
 
 ### 方式三：FetchContent / add_subdirectory
 
@@ -327,7 +341,7 @@ FetchContent_Declare(sqlconduit
     GIT_TAG        v0.7.0)
 FetchContent_MakeAvailable(sqlconduit)
 
-target_link_libraries(your_target PRIVATE sqlconduit::sqlconduit)
+target_link_libraries(your_target PRIVATE sqlconduit::postgres)
 ```
 
 作为子项目时，驱动开关（`SQLCONDUIT_ENABLE_*`）在你的工程里同样是普通 CMake 选项；

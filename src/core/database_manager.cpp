@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-#include "sqlconduit/driver/driver_factory.h"
+#include "sqlconduit/driver/driver_registry.h"
 #include "sqlconduit/common/logger.h"
 #include "sqlconduit/common/observer.h"
 #include "sqlconduit/common/sql_analyze.h"
@@ -2113,10 +2113,12 @@ namespace sqlconduit::core {
         shutdown(std::chrono::milliseconds(0));
     }
 
+    void DatabaseManager::addDriver(driver::DriverRegistration registration) {
+        drivers_.registerDriver(std::move(registration));
+    }
+
     common::Status DatabaseManager::init(const config::GlobalConfig &cfg,
                                          const std::chrono::milliseconds replacementGrace) {
-        driver::registerBuiltinDrivers();
-
         if (cfg.datasources.empty()) {
             return common::Status::error(common::ErrorCode::ConfigError,
                                          "no datasource configured");
@@ -2348,11 +2350,14 @@ namespace sqlconduit::core {
             return common::Status::error(common::ErrorCode::ConfigError,
                                          "datasource name must not be empty");
         }
-        auto drv = driver::createDriver(dsc.type);
+        auto drv = drivers_.create(dsc.type);
+        if (!drv) drv = driver::DriverRegistry::instance().create(dsc.type);
         if (!drv) {
             return common::Status::error(common::ErrorCode::UnknownDriver,
                                          "unknown datasource type: '" + dsc.type
-                                         + "' (name=" + dsc.name + ")");
+                                         + "' (name=" + dsc.name
+                                         + "). Register it on this Client and link the matching "
+                                           "sqlconduit driver component");
         }
         const std::chrono::milliseconds borrowTimeout(poolCfg.borrow_timeout_ms);
         const std::chrono::milliseconds idleTimeout(poolCfg.idle_timeout_ms);

@@ -1,4 +1,5 @@
 #include "sqlconduit/driver/odbc_driver.h"
+#include "sqlconduit/drivers/odbc.h"
 #include "sqlconduit/driver/driver_registry.h"
 
 #include <algorithm>
@@ -1477,8 +1478,10 @@ namespace sqlconduit::driver {
 #endif
     }
 
-    void registerOdbcDriver() {
-        DriverRegistry::instance().registerDriver("odbc",
-                                                  []() { return std::make_unique<OdbcDriver>(); });
+}
+
+namespace sqlconduit::drivers {
+    driver::DriverRegistration odbc() {
+        return {"odbc", [] { return std::make_unique<driver::OdbcDriver>(); }};
     }
 }

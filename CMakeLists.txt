@@ -8,7 +8,11 @@ file(GLOB_RECURSE _sqlconduit_header_inventory CONFIGURE_DEPENDS
 list(REMOVE_ITEM _sqlconduit_header_inventory
      "sqlconduit/async/executor.h"
      "sqlconduit/core/runtime_services.h"
-     "sqlconduit/core/stats_reporter.h")
+     "sqlconduit/core/stats_reporter.h"
+     "sqlconduit/driver/mysql_driver.h"
+     "sqlconduit/driver/postgres_driver.h"
+     "sqlconduit/driver/odbc_driver.h"
+     "sqlconduit/driver/oracle_driver.h")
 list(SORT _sqlconduit_header_inventory)
 set(_sqlconduit_frozen_headers "${SQLCONDUIT_FROZEN_PUBLIC_HEADERS}")
 list(SORT _sqlconduit_frozen_headers)
@@ -74,7 +78,7 @@ else()
     endif()
 endif()
 
-set(SQLCONDUIT_SOURCES
+set(SQLCONDUIT_CORE_SOURCES
     src/common/types.cpp
     src/common/pg_types.cpp
     src/common/oracle_types.cpp
@@ -96,18 +100,14 @@ set(SQLCONDUIT_SOURCES
     src/core/stats_reporter.cpp
     src/core/interceptor.cpp
     src/driver/driver_registry.cpp
-    src/driver/driver_factory.cpp
-    src/driver/mysql_driver.cpp
-    src/driver/postgres_driver.cpp
-    src/driver/odbc_driver.cpp
-    src/driver/oracle_driver.cpp
     src/client.cpp
     src/exporters/prometheus.cpp
 )
 
-add_library(sqlconduit STATIC ${SQLCONDUIT_SOURCES})
-add_library(sqlconduit::sqlconduit ALIAS sqlconduit)
-target_include_directories(sqlconduit
+add_library(sqlconduit_core STATIC ${SQLCONDUIT_CORE_SOURCES})
+add_library(sqlconduit::core ALIAS sqlconduit_core)
+set_target_properties(sqlconduit_core PROPERTIES EXPORT_NAME core)
+target_include_directories(sqlconduit_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
@@ -118,36 +118,58 @@ target_include_directories(sqlconduit
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 if(CMAKE_THREAD_LIBS_INIT)
-    target_link_libraries(sqlconduit PUBLIC ${CMAKE_THREAD_LIBS_INIT})
+    target_link_libraries(sqlconduit_core PUBLIC ${CMAKE_THREAD_LIBS_INIT})
 endif()
 
-# Driver client libraries are validated here, linked through BUILD_INTERFACE so the
-# installed export stays free of absolute paths, and re-resolved in the consumer's
-# own environment by the installed sqlconduitDriverDeps.cmake.
-function(sqlconduit_add_driver_dep name)
-    set_property(GLOBAL APPEND PROPERTY SQLCONDUIT_DRIVER_DEP_NAMES "${name}")
+# Each optional driver is its own static component. Its database client dependency
+# stays off the core target and is re-discovered only when a consumer requests that
+# component from the installed package.
+set(SQLCONDUIT_INSTALL_TARGETS sqlconduit_core)
+set(SQLCONDUIT_BUILT_COMPONENTS Core)
+
+function(sqlconduit_add_driver_target name source)
+    string(TOLOWER "${name}" _lower)
+    set(_target "sqlconduit_${_lower}")
+    add_library(${_target} STATIC "${source}")
+    add_library("sqlconduit::${_lower}" ALIAS ${_target})
+    set_target_properties(${_target} PROPERTIES EXPORT_NAME "${_lower}")
+    target_include_directories(${_target}
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:include>)
+    target_link_libraries(${_target} PUBLIC sqlconduit_core)
+    list(APPEND SQLCONDUIT_INSTALL_TARGETS ${_target})
+    list(APPEND SQLCONDUIT_BUILT_COMPONENTS ${name})
+    set(SQLCONDUIT_INSTALL_TARGETS "${SQLCONDUIT_INSTALL_TARGETS}" PARENT_SCOPE)
+    set(SQLCONDUIT_BUILT_COMPONENTS "${SQLCONDUIT_BUILT_COMPONENTS}" PARENT_SCOPE)
+endfunction()
+
+function(sqlconduit_add_driver_dep target name)
     foreach(_lib IN LISTS ARGN)
-        target_link_libraries(sqlconduit PRIVATE "$<BUILD_INTERFACE:${_lib}>")
+        target_link_libraries(${target} PRIVATE "$<BUILD_INTERFACE:${_lib}>")
         get_filename_component(_pcname "${_lib}" NAME_WE)
         string(REGEX REPLACE "^lib" "" _pcname "${_pcname}")
-        set_property(GLOBAL APPEND PROPERTY SQLCONDUIT_PC_LIBS_PRIVATE "-l${_pcname}")
+        set_property(GLOBAL APPEND PROPERTY
+                     "SQLCONDUIT_${name}_PC_LIBS_PRIVATE" "-l${_pcname}")
     endforeach()
 endfunction()
 
 if(SQLCONDUIT_ENABLE_MYSQL)
-    target_compile_definitions(sqlconduit PRIVATE SQLCONDUIT_ENABLE_MYSQL)
+    sqlconduit_add_driver_target(MySQL src/driver/mysql_driver.cpp)
+    target_compile_definitions(sqlconduit_mysql PRIVATE SQLCONDUIT_ENABLE_MYSQL)
     find_path(MYSQL_INCLUDE_DIR NAMES mysql.h PATH_SUFFIXES mysql)
     find_library(MYSQL_LIBRARY  NAMES mysqlclient libmysql)
     if(NOT MYSQL_INCLUDE_DIR OR NOT MYSQL_LIBRARY)
         message(FATAL_ERROR "SQLCONDUIT_ENABLE_MYSQL=ON but libmysqlclient not found. "
             "Run: sudo apt install -y default-libmysqlclient-dev")
     endif()
-    target_include_directories(sqlconduit PRIVATE ${MYSQL_INCLUDE_DIR})
-    sqlconduit_add_driver_dep(MYSQL "${MYSQL_LIBRARY}")
+    target_include_directories(sqlconduit_mysql PRIVATE ${MYSQL_INCLUDE_DIR})
+    sqlconduit_add_driver_dep(sqlconduit_mysql MYSQL "${MYSQL_LIBRARY}")
 endif()
 
 if(SQLCONDUIT_ENABLE_POSTGRES)
-    target_compile_definitions(sqlconduit PRIVATE SQLCONDUIT_ENABLE_POSTGRES)
+    sqlconduit_add_driver_target(Postgres src/driver/postgres_driver.cpp)
+    target_compile_definitions(sqlconduit_postgres PRIVATE SQLCONDUIT_ENABLE_POSTGRES)
     find_path(PQXX_INCLUDE_DIR NAMES pqxx/pqxx)
     if(UNIX AND NOT APPLE)
         # Prefer static libpqxx on Linux. pqxx::internal::type_name is a C++17 inline
@@ -180,16 +202,17 @@ if(SQLCONDUIT_ENABLE_POSTGRES)
     endif()
     message(STATUS "sqlconduit: libpqxx major version ${_sqlconduit_pqxx_major}")
     if(_sqlconduit_pqxx_major GREATER_EQUAL 8)
-        message(STATUS "sqlconduit: libpqxx >= 8 requires C++20; raising only the sqlconduit target")
-        set_target_properties(sqlconduit PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+        message(STATUS "sqlconduit: libpqxx >= 8 requires C++20; raising only the PostgreSQL driver target")
+        set_target_properties(sqlconduit_postgres PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
     endif()
 
-    target_include_directories(sqlconduit PRIVATE ${PQXX_INCLUDE_DIR} ${PQ_INCLUDE_DIR})
-    sqlconduit_add_driver_dep(POSTGRES "${PQXX_LIBRARY}" "${PQ_LIBRARY}")
+    target_include_directories(sqlconduit_postgres PRIVATE ${PQXX_INCLUDE_DIR} ${PQ_INCLUDE_DIR})
+    sqlconduit_add_driver_dep(sqlconduit_postgres POSTGRES "${PQXX_LIBRARY}" "${PQ_LIBRARY}")
 endif()
 
 if(SQLCONDUIT_ENABLE_ODBC)
-    target_compile_definitions(sqlconduit PRIVATE SQLCONDUIT_ENABLE_ODBC)
+    sqlconduit_add_driver_target(ODBC src/driver/odbc_driver.cpp)
+    target_compile_definitions(sqlconduit_odbc PRIVATE SQLCONDUIT_ENABLE_ODBC)
     if(WIN32)
         set(ODBC_LIBRARY odbc32)
     else()
@@ -199,13 +222,14 @@ if(SQLCONDUIT_ENABLE_ODBC)
             message(FATAL_ERROR "SQLCONDUIT_ENABLE_ODBC=ON but unixODBC not found. "
                 "Run: sudo apt install -y unixodbc-dev")
         endif()
-        target_include_directories(sqlconduit PRIVATE ${ODBC_INCLUDE_DIR})
+        target_include_directories(sqlconduit_odbc PRIVATE ${ODBC_INCLUDE_DIR})
     endif()
-    sqlconduit_add_driver_dep(ODBC "${ODBC_LIBRARY}")
+    sqlconduit_add_driver_dep(sqlconduit_odbc ODBC "${ODBC_LIBRARY}")
 endif()
 
 if(SQLCONDUIT_ENABLE_ORACLE)
-    target_compile_definitions(sqlconduit PRIVATE SQLCONDUIT_ENABLE_ORACLE)
+    sqlconduit_add_driver_target(Oracle src/driver/oracle_driver.cpp)
+    target_compile_definitions(sqlconduit_oracle PRIVATE SQLCONDUIT_ENABLE_ORACLE)
     find_path(OCI_INCLUDE_DIR NAMES oci.h)
     find_library(OCI_LIBRARY  NAMES clntsh oci)
     if(NOT OCI_INCLUDE_DIR OR NOT OCI_LIBRARY)
@@ -213,8 +237,8 @@ if(SQLCONDUIT_ENABLE_ORACLE)
             "(oci.h / libclntsh). Install the Oracle Instant Client Basic + SDK packages and "
             "pass -DOCI_INCLUDE_DIR=<dir> -DOCI_LIBRARY=<path>.")
     endif()
-    target_include_directories(sqlconduit PRIVATE ${OCI_INCLUDE_DIR})
-    sqlconduit_add_driver_dep(ORACLE "${OCI_LIBRARY}")
+    target_include_directories(sqlconduit_oracle PRIVATE ${OCI_INCLUDE_DIR})
+    sqlconduit_add_driver_dep(sqlconduit_oracle ORACLE "${OCI_LIBRARY}")
 endif()
 
 if(SQLCONDUIT_BUILD_TESTS)
@@ -229,17 +253,7 @@ endif()
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-get_property(SQLCONDUIT_DRIVER_DEP_NAMES GLOBAL PROPERTY SQLCONDUIT_DRIVER_DEP_NAMES)
-get_property(SQLCONDUIT_PC_LIBS_PRIVATE GLOBAL PROPERTY SQLCONDUIT_PC_LIBS_PRIVATE)
-if(CMAKE_THREAD_LIBS_INIT)
-    list(APPEND SQLCONDUIT_PC_LIBS_PRIVATE "${CMAKE_THREAD_LIBS_INIT}")
-endif()
-if(SQLCONDUIT_PC_LIBS_PRIVATE)
-    list(REMOVE_DUPLICATES SQLCONDUIT_PC_LIBS_PRIVATE)
-    string(REPLACE ";" " " SQLCONDUIT_PC_LIBS_PRIVATE "${SQLCONDUIT_PC_LIBS_PRIVATE}")
-endif()
-
-install(TARGETS sqlconduit
+install(TARGETS ${SQLCONDUIT_INSTALL_TARGETS}
         EXPORT sqlconduitTargets
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -247,7 +261,11 @@ install(TARGETS sqlconduit
 install(DIRECTORY include/sqlconduit DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
         PATTERN "async/executor.h" EXCLUDE
         PATTERN "core/runtime_services.h" EXCLUDE
-        PATTERN "core/stats_reporter.h" EXCLUDE)
+        PATTERN "core/stats_reporter.h" EXCLUDE
+        PATTERN "driver/mysql_driver.h" EXCLUDE
+        PATTERN "driver/postgres_driver.h" EXCLUDE
+        PATTERN "driver/odbc_driver.h" EXCLUDE
+        PATTERN "driver/oracle_driver.h" EXCLUDE)
 
 set(_sqlconduit_cmake_dir "${CMAKE_INSTALL_LIBDIR}/cmake/sqlconduit")
 configure_package_config_file(
@@ -287,3 +305,22 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cmake/sqlconduit.pc.in"
                "${CMAKE_CURRENT_BINARY_DIR}/sqlconduit.pc" @ONLY)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/sqlconduit.pc"
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+
+foreach(_component MySQL Postgres ODBC Oracle)
+    list(FIND SQLCONDUIT_BUILT_COMPONENTS "${_component}" _component_index)
+    if(NOT _component_index EQUAL -1)
+        string(TOLOWER "${_component}" SQLCONDUIT_PC_DRIVER)
+        set(SQLCONDUIT_PC_DRIVER_DISPLAY "${_component}")
+        string(TOUPPER "${_component}" _component_upper)
+        get_property(SQLCONDUIT_PC_DRIVER_LIBS_PRIVATE GLOBAL PROPERTY
+                     "SQLCONDUIT_${_component_upper}_PC_LIBS_PRIVATE")
+        list(REMOVE_DUPLICATES SQLCONDUIT_PC_DRIVER_LIBS_PRIVATE)
+        string(REPLACE ";" " " SQLCONDUIT_PC_DRIVER_LIBS_PRIVATE
+               "${SQLCONDUIT_PC_DRIVER_LIBS_PRIVATE}")
+        configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cmake/sqlconduit-driver.pc.in"
+                       "${CMAKE_CURRENT_BINARY_DIR}/sqlconduit-${SQLCONDUIT_PC_DRIVER}.pc" @ONLY)
+        install(FILES
+                "${CMAKE_CURRENT_BINARY_DIR}/sqlconduit-${SQLCONDUIT_PC_DRIVER}.pc"
+                DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+    endif()
+endforeach()

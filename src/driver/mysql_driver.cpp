@@ -1,4 +1,5 @@
 #include "sqlconduit/driver/mysql_driver.h"
+#include "sqlconduit/drivers/mysql.h"
 #include "sqlconduit/common/logger.h"
 #include "sqlconduit/driver/driver_registry.h"
 
@@ -1235,8 +1236,10 @@ namespace sqlconduit::driver {
     }
 #endif
 
-    void registerMySQLDriver() {
-        DriverRegistry::instance().registerDriver("mysql",
-                                                  []() { return std::make_unique<MySQLDriver>(); });
+}
+
+namespace sqlconduit::drivers {
+    driver::DriverRegistration mysql() {
+        return {"mysql", [] { return std::make_unique<driver::MySQLDriver>(); }};
     }
 }

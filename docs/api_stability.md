@@ -26,13 +26,14 @@ source continues to compile.
 
 Applications implementing drivers, interceptors, or session callbacks may depend on:
 
-- `driver/idriver.h`, `driver/driver_registry.h`, and `driver/driver_factory.h`;
+- `driver/idriver.h`, `driver/driver_registry.h`, and the lightweight built-in registration
+  factories under `sqlconduit/drivers/`;
 - `core/idatabase_connection.h`, `core/interceptor.h`, and `core/rate_limiter.h`;
 - `core/database_manager.h`, `core/cursor.h`, and `core/connection_pool.h` for the `DataSource`,
   `Session`, `Cursor`, options, and statistics types exposed by `Client`.
 
-Concrete built-in driver classes are supported, but most applications should register or select
-drivers through the factory instead of constructing them directly.
+Concrete built-in driver classes and vendor SDK headers are internal. Applications select a built-in
+component at link time and pass its `DriverRegistration` to `Client::addDriver()` before `init()`.
 
 ### Internal implementation
 

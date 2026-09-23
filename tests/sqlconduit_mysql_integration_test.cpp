@@ -1,6 +1,7 @@
 #include "sqlconduit/sqlconduit.h"
 #include "sqlconduit/mapping.h"
 #include "sqlconduit/util.h"
+#include "sqlconduit/drivers/mysql.h"
 
 #include <chrono>
 #include <cmath>
@@ -102,6 +103,7 @@ namespace {
         }
 
         void start() {
+            requireOk(g_client.addDriver(sqlconduit::drivers::mysql()), "register MySQL driver");
             const auto host = env("SQLCONDUIT_TEST_MYSQL_HOST", "127.0.0.1");
             const auto port = env("SQLCONDUIT_TEST_MYSQL_PORT", "3306");
             const auto user = env("SQLCONDUIT_TEST_MYSQL_USER", "root");

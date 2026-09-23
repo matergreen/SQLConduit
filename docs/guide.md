@@ -62,8 +62,8 @@ include/sqlconduit/
   config/    datasource_config.h  config_loader.h(解析 JSON)
   core/      idatabase_connection.h(连接抽象 + 流式/批量默认能力)
              connection_pool.h     heartbeat_manager.h  database_manager.h
-  driver/    idriver.h  driver_registry.h  driver_factory.h
-             mysql_driver.h  postgres_driver.h  odbc_driver.h
+  driver/    idriver.h  driver_registry.h
+  drivers/   mysql.h  postgres.h  odbc.h  oracle.h（轻量注册工厂）
   async/     async_types.h(Client 异步结果与执行器统计)
   mapping.h  (实体映射层 v0.5.0：header-only，Row ↔ 业务实体，读写双向)
   client.h         (唯一高层运行时入口)
@@ -144,8 +144,10 @@ cmake .. -DSQLCONDUIT_BUILD_TESTS=ON && cmake --build . -j"$(sysctl -n hw.ncpu)"
 
 ```cpp
 #include "sqlconduit/sqlconduit.h"
+#include "sqlconduit/drivers/postgres.h"
 
 sqlconduit::Client client;
+client.addDriver(sqlconduit::drivers::postgres());
 client.init("config/datasources.json");   // 加载多数据源 + 启动心跳
 
 sqlconduit::common::ResultSet rs;
@@ -1764,34 +1766,44 @@ cmake_minimum_required(VERSION 3.16)
 project(my_app LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 
-find_package(sqlconduit REQUIRED)
+find_package(sqlconduit REQUIRED COMPONENTS Postgres)
 
 add_executable(my_app main.cpp)
-target_link_libraries(my_app PRIVATE sqlconduit::sqlconduit)
+target_link_libraries(my_app PRIVATE sqlconduit::postgres)
 ```
 
-`sqlconduit::sqlconduit` 只导出自身头文件路径与必需的编译定义；驱动客户端库的链接参数在
-`find_package` 时按本机环境解析（见下节）。nlohmann/json 是纯构建期私有依赖，不随包安装也不导出，
+在初始化前显式注册所选驱动：
+
+```cpp
+#include <sqlconduit/client.h>
+#include <sqlconduit/drivers/postgres.h>
+
+sqlconduit::Client client;
+auto status = client.addDriver(sqlconduit::drivers::postgres());
+if (status.ok()) status = client.init("database.json");
+```
+
+核心目标是 `sqlconduit::core`；可选目标是 `sqlconduit::mysql`、`sqlconduit::postgres`、
+`sqlconduit::odbc` 和 `sqlconduit::oracle`。只有 `find_package` 请求的组件才会解析相应客户端库。
+nlohmann/json 是纯构建期私有依赖，不随包安装也不导出，
 因此不会与系统或其它依赖的同名头文件冲突。`client.shutdown()` 退出前务必调用，回收连接池与
 心跳线程。把 SQLConduit 当子项目用时传 `-DSQLCONDUIT_INSTALL=OFF`，上层工程不会多出安装规则。
 
 ### 非 CMake 工程（pkg-config）
 
-安装后会生成 `sqlconduit.pc`。只发行静态库，驱动依赖挂在 `Libs.private`，所以**必须带 `--static`**
-才会展开成实际库名：
+安装后会生成核心 `sqlconduit.pc`，以及已构建驱动对应的 `sqlconduit-mysql.pc`、
+`sqlconduit-postgres.pc`、`sqlconduit-odbc.pc`、`sqlconduit-oracle.pc`：
 
 ```bash
-g++ main.cpp $(pkg-config --cflags sqlconduit) \
-    $(pkg-config --libs --static sqlconduit) -o my_app
+g++ main.cpp $(pkg-config --cflags sqlconduit-postgres) \
+    $(pkg-config --libs --static sqlconduit-postgres) -o my_app
 ```
 
 ### 驱动客户端库（务必阅读）
 
-开启某个驱动后，安装包**只包含** `libsqlconduit.a` 与头文件，**不含**对应数据库客户端库
-（libpqxx / libmysqlclient / unixODBC / OCI）。由于 SQLConduit 是静态库，这些客户端库仍需装在下游
-机器上，但**链接参数由包自己解析**：`sqlconduitConfig.cmake` 会载入随包安装的
-`sqlconduitDriverDeps.cmake`，在**下游的构建环境里**重新查找本次编译启用的驱动库，再追加到
-`sqlconduit::sqlconduit`。导出文件里因此不出现任何绝对路径，安装目录可以整体搬迁。
+安装包包含 `libsqlconduit_core.a` 和构建时启用的独立驱动归档，但不包含数据库客户端库。
+下游请求某个组件时，`sqlconduitDriverDeps.cmake` 才会在本机查找对应客户端库，并追加到该
+驱动目标。仅请求 `Core` 不会查找任何数据库 SDK。
 
 下游只需装好对应的客户端开发包：
 
@@ -1807,17 +1819,15 @@ g++ main.cpp $(pkg-config --cflags sqlconduit) \
 - 或把 `CMAKE_PREFIX_PATH` / `CMAKE_LIBRARY_PATH` 指向客户端目录。
 
 > **预期行为（开箱提示）**
-> - 默认 `SQLCONDUIT_ENABLE_*` 全 OFF；未编译期启用的驱动，调用返回 `DriverDisabled`。
+> - 默认 `SQLCONDUIT_ENABLE_*` 全 OFF；请求安装包中未构建的组件会在 CMake 配置阶段明确失败。
 > - 程序退出前务必调用 `client.shutdown()` 回收连接池与心跳线程。
 
 ## 扩展新数据库类型
 
-1. 在 `include/sqlconduit/driver/` 新增 `xxx_driver.h/.cpp`，实现 `MySQLConnection`
-   风格的 `IDatabaseConnection` 与 `IDriver`。
-2. 在 `.cpp` 中调用 `DriverRegistry::instance().registerDriver("xxx", ...)`。
-3. （可选）在 `driver_factory.cpp` 的 `registerBuiltinDrivers()` 中登记，
-   或在使用方启动时自行注册。
-4. JSON 配置里 `type` 填 `"xxx"` 即可被识别。
+1. 实现 `IDatabaseConnection` 与 `IDriver`，并提供返回 `DriverRegistration` 的轻量工厂头。
+2. 为驱动建立独立 CMake 静态目标，只链接 `sqlconduit::core` 和自己的客户端库。
+3. 使用方在 `Client::init()` 前把该注册描述传给 `Client::addDriver()`。
+4. JSON 配置里的 `type` 与 `DriverRegistration::type` 保持一致。
 
 基础连接方法仍保持精简；生产驱动应另外覆盖带参数的 `query`/`execute` 并让
 `supportsParams()` 返回 `true`。未实现原生绑定时会明确返回 `NotSupported`。

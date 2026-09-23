@@ -175,6 +175,21 @@ namespace sqlconduit {
 
     Client &Client::operator=(Client &&other) noexcept = default;
 
+    common::Status Client::addDriver(driver::DriverRegistration registration) {
+        if (!impl_) return clientClosed();
+        if (registration.type.empty() || !registration.factory)
+            return common::Status::error(common::ErrorCode::ConfigError,
+                                         "driver registration requires a type and factory");
+        std::lock_guard<std::mutex> lock(impl_->lifecycleMutex);
+        const auto current = impl_->state.load(std::memory_order_acquire);
+        if (current == Impl::State::Closed) return clientClosed();
+        if (current == Impl::State::Running)
+            return common::Status::error(common::ErrorCode::AlreadyInitialized,
+                                         "drivers must be registered before Client::init()");
+        impl_->manager.addDriver(std::move(registration));
+        return common::Status::OK();
+    }
+
     common::Status Client::init(const std::string &configPath) {
         config::GlobalConfig config;
         std::string error;

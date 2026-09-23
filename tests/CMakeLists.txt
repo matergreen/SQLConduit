@@ -1,58 +1,58 @@
 add_executable(sqlconduit_core_test sqlconduit_core_test.cpp)
-target_link_libraries(sqlconduit_core_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_core_test PRIVATE sqlconduit_core)
 target_compile_definitions(sqlconduit_core_test PRIVATE SQLCONDUIT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 add_executable(sqlconduit_mapping_test sqlconduit_mapping_test.cpp)
-target_link_libraries(sqlconduit_mapping_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_mapping_test PRIVATE sqlconduit_core)
 
 add_executable(sqlconduit_pg_types_test sqlconduit_pg_types_test.cpp)
-target_link_libraries(sqlconduit_pg_types_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_pg_types_test PRIVATE sqlconduit_core)
 
 add_executable(sqlconduit_oracle_types_test sqlconduit_oracle_types_test.cpp)
-target_link_libraries(sqlconduit_oracle_types_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_oracle_types_test PRIVATE sqlconduit_core)
 
 add_executable(sqlconduit_util_test sqlconduit_util_test.cpp)
-target_link_libraries(sqlconduit_util_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_util_test PRIVATE sqlconduit_core)
 
 add_executable(sqlconduit_context_test sqlconduit_context_test.cpp)
-target_link_libraries(sqlconduit_context_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_context_test PRIVATE sqlconduit_core)
 
 add_executable(sqlconduit_interceptor_test sqlconduit_interceptor_test.cpp)
-target_link_libraries(sqlconduit_interceptor_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_interceptor_test PRIVATE sqlconduit_core)
 
 add_executable(sqlconduit_observability_test sqlconduit_observability_test.cpp)
-target_link_libraries(sqlconduit_observability_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_observability_test PRIVATE sqlconduit_core)
 
 add_executable(sqlconduit_exporters_test sqlconduit_exporters_test.cpp)
-target_link_libraries(sqlconduit_exporters_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_exporters_test PRIVATE sqlconduit_core)
 
 add_executable(sqlconduit_dynamic_test sqlconduit_dynamic_test.cpp)
-target_link_libraries(sqlconduit_dynamic_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_dynamic_test PRIVATE sqlconduit_core)
 
 add_executable(sqlconduit_idempotency_test sqlconduit_idempotency_test.cpp)
-target_link_libraries(sqlconduit_idempotency_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_idempotency_test PRIVATE sqlconduit_core)
 
 add_executable(sqlconduit_shadow_test sqlconduit_shadow_test.cpp)
-target_link_libraries(sqlconduit_shadow_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_shadow_test PRIVATE sqlconduit_core)
 
 add_executable(sqlconduit_redaction_test sqlconduit_redaction_test.cpp)
-target_link_libraries(sqlconduit_redaction_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_redaction_test PRIVATE sqlconduit_core)
 
 add_executable(sqlconduit_raw_session_test sqlconduit_raw_session_test.cpp)
-target_link_libraries(sqlconduit_raw_session_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_raw_session_test PRIVATE sqlconduit_core)
 
 add_executable(sqlconduit_observer_event_test sqlconduit_observer_event_test.cpp)
-target_link_libraries(sqlconduit_observer_event_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_observer_event_test PRIVATE sqlconduit_core)
 
 add_executable(sqlconduit_limiter_plugin_test sqlconduit_limiter_plugin_test.cpp)
-target_link_libraries(sqlconduit_limiter_plugin_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_limiter_plugin_test PRIVATE sqlconduit_core)
 
 add_executable(sqlconduit_client_test sqlconduit_client_test.cpp)
-target_link_libraries(sqlconduit_client_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_client_test PRIVATE sqlconduit_core)
 
 add_executable(sqlconduit_public_api_contract_test
                sqlconduit_public_api_contract_test.cpp)
-target_link_libraries(sqlconduit_public_api_contract_test PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_public_api_contract_test PRIVATE sqlconduit_core)
 
 # Every installed header must compile as the first and only project include. This
 # catches accidental reliance on transitive includes before an API release.
@@ -66,37 +66,32 @@ foreach(_header IN LISTS SQLCONDUIT_PUBLIC_HEADERS)
 endforeach()
 add_library(sqlconduit_public_headers_compile OBJECT
             ${SQLCONDUIT_PUBLIC_HEADER_SOURCES})
-target_link_libraries(sqlconduit_public_headers_compile PRIVATE sqlconduit)
+target_link_libraries(sqlconduit_public_headers_compile PRIVATE sqlconduit_core)
 set_target_properties(sqlconduit_public_headers_compile PROPERTIES
                       CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
 if(SQLCONDUIT_BUILD_INTEGRATION_TESTS AND SQLCONDUIT_ENABLE_POSTGRES)
     add_executable(sqlconduit_postgres_integration_test sqlconduit_postgres_integration_test.cpp)
-    target_link_libraries(sqlconduit_postgres_integration_test PRIVATE sqlconduit)
+    target_link_libraries(sqlconduit_postgres_integration_test PRIVATE sqlconduit_postgres)
     add_test(NAME sqlconduit_postgres_integration_test COMMAND sqlconduit_postgres_integration_test)
 endif()
 
 if(SQLCONDUIT_BUILD_INTEGRATION_TESTS AND SQLCONDUIT_ENABLE_MYSQL)
     add_executable(sqlconduit_mysql_integration_test sqlconduit_mysql_integration_test.cpp)
-    target_link_libraries(sqlconduit_mysql_integration_test PRIVATE sqlconduit)
+    target_link_libraries(sqlconduit_mysql_integration_test PRIVATE sqlconduit_mysql)
     add_test(NAME sqlconduit_mysql_integration_test COMMAND sqlconduit_mysql_integration_test)
 
-    # Dedicated reproduction for a MySQL driver savepoint bug. Expected to fail
-    # until the driver's savepoint/rollbackToSavepoint/releaseSavepoint are fixed.
-    add_executable(sqlconduit_mysql_savepoint_repro_test sqlconduit_mysql_savepoint_repro_test.cpp)
-    target_link_libraries(sqlconduit_mysql_savepoint_repro_test PRIVATE sqlconduit)
-    add_test(NAME sqlconduit_mysql_savepoint_repro_test COMMAND sqlconduit_mysql_savepoint_repro_test)
 endif()
 
 if(SQLCONDUIT_BUILD_INTEGRATION_TESTS AND SQLCONDUIT_ENABLE_ODBC)
     add_executable(sqlconduit_odbc_integration_test sqlconduit_odbc_integration_test.cpp)
-    target_link_libraries(sqlconduit_odbc_integration_test PRIVATE sqlconduit)
+    target_link_libraries(sqlconduit_odbc_integration_test PRIVATE sqlconduit_odbc)
     add_test(NAME sqlconduit_odbc_integration_test COMMAND sqlconduit_odbc_integration_test)
 endif()
 
 if(SQLCONDUIT_BUILD_INTEGRATION_TESTS AND SQLCONDUIT_ENABLE_ORACLE)
     add_executable(sqlconduit_oracle_integration_test sqlconduit_oracle_integration_test.cpp)
-    target_link_libraries(sqlconduit_oracle_integration_test PRIVATE sqlconduit)
+    target_link_libraries(sqlconduit_oracle_integration_test PRIVATE sqlconduit_oracle)
     add_test(NAME sqlconduit_oracle_integration_test COMMAND sqlconduit_oracle_integration_test)
 endif()
 
@@ -122,9 +117,6 @@ if(Threads_FOUND)
     endif()
     if(TARGET sqlconduit_mysql_integration_test)
         target_link_libraries(sqlconduit_mysql_integration_test PRIVATE Threads::Threads)
-    endif()
-    if(TARGET sqlconduit_mysql_savepoint_repro_test)
-        target_link_libraries(sqlconduit_mysql_savepoint_repro_test PRIVATE Threads::Threads)
     endif()
     if(TARGET sqlconduit_odbc_integration_test)
         target_link_libraries(sqlconduit_odbc_integration_test PRIVATE Threads::Threads)

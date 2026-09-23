@@ -1,7 +1,15 @@
 #include "sqlconduit/client.h"
-#include "sqlconduit/driver/driver_factory.h"
-#include "sqlconduit/driver/driver_registry.h"
 #include "sqlconduit/version.h"
+
+#if defined(SQLCONDUIT_CONSUMER_MYSQL)
+#include "sqlconduit/drivers/mysql.h"
+#elif defined(SQLCONDUIT_CONSUMER_POSTGRES)
+#include "sqlconduit/drivers/postgres.h"
+#elif defined(SQLCONDUIT_CONSUMER_ODBC)
+#include "sqlconduit/drivers/odbc.h"
+#elif defined(SQLCONDUIT_CONSUMER_ORACLE)
+#include "sqlconduit/drivers/oracle.h"
+#endif
 
 #include <cstdio>
 
@@ -27,28 +35,33 @@ int main() {
         return 1;
     }
 
-    sqlconduit::driver::registerBuiltinDrivers();
-    auto &registry = sqlconduit::driver::DriverRegistry::instance();
-    const auto types = registry.registeredTypes();
-
-    std::printf("consumer smoke: %zu driver(s) registered:", types.size());
-    for (const auto &type: types) std::printf(" %s", type.c_str());
-    std::printf("\n");
-
-#if defined(SQLCONDUIT_CONSUMER_REQUIRE_DRIVERS)
-    if (types.empty()) {
-        std::printf("consumer smoke FAILED: no driver registered\n");
-        return 1;
-    }
+#if defined(SQLCONDUIT_CONSUMER_MYSQL)
+    const auto registration = sqlconduit::drivers::mysql();
+#elif defined(SQLCONDUIT_CONSUMER_POSTGRES)
+    const auto registration = sqlconduit::drivers::postgres();
+#elif defined(SQLCONDUIT_CONSUMER_ODBC)
+    const auto registration = sqlconduit::drivers::odbc();
+#elif defined(SQLCONDUIT_CONSUMER_ORACLE)
+    const auto registration = sqlconduit::drivers::oracle();
 #endif
 
-    for (const auto &type: types) {
-        auto driver = registry.create(type);
-        if (!driver || !driver->createConnection()) {
-            std::printf("consumer smoke FAILED: cannot instantiate driver '%s'\n", type.c_str());
-            return 1;
-        }
+#if defined(SQLCONDUIT_CONSUMER_MYSQL) || defined(SQLCONDUIT_CONSUMER_POSTGRES) || \
+    defined(SQLCONDUIT_CONSUMER_ODBC) || defined(SQLCONDUIT_CONSUMER_ORACLE)
+    if (!client.addDriver(registration).ok()) {
+        std::printf("consumer smoke FAILED: cannot register driver '%s'\n",
+                    registration.type.c_str());
+        return 1;
     }
+    auto driver = registration.factory();
+    if (!driver || !driver->createConnection()) {
+        std::printf("consumer smoke FAILED: cannot instantiate driver '%s'\n",
+                    registration.type.c_str());
+        return 1;
+    }
+    std::printf("consumer smoke: registered %s\n", registration.type.c_str());
+#else
+    std::printf("consumer smoke: core only\n");
+#endif
 
     std::printf("consumer smoke OK\n");
     return 0;

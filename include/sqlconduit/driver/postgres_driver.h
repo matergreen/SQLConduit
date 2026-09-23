@@ -186,7 +186,6 @@ namespace sqlconduit::driver {
         }
     };
 
-    void registerPostgresDriver();
 }
 
 #endif

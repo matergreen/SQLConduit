@@ -1,4 +1,5 @@
 #include "sqlconduit/driver/postgres_driver.h"
+#include "sqlconduit/drivers/postgres.h"
 #include "sqlconduit/driver/driver_registry.h"
 #include "sqlconduit/common/pg_types.h"
 
@@ -1374,8 +1375,10 @@ namespace sqlconduit::driver {
         return common::Status::error(common::ErrorCode::QueryError, std::move(msg));
     }
 
-    void registerPostgresDriver() {
-        DriverRegistry::instance().registerDriver("postgres",
-                                                  []() { return std::make_unique<PostgresDriver>(); });
+}
+
+namespace sqlconduit::drivers {
+    driver::DriverRegistration postgres() {
+        return {"postgres", [] { return std::make_unique<driver::PostgresDriver>(); }};
     }
 }

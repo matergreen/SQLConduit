@@ -41,6 +41,7 @@ static_assert(!std::is_copy_assignable_v<Client>);
 
 using InitPath = Status (Client::*)(const std::string &);
 using InitConfig = Status (Client::*)(const sqlconduit::config::GlobalConfig &);
+using AddDriver = Status (Client::*)(sqlconduit::driver::DriverRegistration);
 using QueryDefault = Status (Client::*)(const std::string &, ResultSet &) const;
 using QueryNamed = Status (Client::*)(const std::string &, const std::string &,
                                       const Params &, ResultSet &) const;
@@ -52,6 +53,7 @@ using Shutdown = void (Client::*)(std::chrono::milliseconds) noexcept;
 
 static_assert(std::is_same_v<decltype(static_cast<InitPath>(&Client::init)), InitPath>);
 static_assert(std::is_same_v<decltype(static_cast<InitConfig>(&Client::init)), InitConfig>);
+static_assert(std::is_same_v<decltype(static_cast<AddDriver>(&Client::addDriver)), AddDriver>);
 static_assert(std::is_same_v<decltype(static_cast<QueryDefault>(&Client::query)), QueryDefault>);
 static_assert(std::is_same_v<decltype(static_cast<QueryNamed>(&Client::query)), QueryNamed>);
 static_assert(std::is_same_v<decltype(static_cast<AsyncQuery>(&Client::queryAsync)), AsyncQuery>);

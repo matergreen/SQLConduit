@@ -1,0 +1,13 @@
+prefix="@_pc_prefix_expr@"
+exec_prefix="${prefix}"
+libdir="@_pc_libdir_expr@"
+includedir="@_pc_includedir_expr@"
+
+Name: sqlconduit-@SQLCONDUIT_PC_DRIVER@
+Description: SQLConduit @SQLCONDUIT_PC_DRIVER_DISPLAY@ driver component
+URL: https://github.com/matergreen/sqlconduit
+Version: @PROJECT_VERSION@
+Requires: sqlconduit = @PROJECT_VERSION@
+Libs: -L${libdir} -lsqlconduit_@SQLCONDUIT_PC_DRIVER@
+Libs.private: @SQLCONDUIT_PC_DRIVER_LIBS_PRIVATE@
+Cflags: -I${includedir}

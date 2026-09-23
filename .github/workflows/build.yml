@@ -105,7 +105,8 @@ jobs:
 
           echo "== via find_package =="
           cmake -S tests/consumer -B smoke-find-package -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$prefix"
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$prefix" \
+            -DSQLCONDUIT_CONSUMER_COMPONENT=MySQL
           cmake --build smoke-find-package
           ./smoke-find-package/sqlconduit_consumer_smoke
 
@@ -133,7 +134,7 @@ jobs:
           cmake --install build --config Release --prefix $prefix
           cmake -S tests/consumer -B smoke-find-package -A x64 `
             "-DCMAKE_PREFIX_PATH=$prefix" `
-            -DSQLCONDUIT_CONSUMER_REQUIRE_DRIVERS=OFF
+            -DSQLCONDUIT_CONSUMER_COMPONENT=ODBC
           cmake --build smoke-find-package --config Release
           & .\smoke-find-package\Release\sqlconduit_consumer_smoke.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

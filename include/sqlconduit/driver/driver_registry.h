@@ -7,16 +7,26 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 namespace sqlconduit::driver {
     using DriverFactoryFn = std::function<std::unique_ptr<IDriver>()>;
 
+    struct DriverRegistration {
+        std::string type;
+        DriverFactoryFn factory;
+    };
+
     class DriverRegistry {
     public:
+        // Low-level process registry for custom drivers. Application-facing built-in
+        // drivers should normally be registered on Client instead.
         static DriverRegistry &instance();
 
         void registerDriver(const std::string &type, DriverFactoryFn fn);
+
+        void registerDriver(DriverRegistration registration);
 
         [[nodiscard]] bool has(const std::string &type) const;
 
@@ -25,8 +35,7 @@ namespace sqlconduit::driver {
         [[nodiscard]] std::vector<std::string> registeredTypes() const;
 
     private:
-        DriverRegistry() = default;
-
+        mutable std::mutex mutex_;
         std::map<std::string, DriverFactoryFn> factories_;
     };
 }

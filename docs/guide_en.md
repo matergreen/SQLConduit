@@ -60,8 +60,8 @@ include/sqlconduit/
   config/    datasource_config.h  config_loader.h(JSON parsing)
   core/      idatabase_connection.h(connection abstraction + streaming/batch defaults)
              connection_pool.h     heartbeat_manager.h  database_manager.h
-  driver/    idriver.h  driver_registry.h  driver_factory.h
-             mysql_driver.h  postgres_driver.h  odbc_driver.h
+  driver/    idriver.h  driver_registry.h
+  drivers/   mysql.h  postgres.h  odbc.h  oracle.h (lightweight registration factories)
   async/     async_types.h(Client async results and executor statistics)
   mapping.h  (entity mapping layer v0.5.0: header-only, row <-> business entity, read+write)
   client.h         (sole high-level runtime entry)
@@ -144,8 +144,10 @@ cmake .. -DSQLCONDUIT_BUILD_TESTS=ON && cmake --build . -j"$(sysctl -n hw.ncpu)"
 
 ```cpp
 #include "sqlconduit/sqlconduit.h"
+#include "sqlconduit/drivers/postgres.h"
 
 sqlconduit::Client client;
+client.addDriver(sqlconduit::drivers::postgres());
 client.init("config/datasources.json");   // load multiple data sources + start heartbeat
 
 sqlconduit::common::ResultSet rs;
@@ -1782,15 +1784,26 @@ cmake_minimum_required(VERSION 3.16)
 project(my_app LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 
-find_package(sqlconduit REQUIRED)
+find_package(sqlconduit REQUIRED COMPONENTS Postgres)
 
 add_executable(my_app main.cpp)
-target_link_libraries(my_app PRIVATE sqlconduit::sqlconduit)
+target_link_libraries(my_app PRIVATE sqlconduit::postgres)
 ```
 
-`sqlconduit::sqlconduit` exports only its own include path and the required compile definitions; the
-link arguments for the driver client libraries are resolved from the local environment during
-`find_package` (see the next section). nlohmann/json is a purely build-time private dependency — it is
+Register the selected driver before initialization:
+
+```cpp
+#include <sqlconduit/client.h>
+#include <sqlconduit/drivers/postgres.h>
+
+sqlconduit::Client client;
+auto status = client.addDriver(sqlconduit::drivers::postgres());
+if (status.ok()) status = client.init("database.json");
+```
+
+The core target is `sqlconduit::core`; optional targets are `sqlconduit::mysql`,
+`sqlconduit::postgres`, `sqlconduit::odbc`, and `sqlconduit::oracle`. Only requested components
+resolve their database client libraries. nlohmann/json is a purely build-time private dependency — it is
 neither installed nor exported, so it cannot conflict with a system or sibling `nlohmann_json` header.
 Be sure to call `client.shutdown()` before exit, to reclaim the pool and heartbeat threads. When
 embedding SQLConduit as a subproject, pass `-DSQLCONDUIT_INSTALL=OFF` so it adds no install rules to
@@ -1798,18 +1811,17 @@ the parent project.
 
 ### Non-CMake projects (pkg-config)
 
-A `sqlconduit.pc` is generated on install. Only the static library is shipped and the driver
-dependencies live in `Libs.private`, so `--static` is **required** to expand them into real library
-names:
+Installation generates `sqlconduit.pc` for core and one file per built driver, such as
+`sqlconduit-mysql.pc`:
 
 ```bash
-g++ main.cpp $(pkg-config --cflags sqlconduit) \
-    $(pkg-config --libs --static sqlconduit) -o my_app
+g++ main.cpp $(pkg-config --cflags sqlconduit-postgres) \
+    $(pkg-config --libs --static sqlconduit-postgres) -o my_app
 ```
 
 ### Driver client libraries (must read)
 
-When a driver is enabled, the installed package contains **only** `libsqlconduit.a` and the headers — **not** the corresponding database client library (libpqxx / libmysqlclient / unixODBC / OCI). Because SQLConduit is a static library, those client libraries still have to be installed on the downstream machine, but **the link arguments are resolved by the package itself**: `sqlconduitConfig.cmake` loads the installed `sqlconduitDriverDeps.cmake`, which re-discovers the driver libraries this build was compiled with in the **downstream build environment** and appends them to `sqlconduit::sqlconduit`. That is why no absolute path appears in the export set and the install prefix can be relocated as a whole.
+The package contains `libsqlconduit_core.a` and separate archives for enabled drivers, but not the database client libraries. `sqlconduitDriverDeps.cmake` discovers a client library only when the downstream requests its matching component. Requesting `Core` alone requires no database SDK.
 
 The downstream machine only needs the matching client development packages:
 
@@ -1825,15 +1837,15 @@ If a library is missing, `find_package` fails during configuration and names the
 - or point `CMAKE_PREFIX_PATH` / `CMAKE_LIBRARY_PATH` at the client directory.
 
 > **Expected behavior (out-of-the-box notes)**
-> - `SQLCONDUIT_ENABLE_*` are all OFF by default; a driver not enabled at compile time returns `DriverDisabled` on call.
+> - `SQLCONDUIT_ENABLE_*` are all OFF by default; requesting a component not built into the package fails clearly during CMake configuration.
 > - Call `client.shutdown()` before process exit to reclaim the pool and heartbeat threads.
 
 ## Extending a new database type
 
-1. Add `xxx_driver.h/.cpp` under `include/sqlconduit/driver/`, implementing `IDatabaseConnection` and `IDriver` in the style of `MySQLConnection`.
-2. In the `.cpp`, call `DriverRegistry::instance().registerDriver("xxx", ...)`.
-3. (Optional) Register it in `registerBuiltinDrivers()` of `driver_factory.cpp`, or register on your own at startup.
-4. Set `type` to `"xxx"` in the JSON config and it will be recognized.
+1. Implement `IDatabaseConnection` and `IDriver`, with a lightweight factory header returning `DriverRegistration`.
+2. Give the driver its own static CMake target, linked only to `sqlconduit::core` and its client library.
+3. Pass its registration to `Client::addDriver()` before `Client::init()`.
+4. Match the JSON `type` to `DriverRegistration::type`.
 
 The base connection methods stay minimal; a production driver should additionally override the parameterized `query`/`execute` and make `supportsParams()` return `true`. When native binding is not implemented it returns `NotSupported` explicitly. `queryEach`, `executeBatch`, transaction options, savepoints, and cancellation all have optional extension points; the streaming and batch methods have compatible default implementations, but a large-data driver should override them as cursor / row-by-row fetch and array binding.
 

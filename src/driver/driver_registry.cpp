@@ -5,25 +5,37 @@
 
 namespace sqlconduit::driver {
     DriverRegistry &DriverRegistry::instance() {
-        static DriverRegistry r;
-        return r;
+        static DriverRegistry registry;
+        return registry;
     }
 
     void DriverRegistry::registerDriver(const std::string &type, DriverFactoryFn fn) {
+        std::lock_guard<std::mutex> lock(mutex_);
         factories_[type] = std::move(fn);
     }
 
+    void DriverRegistry::registerDriver(DriverRegistration registration) {
+        registerDriver(registration.type, std::move(registration.factory));
+    }
+
     bool DriverRegistry::has(const std::string &type) const {
+        std::lock_guard<std::mutex> lock(mutex_);
         return factories_.find(type) != factories_.end();
     }
 
     std::unique_ptr<IDriver> DriverRegistry::create(const std::string &type) const {
-        auto it = factories_.find(type);
-        if (it == factories_.end()) return nullptr;
-        return it->second();
+        DriverFactoryFn factory;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto it = factories_.find(type);
+            if (it == factories_.end()) return nullptr;
+            factory = it->second;
+        }
+        return factory();
     }
 
     std::vector<std::string> DriverRegistry::registeredTypes() const {
+        std::lock_guard<std::mutex> lock(mutex_);
         std::vector<std::string> v;
         v.reserve(factories_.size());
         for (const auto &p: factories_) v.push_back(p.first);

@@ -24,15 +24,11 @@ using common::Status;
 static int g_failed = 0;
 static int g_passed = 0;
 
-static void check(bool cond, const std::string& name)
-{
-    if (cond)
-    {
+static void check(bool cond, const std::string &name) {
+    if (cond) {
         ++g_passed;
         std::cout << "  [PASS] " << name << "\n";
-    }
-    else
-    {
+    } else {
         ++g_failed;
         std::cout << "  [FAIL] " << name << "\n";
     }
@@ -41,20 +37,17 @@ static void check(bool cond, const std::string& name)
 static std::mutex g_capMtx;
 static std::vector<OperationEvent> g_captured;
 
-static void capObserver(const OperationEvent& e)
-{
+static void capObserver(const OperationEvent &e) {
     std::lock_guard<std::mutex> lk(g_capMtx);
     g_captured.push_back(e);
 }
 
-static void clearCapture()
-{
+static void clearCapture() {
     std::lock_guard<std::mutex> lk(g_capMtx);
     g_captured.clear();
 }
 
-static void test_defaults_without_ctx_or_result()
-{
+static void test_defaults_without_ctx_or_result() {
     std::cout << "== M9.1 默认值：空 ctx + 空 result 时 shadow/transformed=false ==\n";
     clearCapture();
     Observability::setObserver(&capObserver);
@@ -70,16 +63,14 @@ static void test_defaults_without_ctx_or_result()
     {
         std::lock_guard<std::mutex> lk(g_capMtx);
         check(g_captured.size() == 1, "observer 已触发一次");
-        if (!g_captured.empty())
-        {
+        if (!g_captured.empty()) {
             check(!g_captured[0].shadow, "默认 ctx：event.shadow=false");
             check(!g_captured[0].transformed, "默认 result=nullptr：event.transformed=false");
         }
     }
 }
 
-static void test_shadow_propagates_from_ctx()
-{
+static void test_shadow_propagates_from_ctx() {
     std::cout << "== M9.2 shadow 由栈顶 ctx 注入 ==\n";
     clearCapture();
     SqlContext ctx;
@@ -94,16 +85,14 @@ static void test_shadow_propagates_from_ctx()
     {
         std::lock_guard<std::mutex> lk(g_capMtx);
         check(g_captured.size() == 1, "shadow scope 内：observer 已触发");
-        if (!g_captured.empty())
-        {
+        if (!g_captured.empty()) {
             check(g_captured[0].shadow,
                   "shadow=true scope：event.shadow=true（注入成功）");
         }
     }
 }
 
-static void test_shadow_resets_after_scope()
-{
+static void test_shadow_resets_after_scope() {
     std::cout << "== M9.3 shadow 帧退出后恢复 false ==\n";
     clearCapture();
     {
@@ -126,16 +115,14 @@ static void test_shadow_resets_after_scope()
     {
         std::lock_guard<std::mutex> lk(g_capMtx);
         check(g_captured.size() == 2, "两条 emit 都触发 observer");
-        if (g_captured.size() >= 2)
-        {
+        if (g_captured.size() >= 2) {
             check(g_captured[0].shadow, "shadow 帧内：shadow=true");
             check(!g_captured[1].shadow, "shadow 帧外：shadow=false（栈帧隔离）");
         }
     }
 }
 
-static void test_transformed_from_result()
-{
+static void test_transformed_from_result() {
     std::cout << "== M9.4 transformed 由 result.transformed 注入 ==\n";
     clearCapture();
     ResultSet out;
@@ -154,16 +141,14 @@ static void test_transformed_from_result()
     {
         std::lock_guard<std::mutex> lk(g_capMtx);
         check(g_captured.size() == 1, "observer 已触发");
-        if (!g_captured.empty())
-        {
+        if (!g_captured.empty()) {
             check(g_captured[0].transformed,
                   "result.transformed=true → event.transformed=true");
         }
     }
 }
 
-static void test_not_transformed()
-{
+static void test_not_transformed() {
     std::cout << "== M9.5 非脱敏：result.transformed=false → event.transformed=false ==\n";
     clearCapture();
     ResultSet out;
@@ -181,16 +166,14 @@ static void test_not_transformed()
     {
         std::lock_guard<std::mutex> lk(g_capMtx);
         check(g_captured.size() == 1, "observer 已触发");
-        if (!g_captured.empty())
-        {
+        if (!g_captured.empty()) {
             check(!g_captured[0].transformed,
                   "result.transformed=false → event.transformed=false");
         }
     }
 }
 
-static void test_write_path_keeps_transformed_false()
-{
+static void test_write_path_keeps_transformed_false() {
     std::cout << "== M9.6 写路径无 result：transformed 默认 false ==\n";
     clearCapture();
     OperationEvent e;
@@ -202,16 +185,14 @@ static void test_write_path_keeps_transformed_false()
     {
         std::lock_guard<std::mutex> lk(g_capMtx);
         check(g_captured.size() == 1, "observer 已触发");
-        if (!g_captured.empty())
-        {
+        if (!g_captured.empty()) {
             check(!g_captured[0].transformed, "execute 路径：event.transformed=false（写没 result）");
             check(!g_captured[0].shadow, "execute 路径：event.shadow=false（默认）");
         }
     }
 }
 
-static void test_shadow_and_transformed_together()
-{
+static void test_shadow_and_transformed_together() {
     std::cout << "== M9.7 shadow + transformed 同一事件内并行 ==\n";
     clearCapture();
     SqlContext ctx;
@@ -228,16 +209,14 @@ static void test_shadow_and_transformed_together()
     {
         std::lock_guard<std::mutex> lk(g_capMtx);
         check(g_captured.size() == 1, "observer 已触发");
-        if (!g_captured.empty())
-        {
+        if (!g_captured.empty()) {
             check(g_captured[0].shadow, "shadow=true 生效");
             check(g_captured[0].transformed, "transformed=true 生效");
         }
     }
 }
 
-static void test_error_event_carries_marks()
-{
+static void test_error_event_carries_marks() {
     std::cout << "== M9.8 错误事件同样带 shadow/transformed 标记（告警归因需要） ==\n";
     clearCapture();
     SqlContext ctx;
@@ -255,8 +234,7 @@ static void test_error_event_carries_marks()
     {
         std::lock_guard<std::mutex> lk(g_capMtx);
         check(g_captured.size() == 1, "失败事件也触发 observer");
-        if (!g_captured.empty())
-        {
+        if (!g_captured.empty()) {
             check(g_captured[0].shadow,
                   "失败事件：event.shadow=true（影子流量发生的失败要单独计数）");
             check(g_captured[0].transformed,
@@ -267,8 +245,7 @@ static void test_error_event_carries_marks()
     }
 }
 
-int main()
-{
+int main() {
     test_defaults_without_ctx_or_result();
     test_shadow_propagates_from_ctx();
     test_shadow_resets_after_scope();

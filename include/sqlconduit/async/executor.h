@@ -1,27 +1,15 @@
 #ifndef SQLCONDUIT_ASYNC_EXECUTOR_H
 #define SQLCONDUIT_ASYNC_EXECUTOR_H
 
-#include <cstdint>
+#include "sqlconduit/async/async_types.h"
+
 #include <chrono>
 #include <cstddef>
 #include <functional>
 #include <memory>
 
-namespace sqlconduit::async
-{
-    struct ExecutorStats
-    {
-        std::size_t threads = 0;
-        std::size_t queueDepth = 0;
-        std::size_t active = 0;
-        std::uint64_t submitted = 0;
-        std::uint64_t completed = 0;
-        std::uint64_t rejected = 0;
-        std::uint64_t delayedPending = 0;
-    };
-
-    class IExecutor
-    {
+namespace sqlconduit::async {
+    class IExecutor {
     public:
         virtual ~IExecutor() = default;
 

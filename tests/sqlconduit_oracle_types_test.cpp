@@ -12,44 +12,35 @@ using namespace sqlconduit;
 static int g_failed = 0;
 static int g_passed = 0;
 
-static void check(const bool cond, const std::string& name)
-{
-    if (cond)
-    {
+static void check(const bool cond, const std::string &name) {
+    if (cond) {
         ++g_passed;
         std::cout << "  [PASS] " << name << "\n";
-    }
-    else
-    {
+    } else {
         ++g_failed;
         std::cout << "  [FAIL] " << name << "\n";
     }
 }
 
-struct OraRow
-{
+struct OraRow {
     std::int64_t id = 0;
     std::string name;
     std::int64_t amount = 0;
 };
 
-namespace sqlconduit::mapping
-{
-    template <>
-    struct RowMapper<OraRow>
-    {
-        static Mapping<OraRow> describe()
-        {
+namespace sqlconduit::mapping {
+    template<>
+    struct RowMapper<OraRow> {
+        static Mapping<OraRow> describe() {
             return Mapping<OraRow>()
-                   .field(&OraRow::id, "id", FieldFlags::PrimaryKey | FieldFlags::Generated)
-                   .field(&OraRow::name, "name")
-                   .field(&OraRow::amount, "amount");
+                    .field(&OraRow::id, "id", FieldFlags::PrimaryKey | FieldFlags::Generated)
+                    .field(&OraRow::name, "name")
+                    .field(&OraRow::amount, "amount");
         }
     };
 }
 
-int main()
-{
+int main() {
     std::cout << "== Oracle 连接描述符 ==\n";
     {
         common::OracleConnectOptions options;
@@ -117,7 +108,7 @@ int main()
         check(std::string(common::oracleTypeName(common::kSqltTimestampTz)) ==
               "TIMESTAMP WITH TIME ZONE", "SQLT_TIMESTAMP_TZ 的名称");
         check(common::oracleIsLob(common::kSqltBlob) && !common::oracleIsLob(common::kSqltClob +
-                  1000), "oracleIsLob 只认 LOB 类型码");
+                                                                             1000), "oracleIsLob 只认 LOB 类型码");
     }
 
     std::cout << "== NUMBER 文本解析 ==\n";
@@ -147,14 +138,14 @@ int main()
         const auto d = common::oracleValueFromText(common::kSqltDat, "2020-01-02 03:04:05", 0, 0);
         check(std::holds_alternative<common::Timestamp>(d),
               "Oracle DATE 文本解析为 Timestamp（DATE 带时分秒）");
-        if (const auto* ts = std::get_if<common::Timestamp>(&d))
+        if (const auto *ts = std::get_if<common::Timestamp>(&d))
             check(common::timestampToString(*ts) == "2020-01-02 03:04:05",
                   "DATE 往返保持 2020-01-02 03:04:05");
 
         const auto tz = common::oracleValueFromText(common::kSqltTimestampTz,
                                                     "2020-01-02 03:04:05.123 +08:00", 0, 0);
         check(std::holds_alternative<common::Timestamp>(tz), "TIMESTAMP WITH TIME ZONE 可解析");
-        if (const auto* ts = std::get_if<common::Timestamp>(&tz))
+        if (const auto *ts = std::get_if<common::Timestamp>(&tz))
             check(common::timestampToUtcStringMs(*ts) == "2020-01-01 19:04:05.123+00",
                   "带 +08:00 偏移的时间戳折算为 UTC 瞬间");
 
@@ -168,18 +159,18 @@ int main()
     std::cout << "== RAW 与 INTERVAL ==\n";
     {
         const auto raw = common::oracleValueFromText(common::kSqltBin, "0A1B2C", 0, 0);
-        const auto* blob = std::get_if<common::Blob>(&raw);
+        const auto *blob = std::get_if<common::Blob>(&raw);
         check(blob != nullptr && blob->size() == 3 && (*blob)[0] == 0x0A && (*blob)[2] == 0x2C,
               "RAW 十六进制文本解析为 Blob");
 
         const auto iv = common::oracleValueFromText(common::kSqltIntervalDs, "+01 02:03:04.000000",
                                                     0, 0);
-        const auto* daySecond = std::get_if<common::IntervalDaySecond>(&iv);
+        const auto *daySecond = std::get_if<common::IntervalDaySecond>(&iv);
         check(daySecond != nullptr && daySecond->value == "+01 02:03:04.000000",
               "INTERVAL DAY TO SECOND 保留强类型");
 
         const auto ym = common::oracleValueFromText(common::kSqltIntervalYm, "+03-02", 0, 0);
-        const auto* yearMonth = std::get_if<common::IntervalYearMonth>(&ym);
+        const auto *yearMonth = std::get_if<common::IntervalYearMonth>(&ym);
         check(yearMonth != nullptr && yearMonth->value == "+03-02",
               "INTERVAL YEAR TO MONTH 保留强类型");
     }
@@ -259,8 +250,7 @@ int main()
         check(stmts.size() == 4, "连接后固定执行 4 条 ALTER SESSION");
         bool hasDate = false;
         bool hasNumeric = false;
-        for (const auto& s : stmts)
-        {
+        for (const auto &s: stmts) {
             if (s.find("NLS_DATE_FORMAT") != std::string::npos) hasDate = true;
             if (s.find("NLS_NUMERIC_CHARACTERS") != std::string::npos) hasNumeric = true;
         }
@@ -272,10 +262,10 @@ int main()
         using sqlconduit::common::util::Dialect;
         const std::string base = mapping::insertSql<OraRow>("t", Dialect::Oracle);
         std::size_t placeholders = 0;
-        for (const char c : base)
+        for (const char c: base)
             if (c == '?') ++placeholders;
         const std::string expected = base + " RETURNING \"id\" INTO :" +
-            std::to_string(placeholders + 1);
+                                     std::to_string(placeholders + 1);
         check(mapping::insertSqlReturning<OraRow>("t", Dialect::Oracle) == expected,
               "Oracle 方言追加 RETURNING \"id\" INTO :<参数个数+1>");
         check(mapping::insertSqlReturning<OraRow>("t", Dialect::Postgres) ==

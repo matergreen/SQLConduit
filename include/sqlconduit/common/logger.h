@@ -5,30 +5,25 @@
 #include <string>
 #include <chrono>
 
-namespace sqlconduit::common
-{
+namespace sqlconduit::common {
     enum class LogLevel { Debug = 0, Info = 1, Warn = 2, Error = 3 };
 
-    inline const char* logLevelStr(LogLevel l)
-    {
-        switch (l)
-        {
-        case LogLevel::Debug: return "DEBUG";
-        case LogLevel::Info: return "INFO";
-        case LogLevel::Warn: return "WARN";
-        case LogLevel::Error: return "ERROR";
+    inline const char *logLevelStr(LogLevel l) {
+        switch (l) {
+            case LogLevel::Debug: return "DEBUG";
+            case LogLevel::Info: return "INFO";
+            case LogLevel::Warn: return "WARN";
+            case LogLevel::Error: return "ERROR";
         }
         return "?";
     }
 
-    class Logger
-    {
+    class Logger {
     public:
         static LogLevel minLevel() { return minLevel_; }
         static void setMinLevel(LogLevel l) { minLevel_ = l; }
 
-        static void log(LogLevel level, const std::string& msg)
-        {
+        static void log(LogLevel level, const std::string &msg) {
             if (level < minLevel_) return;
             auto now = std::chrono::system_clock::now();
             auto t = std::chrono::system_clock::to_time_t(now);

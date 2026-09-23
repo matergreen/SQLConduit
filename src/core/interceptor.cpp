@@ -1,170 +1,191 @@
 #include "sqlconduit/core/interceptor.h"
 
-#include <atomic>
-#include <mutex>
+#include "sqlconduit/core/runtime_services.h"
+
+#include <algorithm>
 #include <utility>
 #include <vector>
 
-namespace sqlconduit::core
-{
-    namespace
-    {
-        std::atomic<bool>& enabledFlag()
-        {
-            static std::atomic<bool> v{false};
-            return v;
+namespace sqlconduit::core {
+    using detail::InterceptorRegistryState;
+
+    namespace {
+        thread_local std::vector<const InterceptorRegistryState *> g_executionStack;
+        thread_local std::vector<const InterceptorRegistryState *> g_callbackStack;
+
+        std::size_t depth(const std::vector<const InterceptorRegistryState *> &stack,
+                          const InterceptorRegistryState &registry) {
+            return static_cast<std::size_t>(
+                std::count(stack.begin(), stack.end(), &registry));
         }
 
-        std::mutex& registryMtx()
-        {
-            static std::mutex m;
-            return m;
-        }
-
-        std::vector<std::shared_ptr<ISqlInterceptor>>& registry()
-        {
-            static std::vector<std::shared_ptr<ISqlInterceptor>> r;
-            return r;
-        }
-
-        thread_local std::size_t g_executionDepth = 0;
-        thread_local std::size_t g_callbackDepth = 0;
-
-        class CallbackGuard
-        {
+        class CallbackGuard {
         public:
-            CallbackGuard() noexcept { ++g_callbackDepth; }
-            ~CallbackGuard() noexcept { --g_callbackDepth; }
+            explicit CallbackGuard(const InterceptorRegistryState &registry)
+                : registry_(&registry) {
+                g_callbackStack.push_back(registry_);
+            }
+
+            ~CallbackGuard() {
+                if (!g_callbackStack.empty()) g_callbackStack.pop_back();
+            }
+
+        private:
+            const InterceptorRegistryState *registry_;
         };
 
-        template <typename Fn>
-        void safeCall(Fn&& fn) noexcept
-        {
-            try { std::forward<Fn>(fn)(); }
-            catch (...)
-            {
+        template<typename Fn>
+        void safeCall(Fn &&fn) noexcept {
+            try { std::forward<Fn>(fn)(); } catch (...) {
             }
+        }
+
+        InterceptorRegistryState &defaultRegistry() {
+            return detail::defaultRuntimeServices()->interceptors;
         }
     }
 
-    void InterceptorRegistry::add(std::shared_ptr<ISqlInterceptor> interceptor)
-    {
+    void detail::InterceptorRegistryState::add(std::shared_ptr<ISqlInterceptor> interceptor) {
         if (!interceptor) return;
-        std::lock_guard<std::mutex> lk(registryMtx());
-        registry().push_back(std::move(interceptor));
+        std::lock_guard<std::mutex> lock(mutex_);
+        interceptors_.push_back(std::move(interceptor));
     }
 
-    void InterceptorRegistry::clear()
-    {
-        std::lock_guard<std::mutex> lk(registryMtx());
-        registry().clear();
+    void detail::InterceptorRegistryState::clear() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        interceptors_.clear();
     }
 
-    InterceptorRegistry::Snapshot InterceptorRegistry::snapshot()
-    {
-        std::lock_guard<std::mutex> lk(registryMtx());
-        return registry();
+    detail::InterceptorRegistryState::Snapshot
+    detail::InterceptorRegistryState::snapshot() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return interceptors_;
     }
 
-    bool InterceptorRegistry::enabled() noexcept
-    {
-        return enabledFlag().load(std::memory_order_acquire);
+    bool detail::InterceptorRegistryState::enabled() const noexcept {
+        return enabled_.load(std::memory_order_acquire);
     }
 
-    void InterceptorRegistry::setEnabled(bool v) noexcept
-    {
-        enabledFlag().store(v, std::memory_order_release);
+    void detail::InterceptorRegistryState::setEnabled(const bool value) noexcept {
+        enabled_.store(value, std::memory_order_release);
     }
 
-    detail::InterceptorGuard::InterceptorGuard(const ExecutionView& view)
-        : view_(view),
-          active_(InterceptorRegistry::enabled() && g_executionDepth == 0 &&
-              g_callbackDepth == 0)
-    {
-        if (active_) ++g_executionDepth;
+    void InterceptorRegistry::add(std::shared_ptr<ISqlInterceptor> interceptor) {
+        defaultRegistry().add(std::move(interceptor));
     }
 
-    detail::InterceptorGuard::~InterceptorGuard() noexcept
-    {
-        if (active_)
+    void InterceptorRegistry::clear() {
+        defaultRegistry().clear();
+    }
+
+    InterceptorRegistry::Snapshot InterceptorRegistry::snapshot() {
+        return defaultRegistry().snapshot();
+    }
+
+    bool InterceptorRegistry::enabled() noexcept {
+        return defaultRegistry().enabled();
+    }
+
+    void InterceptorRegistry::setEnabled(const bool value) noexcept {
+        defaultRegistry().setEnabled(value);
+    }
+
+    detail::InterceptorGuard::InterceptorGuard(const ExecutionView &view)
+        : InterceptorGuard(defaultRegistry(), view) {
+    }
+
+    detail::InterceptorGuard::InterceptorGuard(InterceptorRegistryState &registry,
+                                               const ExecutionView &view)
+        : view_(view), registry_(&registry),
+          active_(registry.enabled() && depth(g_executionStack, registry) == 0 &&
+                  depth(g_callbackStack, registry) == 0) {
+        if (active_) g_executionStack.push_back(registry_);
+    }
+
+    detail::InterceptorGuard::~InterceptorGuard() noexcept {
+        if (!active_) return;
         {
-            CallbackGuard callbackGuard;
-            try
-            {
-                for (auto& it : InterceptorRegistry::snapshot())
-                {
-                    safeCall([&] { it->onCompletion(view_); });
-                }
-            }
-            catch (...)
-            {
-            }
+            CallbackGuard callbackGuard(*registry_);
+            for (auto &interceptor: registry_->snapshot())
+                safeCall([&] { interceptor->onCompletion(view_); });
         }
-        if (active_) --g_executionDepth;
+        if (!g_executionStack.empty()) g_executionStack.pop_back();
     }
 
-    namespace detail
-    {
-        void runOnRoute(const std::string& dataSource, const std::string& sql,
-                        common::OperationType type, common::SqlContext& ctx)
-        {
-            if (!InterceptorRegistry::enabled() || g_executionDepth > 0 ||
-                g_callbackDepth > 0)
+    namespace detail {
+        void runOnRoute(InterceptorRegistryState &registry,
+                        const std::string &dataSource, const std::string &sql,
+                        const common::OperationType type, common::SqlContext &ctx) {
+            if (!registry.enabled() || depth(g_executionStack, registry) > 0 ||
+                depth(g_callbackStack, registry) > 0)
                 return;
-            CallbackGuard callbackGuard;
-            for (auto& it : InterceptorRegistry::snapshot())
-            {
-                safeCall([&] { it->onRoute(dataSource, sql, type, ctx); });
-            }
+            CallbackGuard callbackGuard(registry);
+            for (auto &interceptor: registry.snapshot())
+                safeCall([&] { interceptor->onRoute(dataSource, sql, type, ctx); });
         }
 
-        common::Status runBeforeExecution(const ExecutionView& view)
-        {
-            if (!InterceptorRegistry::enabled() || g_executionDepth > 1 ||
-                g_callbackDepth > 0)
+        void runOnRoute(const std::string &dataSource, const std::string &sql,
+                        const common::OperationType type, common::SqlContext &ctx) {
+            runOnRoute(defaultRegistry(), dataSource, sql, type, ctx);
+        }
+
+        common::Status runBeforeExecution(InterceptorRegistryState &registry,
+                                          const ExecutionView &view) {
+            if (!registry.enabled() || depth(g_executionStack, registry) > 1 ||
+                depth(g_callbackStack, registry) > 0)
                 return common::Status::OK();
-            CallbackGuard callbackGuard;
-            common::Status st;
-            for (auto& it : InterceptorRegistry::snapshot())
-            {
-                safeCall([&] { st = it->beforeExecution(view); });
-                if (!st.ok()) return st;
+            CallbackGuard callbackGuard(registry);
+            common::Status status;
+            for (auto &interceptor: registry.snapshot()) {
+                safeCall([&] { status = interceptor->beforeExecution(view); });
+                if (!status.ok()) return status;
             }
-            return st;
+            return status;
         }
 
-        void runAfterExecution(const ExecutionView& view)
-        {
-            if (!InterceptorRegistry::enabled() || g_executionDepth > 1 ||
-                g_callbackDepth > 0)
+        common::Status runBeforeExecution(const ExecutionView &view) {
+            return runBeforeExecution(defaultRegistry(), view);
+        }
+
+        void runAfterExecution(InterceptorRegistryState &registry,
+                               const ExecutionView &view) {
+            if (!registry.enabled() || depth(g_executionStack, registry) > 1 ||
+                depth(g_callbackStack, registry) > 0)
                 return;
-            CallbackGuard callbackGuard;
-            for (auto& it : InterceptorRegistry::snapshot())
-            {
-                safeCall([&] { it->afterExecution(view); });
-            }
+            CallbackGuard callbackGuard(registry);
+            for (auto &interceptor: registry.snapshot())
+                safeCall([&] { interceptor->afterExecution(view); });
         }
 
-        void runOnRow(const ExecutionView& view, common::Row& row)
-        {
-            if (!InterceptorRegistry::enabled() || g_executionDepth > 1 ||
-                g_callbackDepth > 0)
+        void runAfterExecution(const ExecutionView &view) {
+            runAfterExecution(defaultRegistry(), view);
+        }
+
+        void runOnRow(InterceptorRegistryState &registry,
+                      const ExecutionView &view, common::Row &row) {
+            if (!registry.enabled() || depth(g_executionStack, registry) > 1 ||
+                depth(g_callbackStack, registry) > 0)
                 return;
-            CallbackGuard callbackGuard;
-            for (auto& it : InterceptorRegistry::snapshot())
-            {
-                safeCall([&] { it->onRow(view, row); });
-            }
+            CallbackGuard callbackGuard(registry);
+            for (auto &interceptor: registry.snapshot())
+                safeCall([&] { interceptor->onRow(view, row); });
         }
 
-        detail::InterceptorGuard makeInterceptorGuard(const ExecutionView& view)
-        {
-            return detail::InterceptorGuard(view);
+        void runOnRow(const ExecutionView &view, common::Row &row) {
+            runOnRow(defaultRegistry(), view, row);
         }
 
-        std::size_t currentInterceptorDepth() noexcept
-        {
-            return g_executionDepth + g_callbackDepth;
+        InterceptorGuard makeInterceptorGuard(InterceptorRegistryState &registry,
+                                              const ExecutionView &view) {
+            return InterceptorGuard(registry, view);
+        }
+
+        InterceptorGuard makeInterceptorGuard(const ExecutionView &view) {
+            return InterceptorGuard(defaultRegistry(), view);
+        }
+
+        std::size_t currentInterceptorDepth() noexcept {
+            return g_executionStack.size() + g_callbackStack.size();
         }
     }
 }

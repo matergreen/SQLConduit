@@ -7,28 +7,30 @@
 
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
-namespace sqlconduit::common
-{
-    enum class OperationType
-    {
-        Query,
-        Execute,
-        Begin,
-        Commit,
-        Rollback,
-        Cancel,
-        Stream,
-        Batch,
-        Savepoint,
-        Select,
-        Routine
+namespace sqlconduit::core::detail {
+    struct RuntimeServices;
+}
+
+namespace sqlconduit::common {
+    enum class OperationType {
+        Query = 0,
+        Execute = 1,
+        Begin = 2,
+        Commit = 3,
+        Rollback = 4,
+        Cancel = 5,
+        Stream = 6,
+        Batch = 7,
+        Savepoint = 8,
+        Select = 9,
+        Routine = 10
     };
 
-    struct OperationEvent
-    {
+    struct OperationEvent {
         std::string dataSource;
         OperationType type = OperationType::Query;
         std::chrono::microseconds duration{0};
@@ -44,8 +46,7 @@ namespace sqlconduit::common
         bool transformed = false;
     };
 
-    struct SlowSqlStats
-    {
+    struct SlowSqlStats {
         std::uint64_t fingerprint = 0;
         std::string dataSource;
         OperationType type = OperationType::Query;
@@ -62,8 +63,7 @@ namespace sqlconduit::common
         std::vector<std::uint64_t> histogram;
     };
 
-    struct SlowSqlRecord
-    {
+    struct SlowSqlRecord {
         std::chrono::system_clock::time_point timestamp;
         std::string dataSource;
         OperationType type = OperationType::Query;
@@ -77,47 +77,97 @@ namespace sqlconduit::common
         std::string spanId;
     };
 
-    using OperationObserver = std::function<void(const OperationEvent&)>;
-    using SqlRenderer = std::function<Status(const SqlRenderOptions&, std::string&)>;
+    using OperationObserver = std::function<void(const OperationEvent &)>;
+    using SqlRenderer = std::function<Status(const SqlRenderOptions &, std::string &)>;
 
-    struct PoolMetricsEvent
-    {
+    struct PoolMetricsEvent {
         std::chrono::system_clock::time_point timestamp;
         std::vector<NamedPoolStats> pools;
     };
 
-    using PoolMetricsObserver = std::function<void(const PoolMetricsEvent&)>;
+    using PoolMetricsObserver = std::function<void(const PoolMetricsEvent &)>;
     using PoolMetricsCollector = std::function<std::vector<NamedPoolStats>()>;
 
-    class Observability
-    {
+    namespace detail {
+        class ObservabilityState {
+        public:
+            ObservabilityState();
+
+            ~ObservabilityState();
+
+            ObservabilityState(ObservabilityState &&) noexcept;
+
+            ObservabilityState &operator=(ObservabilityState &&) noexcept;
+
+            ObservabilityState(const ObservabilityState &) = delete;
+
+            ObservabilityState &operator=(const ObservabilityState &) = delete;
+
+            void setObserver(OperationObserver observer);
+
+            void emit(const OperationEvent &event) noexcept;
+
+            void setPoolMetricsObserver(PoolMetricsObserver observer);
+
+            void setPoolMetricsCollector(PoolMetricsCollector collector,
+                                         const void *owner = nullptr);
+
+            void clearPoolMetricsCollector(const void *owner);
+
+            PoolMetricsEvent samplePoolMetrics() noexcept;
+
+            void configure(const config::ObservabilityConfig &config);
+
+            void emitSql(OperationEvent event, const std::string &sql,
+                         const SqlRenderer &renderer = {},
+                         const common::ResultSet *result = nullptr) noexcept;
+
+            std::vector<SlowSqlStats> slowSqlStats(
+                std::size_t limit = 100, const std::string &dataSource = {});
+
+            std::vector<SlowSqlRecord> recentSlowSql(
+                std::size_t limit = 100, const std::string &dataSource = {});
+
+            void clearSlowSqlStats();
+
+        private:
+            explicit ObservabilityState(bool useProcessDefault);
+
+            friend struct sqlconduit::core::detail::RuntimeServices;
+
+            struct Impl;
+            std::unique_ptr<Impl> impl_;
+        };
+    }
+
+    class Observability {
     public:
         Observability() = delete;
 
         static void setObserver(OperationObserver observer);
 
-        static void emit(const OperationEvent& event) noexcept;
+        static void emit(const OperationEvent &event) noexcept;
 
         static void setPoolMetricsObserver(PoolMetricsObserver observer);
 
         static void setPoolMetricsCollector(PoolMetricsCollector collector,
-                                            const void* owner = nullptr);
+                                            const void *owner = nullptr);
 
-        static void clearPoolMetricsCollector(const void* owner);
+        static void clearPoolMetricsCollector(const void *owner);
 
         static PoolMetricsEvent samplePoolMetrics() noexcept;
 
-        static void configure(const config::ObservabilityConfig& config);
+        static void configure(const config::ObservabilityConfig &config);
 
-        static void emitSql(OperationEvent event, const std::string& sql,
-                            const SqlRenderer& renderer = {},
-                            const common::ResultSet* result = nullptr) noexcept;
+        static void emitSql(OperationEvent event, const std::string &sql,
+                            const SqlRenderer &renderer = {},
+                            const common::ResultSet *result = nullptr) noexcept;
 
         static std::vector<SlowSqlStats> slowSqlStats(
-            std::size_t limit = 100, const std::string& dataSource = {});
+            std::size_t limit = 100, const std::string &dataSource = {});
 
         static std::vector<SlowSqlRecord> recentSlowSql(
-            std::size_t limit = 100, const std::string& dataSource = {});
+            std::size_t limit = 100, const std::string &dataSource = {});
 
         static void clearSlowSqlStats();
     };

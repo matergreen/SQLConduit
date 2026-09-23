@@ -5,9 +5,8 @@
 
 #include <string>
 
-namespace sqlconduit::config::detail
-{
-    bool parseYaml(const std::string& text, nlohmann::json& out, std::string& error);
+namespace sqlconduit::config::detail {
+    bool parseYaml(const std::string &text, nlohmann::json &out, std::string &error);
 }
 
 #endif

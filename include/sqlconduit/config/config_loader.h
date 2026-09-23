@@ -4,12 +4,10 @@
 #include "sqlconduit/config/datasource_config.h"
 #include <string>
 
-namespace sqlconduit::config
-{
-    class ConfigLoader
-    {
+namespace sqlconduit::config {
+    class ConfigLoader {
     public:
-        static bool loadFromFile(const std::string& path, GlobalConfig& out, std::string& error);
+        static bool loadFromFile(const std::string &path, GlobalConfig &out, std::string &error);
     };
 }
 

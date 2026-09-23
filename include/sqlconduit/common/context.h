@@ -5,17 +5,14 @@
 #include <string>
 #include <vector>
 
-namespace sqlconduit::common
-{
-    enum class Idempotency
-    {
-        Unspecified,
-        Idempotent,
-        NonIdempotent
+namespace sqlconduit::common {
+    enum class Idempotency {
+        Unspecified = 0,
+        Idempotent = 1,
+        NonIdempotent = 2
     };
 
-    struct SqlContext
-    {
+    struct SqlContext {
         std::string traceId;
         std::string spanId;
         std::string tenantId;
@@ -24,36 +21,34 @@ namespace sqlconduit::common
         bool wroteInThisRequest = false;
         Idempotency idempotency = Idempotency::Unspecified;
 
-        [[nodiscard]] bool empty() const
-        {
+        [[nodiscard]] bool empty() const {
             return traceId.empty() && spanId.empty() && tenantId.empty()
-                && targetDataSource.empty() && !shadow && !wroteInThisRequest
-                && idempotency == Idempotency::Unspecified;
+                   && targetDataSource.empty() && !shadow && !wroteInThisRequest
+                   && idempotency == Idempotency::Unspecified;
         }
     };
 
-    class ContextScope
-    {
+    class ContextScope {
     public:
         explicit ContextScope(SqlContext ctx);
 
         ~ContextScope();
 
-        ContextScope(const ContextScope&) = delete;
+        ContextScope(const ContextScope &) = delete;
 
-        ContextScope& operator=(const ContextScope&) = delete;
+        ContextScope &operator=(const ContextScope &) = delete;
 
-        ContextScope(ContextScope&&) = delete;
+        ContextScope(ContextScope &&) = delete;
 
-        ContextScope& operator=(ContextScope&&) = delete;
+        ContextScope &operator=(ContextScope &&) = delete;
 
-        [[nodiscard]] static const SqlContext& current() noexcept;
+        [[nodiscard]] static const SqlContext &current() noexcept;
 
         [[nodiscard]] static std::size_t depth() noexcept;
 
-        static std::vector<SqlContext>& stack();
+        static std::vector<SqlContext> &stack();
 
-        static const SqlContext& defaultInstance();
+        static const SqlContext &defaultInstance();
 
         static constexpr std::size_t kMaxDepth = 64;
 
@@ -63,9 +58,9 @@ namespace sqlconduit::common
 
     std::string nextSpanId();
 
-    bool parseTraceparent(const std::string& header, SqlContext& out);
+    bool parseTraceparent(const std::string &header, SqlContext &out);
 
-    std::string formatTraceparent(const SqlContext& ctx);
+    std::string formatTraceparent(const SqlContext &ctx);
 }
 
 #endif

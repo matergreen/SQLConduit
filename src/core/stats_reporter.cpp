@@ -14,12 +14,9 @@
 #include <utility>
 #include <vector>
 
-namespace sqlconduit::core
-{
-    namespace
-    {
-        std::string formatTimestamp(const std::chrono::system_clock::time_point& tp)
-        {
+namespace sqlconduit::core::detail {
+    namespace {
+        std::string formatTimestamp(const std::chrono::system_clock::time_point &tp) {
             const std::time_t t = std::chrono::system_clock::to_time_t(tp);
             std::tm parts{};
 #if defined(_WIN32)
@@ -32,62 +29,52 @@ namespace sqlconduit::core
             return std::string(buf);
         }
 
-        std::string escapeJson(const std::string& s)
-        {
+        std::string escapeJson(const std::string &s) {
             std::string out;
             out.reserve(s.size() + 8);
-            for (const char c : s)
-            {
-                switch (c)
-                {
-                case '"': out += "\\\"";
-                    break;
-                case '\\': out += "\\\\";
-                    break;
-                case '\n': out += "\\n";
-                    break;
-                case '\r': out += "\\r";
-                    break;
-                case '\t': out += "\\t";
-                    break;
-                default:
-                    if (static_cast<unsigned char>(c) < 0x20)
-                    {
-                        char buf[8];
-                        std::snprintf(buf, sizeof(buf), "\\u%04x",
-                                      static_cast<unsigned char>(c));
-                        out += buf;
-                    }
-                    else
-                    {
-                        out += c;
-                    }
+            for (const char c: s) {
+                switch (c) {
+                    case '"': out += "\\\"";
+                        break;
+                    case '\\': out += "\\\\";
+                        break;
+                    case '\n': out += "\\n";
+                        break;
+                    case '\r': out += "\\r";
+                        break;
+                    case '\t': out += "\\t";
+                        break;
+                    default:
+                        if (static_cast<unsigned char>(c) < 0x20) {
+                            char buf[8];
+                            std::snprintf(buf, sizeof(buf), "\\u%04x",
+                                          static_cast<unsigned char>(c));
+                            out += buf;
+                        } else {
+                            out += c;
+                        }
                 }
             }
             return out;
         }
 
-        double averageMs(const common::SlowSqlStats& s)
-        {
+        double averageMs(const common::SlowSqlStats &s) {
             if (s.count == 0) return 0.0;
             return static_cast<double>(s.totalDuration.count())
-                / static_cast<double>(s.count) / 1000.0;
+                   / static_cast<double>(s.count) / 1000.0;
         }
 
-        std::string clip(const std::string& s, const std::size_t maxLen)
-        {
+        std::string clip(const std::string &s, const std::size_t maxLen) {
             if (s.size() <= maxLen) return s;
             return s.substr(0, maxLen) + "...";
         }
     }
 
-    StatsReporter::~StatsReporter()
-    {
+    StatsReporter::~StatsReporter() {
         stop();
     }
 
-    void StatsReporter::start(const config::StatsReportConfig& cfg, PoolStatsCollector collector)
-    {
+    void StatsReporter::start(const config::StatsReportConfig &cfg, PoolStatsCollector collector) {
         stop();
         if (!cfg.enabled) return;
         {
@@ -99,8 +86,7 @@ namespace sqlconduit::core
         thread_ = std::thread([this] { run(); });
     }
 
-    void StatsReporter::stop()
-    {
+    void StatsReporter::stop() {
         {
             std::lock_guard<std::mutex> lk(mtx_);
             if (!running_) return;
@@ -110,44 +96,35 @@ namespace sqlconduit::core
         if (thread_.joinable()) thread_.join();
     }
 
-    bool StatsReporter::running() const
-    {
+    bool StatsReporter::running() const {
         std::lock_guard<std::mutex> lk(mtx_);
         return running_;
     }
 
-    void StatsReporter::run()
-    {
+    void StatsReporter::run() {
         std::unique_lock<std::mutex> lk(mtx_);
-        for (;;)
-        {
+        for (;;) {
             const auto interval = std::chrono::milliseconds(cfg_.interval_ms);
             if (cv_.wait_for(lk, interval, [this] { return !running_; })) return;
             lk.unlock();
-            try
-            {
+            try {
                 writeOnce();
-            }
-            catch (...)
-            {
+            } catch (...) {
             }
             lk.lock();
         }
     }
 
-    void StatsReporter::writeOnce()
-    {
+    void StatsReporter::writeOnce() {
         const auto now = std::chrono::system_clock::now();
         std::vector<NamedPoolStats> pools;
         if (cfg_.include_pool && collector_) pools = collector_();
-        if (cfg_.include_pool)
-        {
-            (void)common::Observability::samplePoolMetrics();
+        if (cfg_.include_pool) {
+            (void) observability_->samplePoolMetrics();
         }
         std::vector<common::SlowSqlStats> slowSql;
-        if (cfg_.include_slow_sql)
-        {
-            slowSql = common::Observability::slowSqlStats(
+        if (cfg_.include_slow_sql) {
+            slowSql = observability_->slowSqlStats(
                 static_cast<std::size_t>(std::max(0, cfg_.slow_sql_limit)));
         }
 
@@ -155,8 +132,7 @@ namespace sqlconduit::core
                                      ? renderJson(now, pools, slowSql)
                                      : renderText(now, pools, slowSql);
 
-        if (cfg_.file.empty())
-        {
+        if (cfg_.file.empty()) {
             SQLCONDUIT_LOG_INFO("stats report:\n" + text);
             return;
         }
@@ -165,8 +141,7 @@ namespace sqlconduit::core
         const auto parent = std::filesystem::path(cfg_.file).parent_path();
         if (!parent.empty()) std::filesystem::create_directories(parent, ec);
         std::ofstream out(cfg_.file, std::ios::app);
-        if (!out)
-        {
+        if (!out) {
             SQLCONDUIT_LOG_WARN("stats report: cannot open file '" + cfg_.file + "'");
             return;
         }
@@ -176,60 +151,49 @@ namespace sqlconduit::core
     }
 
     std::string StatsReporter::renderText(
-        const std::chrono::system_clock::time_point& now,
-        const std::vector<NamedPoolStats>& pools,
-        const std::vector<common::SlowSqlStats>& slowSql) const
-    {
+        const std::chrono::system_clock::time_point &now,
+        const std::vector<NamedPoolStats> &pools,
+        const std::vector<common::SlowSqlStats> &slowSql) const {
         std::ostringstream os;
         os << "[" << formatTimestamp(now) << "] sqlconduit stats report\n";
 
-        if (cfg_.include_pool)
-        {
+        if (cfg_.include_pool) {
             os << "pools:\n";
-            if (pools.empty())
-            {
+            if (pools.empty()) {
                 os << "  (none)\n";
-            }
-            else
-            {
-                for (const auto& p : pools)
-                {
-                    const auto& s = p.stats;
+            } else {
+                for (const auto &p: pools) {
+                    const auto &s = p.stats;
                     os << "  " << p.dataSource
-                        << "  idle=" << s.idle
-                        << " borrowed=" << s.borrowed << "/" << s.maxConnections
-                        << " waiting=" << s.waiting
-                        << " util=" << std::fixed << std::setprecision(1)
-                        << (s.utilization() * 100.0) << "%"
-                        << " created=" << s.connectionsCreated
-                        << " closed=" << s.connectionsClosed
-                        << " timeouts=" << s.borrowTimeouts
-                        << " invalidated=" << s.invalidatedConnections
-                        << "\n";
+                            << "  idle=" << s.idle
+                            << " borrowed=" << s.borrowed << "/" << s.maxConnections
+                            << " waiting=" << s.waiting
+                            << " util=" << std::fixed << std::setprecision(1)
+                            << (s.utilization() * 100.0) << "%"
+                            << " created=" << s.connectionsCreated
+                            << " closed=" << s.connectionsClosed
+                            << " timeouts=" << s.borrowTimeouts
+                            << " invalidated=" << s.invalidatedConnections
+                            << "\n";
                 }
             }
         }
 
-        if (cfg_.include_slow_sql)
-        {
+        if (cfg_.include_slow_sql) {
             os << "slow sql (top " << slowSql.size() << "):\n";
-            if (slowSql.empty())
-            {
+            if (slowSql.empty()) {
                 os << "  (none)\n";
-            }
-            else
-            {
+            } else {
                 int rank = 1;
-                for (const auto& s : slowSql)
-                {
+                for (const auto &s: slowSql) {
                     os << "  " << (rank++) << ". [" << s.dataSource << "]"
-                        << " avg=" << std::fixed << std::setprecision(2) << averageMs(s) << "ms"
-                        << " max=" << std::fixed << std::setprecision(2)
-                        << (s.maxDuration.count() / 1000.0) << "ms"
-                        << " count=" << s.count
-                        << " errors=" << s.errorCount
-                        << " timeouts=" << s.timeoutCount
-                        << "  " << clip(s.sqlTemplate, 120) << "\n";
+                            << " avg=" << std::fixed << std::setprecision(2) << averageMs(s) << "ms"
+                            << " max=" << std::fixed << std::setprecision(2)
+                            << (s.maxDuration.count() / 1000.0) << "ms"
+                            << " count=" << s.count
+                            << " errors=" << s.errorCount
+                            << " timeouts=" << s.timeoutCount
+                            << "  " << clip(s.sqlTemplate, 120) << "\n";
                 }
             }
         }
@@ -237,56 +201,51 @@ namespace sqlconduit::core
     }
 
     std::string StatsReporter::renderJson(
-        const std::chrono::system_clock::time_point& now,
-        const std::vector<NamedPoolStats>& pools,
-        const std::vector<common::SlowSqlStats>& slowSql) const
-    {
+        const std::chrono::system_clock::time_point &now,
+        const std::vector<NamedPoolStats> &pools,
+        const std::vector<common::SlowSqlStats> &slowSql) const {
         std::ostringstream os;
         os << std::fixed;
         os << R"({"timestamp":")" << formatTimestamp(now) << "\"";
 
-        if (cfg_.include_pool)
-        {
+        if (cfg_.include_pool) {
             os << ",\"pools\":[";
             bool first = true;
-            for (const auto& p : pools)
-            {
+            for (const auto &p: pools) {
                 if (!first) os << ",";
                 first = false;
-                const auto& s = p.stats;
+                const auto &s = p.stats;
                 os << R"({"name":")" << escapeJson(p.dataSource) << "\""
-                    << ",\"idle\":" << s.idle
-                    << ",\"borrowed\":" << s.borrowed
-                    << ",\"max\":" << s.maxConnections
-                    << ",\"waiting\":" << s.waiting
-                    << ",\"utilization\":" << std::setprecision(4) << s.utilization()
-                    << ",\"created\":" << s.connectionsCreated
-                    << ",\"closed\":" << s.connectionsClosed
-                    << ",\"timeouts\":" << s.borrowTimeouts
-                    << ",\"invalidated\":" << s.invalidatedConnections
-                    << "}";
+                        << ",\"idle\":" << s.idle
+                        << ",\"borrowed\":" << s.borrowed
+                        << ",\"max\":" << s.maxConnections
+                        << ",\"waiting\":" << s.waiting
+                        << ",\"utilization\":" << std::setprecision(4) << s.utilization()
+                        << ",\"created\":" << s.connectionsCreated
+                        << ",\"closed\":" << s.connectionsClosed
+                        << ",\"timeouts\":" << s.borrowTimeouts
+                        << ",\"invalidated\":" << s.invalidatedConnections
+                        << "}";
             }
             os << "]";
         }
 
-        if (cfg_.include_slow_sql)
-        {
+        if (cfg_.include_slow_sql) {
             os << ",\"slow_sql\":[";
             bool first = true;
-            for (const auto& s : slowSql)
-            {
+            for (const auto &s: slowSql) {
                 if (!first) os << ",";
                 first = false;
                 os << R"({"data_source":")" << escapeJson(s.dataSource) << "\""
-                    << ",\"fingerprint\":" << s.fingerprint
-                    << ",\"avg_ms\":" << std::setprecision(2) << averageMs(s)
-                    << ",\"max_ms\":" << std::setprecision(2)
-                    << (s.maxDuration.count() / 1000.0)
-                    << ",\"count\":" << s.count
-                    << ",\"errors\":" << s.errorCount
-                    << ",\"timeouts\":" << s.timeoutCount
-                    << R"(,"sql":")" << escapeJson(clip(s.sqlTemplate, 512)) << "\""
-                    << "}";
+                        << ",\"fingerprint\":" << s.fingerprint
+                        << ",\"avg_ms\":" << std::setprecision(2) << averageMs(s)
+                        << ",\"max_ms\":" << std::setprecision(2)
+                        << (s.maxDuration.count() / 1000.0)
+                        << ",\"count\":" << s.count
+                        << ",\"errors\":" << s.errorCount
+                        << ",\"timeouts\":" << s.timeoutCount
+                        << R"(,"sql":")" << escapeJson(clip(s.sqlTemplate, 512)) << "\""
+                        << "}";
             }
             os << "]";
         }

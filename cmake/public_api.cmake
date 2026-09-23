@@ -1,0 +1,38 @@
+# Frozen installed-header inventory. Adding, removing, or renaming a public
+# header requires an intentional update to this file and the changelog.
+set(SQLCONDUIT_FROZEN_PUBLIC_HEADERS
+    sqlconduit/api.h
+    sqlconduit/async/async_types.h
+    sqlconduit/client.h
+    sqlconduit/common/connection_pool_stats.h
+    sqlconduit/common/context.h
+    sqlconduit/common/logger.h
+    sqlconduit/common/observer.h
+    sqlconduit/common/oracle_types.h
+    sqlconduit/common/pg_types.h
+    sqlconduit/common/sql_analyze.h
+    sqlconduit/common/types.h
+    sqlconduit/config/config_loader.h
+    sqlconduit/config/datasource_config.h
+    sqlconduit/core/connection_pool.h
+    sqlconduit/core/cursor.h
+    sqlconduit/core/database_manager.h
+    sqlconduit/core/heartbeat_manager.h
+    sqlconduit/core/idatabase_connection.h
+    sqlconduit/core/interceptor.h
+    sqlconduit/core/query_cache.h
+    sqlconduit/core/rate_limiter.h
+    sqlconduit/core/sql_auditor.h
+    sqlconduit/core/write_buffer.h
+    sqlconduit/driver/driver_factory.h
+    sqlconduit/driver/driver_registry.h
+    sqlconduit/driver/idriver.h
+    sqlconduit/driver/mysql_driver.h
+    sqlconduit/driver/odbc_driver.h
+    sqlconduit/driver/oracle_driver.h
+    sqlconduit/driver/postgres_driver.h
+    sqlconduit/exporters/prometheus.h
+    sqlconduit/mapping.h
+    sqlconduit/sqlconduit.h
+    sqlconduit/util.h
+    sqlconduit/version.h)

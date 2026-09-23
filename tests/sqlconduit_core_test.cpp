@@ -30,22 +30,17 @@ using common::Status;
 static int g_failed = 0;
 static int g_passed = 0;
 
-static void check(bool cond, const std::string& name)
-{
-    if (cond)
-    {
+static void check(bool cond, const std::string &name) {
+    if (cond) {
         ++g_passed;
         std::cout << "  [PASS] " << name << "\n";
-    }
-    else
-    {
+    } else {
         ++g_failed;
         std::cout << "  [FAIL] " << name << "\n";
     }
 }
 
-class MockConnection : public core::IDatabaseConnection
-{
+class MockConnection : public core::IDatabaseConnection {
 public:
     static std::atomic<int> alive;
     static std::atomic<bool> connectFails;
@@ -62,20 +57,17 @@ public:
 
     static void resetLog() { log.clear(); }
 
-    static std::string joined()
-    {
+    static std::string joined() {
         std::string s;
-        for (auto& x : log)
-        {
+        for (auto &x: log) {
             if (!s.empty()) s += " | ";
             s += x;
         }
         return s;
     }
 
-    common::Status connect(const config::DataSourceConfig& cfg) override
-    {
-        (void)cfg;
+    common::Status connect(const config::DataSourceConfig &cfg) override {
+        (void) cfg;
         if (connectFails.load()) return Status::error(common::ErrorCode::ConnectionFailed, "mock connect failed");
         open_ = true;
         ++alive;
@@ -83,14 +75,12 @@ public:
         return Status::OK();
     }
 
-    common::Status ping() override
-    {
+    common::Status ping() override {
         if (!open_ || pingFails.load()) return Status::error(common::ErrorCode::PingFailed, "mock ping failed");
         return Status::OK();
     }
 
-    common::Status query(const std::string& sql, common::ResultSet& out) override
-    {
+    common::Status query(const std::string &sql, common::ResultSet &out) override {
         if (!open_) return Status::error(common::ErrorCode::NotConnected, "closed");
         ++queryCalls;
         if (queryBreaks.load() || queryFailuresRemaining.fetch_sub(1) > 0)
@@ -100,8 +90,7 @@ public:
         common::Row r;
         r.set("echo", std::string(sql));
         out.addRow(std::move(r));
-        if (sql == "MULTI")
-        {
+        if (sql == "MULTI") {
             common::Row second;
             second.set("echo", std::string("second"));
             out.addRow(std::move(second));
@@ -112,8 +101,7 @@ public:
         return Status::OK();
     }
 
-    common::Status execute(const std::string& sql, std::int64_t& affected) override
-    {
+    common::Status execute(const std::string &sql, std::int64_t &affected) override {
         if (!open_) return Status::error(common::ErrorCode::NotConnected, "closed");
         ++executeCalls;
         if (executeFailuresRemaining.fetch_sub(1) > 0)
@@ -127,74 +115,63 @@ public:
         return Status::OK();
     }
 
-    common::Status begin() override
-    {
+    common::Status begin() override {
         if (tx_) return Status::error(common::ErrorCode::TxError, "already in tx");
         tx_ = true;
         log.push_back("begin");
         return Status::OK();
     }
 
-    common::Status begin(const common::TransactionOptions& options) override
-    {
-        if (options.readOnly || options.isolation != common::IsolationLevel::Default)
-        {
+    common::Status begin(const common::TransactionOptions &options) override {
+        if (options.readOnly || options.isolation != common::IsolationLevel::Default) {
             log.push_back(std::string("options:")
-                + (options.readOnly ? "readonly" : "readwrite") + ":"
-                + std::to_string(static_cast<int>(options.isolation)));
+                          + (options.readOnly ? "readonly" : "readwrite") + ":"
+                          + std::to_string(static_cast<int>(options.isolation)));
         }
         return begin();
     }
 
-    common::Status commit() override
-    {
+    common::Status commit() override {
         if (!tx_) return Status::error(common::ErrorCode::TxError, "no tx");
         tx_ = false;
         log.push_back("commit");
         return Status::OK();
     }
 
-    common::Status rollback() override
-    {
+    common::Status rollback() override {
         if (!tx_) return Status::error(common::ErrorCode::TxError, "no tx");
         tx_ = false;
         log.push_back("rollback");
         return Status::OK();
     }
 
-    common::Status savepoint(const std::string& name) override
-    {
+    common::Status savepoint(const std::string &name) override {
         if (!tx_) return Status::error(common::ErrorCode::TxError, "no tx");
         log.push_back("savepoint:" + name);
         return Status::OK();
     }
 
-    common::Status releaseSavepoint(const std::string& name) override
-    {
+    common::Status releaseSavepoint(const std::string &name) override {
         if (!tx_) return Status::error(common::ErrorCode::TxError, "no tx");
         log.push_back("release:" + name);
         return Status::OK();
     }
 
-    common::Status rollbackToSavepoint(const std::string& name) override
-    {
+    common::Status rollbackToSavepoint(const std::string &name) override {
         if (!tx_) return Status::error(common::ErrorCode::TxError, "no tx");
         log.push_back("rollback_to:" + name);
         return Status::OK();
     }
 
-    common::Status cancel() override
-    {
+    common::Status cancel() override {
         if (cancelUnsupported.load()) return IDatabaseConnection::cancel();
         log.push_back("cancel");
         if (cancelThrows.load()) throw std::runtime_error("mock cancel blew up");
         return Status::OK();
     }
 
-    void close() override
-    {
-        if (open_)
-        {
+    void close() override {
+        if (open_) {
             open_ = false;
             --alive;
             log.push_back("close");
@@ -225,19 +202,16 @@ std::atomic<bool> MockConnection::cancelThrows{false};
 std::atomic<bool> MockConnection::cancelUnsupported{true};
 std::vector<std::string> MockConnection::log;
 
-class MockDriver : public driver::IDriver
-{
+class MockDriver : public driver::IDriver {
 public:
-    const char* name() const override { return "mock"; }
+    const char *name() const override { return "mock"; }
 
-    std::unique_ptr<core::IDatabaseConnection> createConnection() override
-    {
+    std::unique_ptr<core::IDatabaseConnection> createConnection() override {
         return std::make_unique<MockConnection>();
     }
 };
 
-static config::DataSourceConfig mockCfg(const std::string& name = "mock")
-{
+static config::DataSourceConfig mockCfg(const std::string &name = "mock") {
     config::DataSourceConfig c;
     c.name = name;
     c.type = "mock";
@@ -245,15 +219,13 @@ static config::DataSourceConfig mockCfg(const std::string& name = "mock")
     return c;
 }
 
-static std::shared_ptr<core::ConnectionPool> makePool(int min, int max, int timeoutMs = 300)
-{
+static std::shared_ptr<core::ConnectionPool> makePool(int min, int max, int timeoutMs = 300) {
     return std::make_shared<core::ConnectionPool>(
         std::make_unique<MockDriver>(), mockCfg(), min, max,
         std::chrono::milliseconds(timeoutMs));
 }
 
-int main()
-{
+int main() {
     std::cout << "== 1. 借出与归还（连接复用） ==\n";
     {
         MockConnection::alive = 0;
@@ -363,8 +335,7 @@ int main()
         auto pool = makePool(0, 2);
         core::DataSource ds(pool, "mock");
         std::int64_t n = 0;
-        auto st = ds.transaction([&](core::Session& s)
-        {
+        auto st = ds.transaction([&](core::Session &s) {
             if (auto r = s.execute("UPDATE a SET v=1", n); !r.ok()) return r;
             return s.execute("UPDATE b SET v=2", n);
         });
@@ -382,8 +353,7 @@ int main()
         auto pool = makePool(0, 2);
         core::DataSource ds(pool, "mock");
         std::int64_t n = 0;
-        auto st = ds.transaction([&](core::Session& s) -> Status
-        {
+        auto st = ds.transaction([&](core::Session &s) -> Status {
             if (auto r = s.execute("UPDATE a SET v=1", n); !r.ok()) return r;
             return Status::error(common::ErrorCode::TxError, "boom");
         });
@@ -400,8 +370,7 @@ int main()
         MockConnection::resetLog();
         auto pool = makePool(0, 2);
         core::DataSource ds(pool, "mock");
-        auto st = ds.transaction([](core::Session& s) -> Status
-        {
+        auto st = ds.transaction([](core::Session &s) -> Status {
             throw std::runtime_error("kaboom");
         });
         check(!st.ok(), "异常被捕获，未逃逸出 transaction");
@@ -417,8 +386,7 @@ int main()
         auto pool = makePool(0, 2);
         core::DataSource ds(pool, "mock");
         std::int64_t n = 0;
-        auto st = ds.transaction([&](core::Session& s) -> Status
-        {
+        auto st = ds.transaction([&](core::Session &s) -> Status {
             s.execute("UPDATE a SET v=1", n);
             s.commit();
             return s.execute("UPDATE b SET v=2", n);
@@ -445,9 +413,9 @@ int main()
         check(st.ok(), "参数化查询成功");
         const std::string got = MockConnection::joined();
         const std::string want =
-            "connect | query:SELECT * FROM t WHERE name = 'O''Brien' AND note = 'a?b' /* ? */ AND id = 42";
+                "connect | query:SELECT * FROM t WHERE name = 'O''Brien' AND note = 'a?b' /* ? */ AND id = 42";
         check(got == want, "字面量正确转义且注释/引号内的 ? 未被替换\n          实际: " + got +
-              "\n          期望: " + want);
+                           "\n          期望: " + want);
         pool->shutdown(std::chrono::milliseconds(0));
     }
 
@@ -473,8 +441,7 @@ int main()
         common::ErrorCode ec;
         std::string err;
         auto h = pool->borrow(ec, err);
-        std::thread releaser([&h]()
-        {
+        std::thread releaser([&h]() {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             h.reset();
         });
@@ -554,8 +521,7 @@ int main()
     {
         int events = 0;
         common::OperationEvent last;
-        common::Observability::setObserver([&](const common::OperationEvent& event)
-        {
+        common::Observability::setObserver([&](const common::OperationEvent &event) {
             ++events;
             last = event;
         });
@@ -595,8 +561,7 @@ int main()
         common::TransactionOptions options;
         options.isolation = common::IsolationLevel::Serializable;
         options.readOnly = true;
-        const auto configured = ds.transaction(options, [](core::Session&)
-        {
+        const auto configured = ds.transaction(options, [](core::Session &) {
             return Status::OK();
         });
         check(configured.ok() && MockConnection::joined().find("options:readonly:4") != std::string::npos,
@@ -604,8 +569,7 @@ int main()
 
         options = {};
         options.timeout = std::chrono::milliseconds(20);
-        const auto timed = ds.transaction(options, [](core::Session&)
-        {
+        const auto timed = ds.transaction(options, [](core::Session &) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             return Status::OK();
         });
@@ -619,9 +583,9 @@ int main()
     std::cout << "== 20. 安全配置：环境变量密码与热加载清理 ==\n";
     {
         const std::string path =
-            (std::filesystem::temp_directory_path() / "sqlconduit_config_loader_test.json").string();
+                (std::filesystem::temp_directory_path() / "sqlconduit_config_loader_test.json").string();
 #ifdef _WIN32
-        (void)_putenv_s("SQLCONDUIT_TEST_PASSWORD", "from-env");
+        (void) _putenv_s("SQLCONDUIT_TEST_PASSWORD", "from-env");
 #else
         setenv("SQLCONDUIT_TEST_PASSWORD", "from-env", 1);
 #endif
@@ -648,7 +612,7 @@ int main()
         std::remove(path.c_str());
 
         const std::string yamlPath =
-            (std::filesystem::temp_directory_path() / "sqlconduit_config_loader_test.yaml").string();
+                (std::filesystem::temp_directory_path() / "sqlconduit_config_loader_test.yaml").string();
         {
             std::ofstream file(yamlPath);
             file << R"(---
@@ -702,7 +666,7 @@ groups:
               "仓库内完整 YAML 配置模板可直接加载（error=" + error + "）");
 
         const std::string oraclePath =
-            (std::filesystem::temp_directory_path() / "sqlconduit_oracle_config_test.json").string();
+                (std::filesystem::temp_directory_path() / "sqlconduit_oracle_config_test.json").string();
         {
             std::ofstream file(oraclePath);
             file << R"({"datasources":[{
@@ -756,7 +720,7 @@ groups:
               "Oracle SID 与 database 服务名别名冲突时快速失败");
         std::remove(oraclePath.c_str());
 #ifdef _WIN32
-        (void)_putenv_s("SQLCONDUIT_TEST_PASSWORD", "");
+        (void) _putenv_s("SQLCONDUIT_TEST_PASSWORD", "");
 #else
         unsetenv("SQLCONDUIT_TEST_PASSWORD");
 #endif
@@ -832,10 +796,8 @@ groups:
         const auto oldSource = manager.getDefault();
         std::atomic<bool> started{false};
         Status inFlight;
-        std::thread worker([&]
-        {
-            inFlight = oldSource->withSession([&](core::Session&)
-            {
+        std::thread worker([&] {
+            inFlight = oldSource->withSession([&](core::Session &) {
                 started = true;
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 return Status::OK();
@@ -866,8 +828,7 @@ groups:
         core::DataSource group("app", primary, {replica},
                                std::chrono::milliseconds(30), true);
         std::vector<std::string> targets;
-        common::Observability::setObserver([&](const common::OperationEvent& event)
-        {
+        common::Observability::setObserver([&](const common::OperationEvent &event) {
             if (event.type == common::OperationType::Query ||
                 event.type == common::OperationType::Execute)
                 targets.push_back(event.dataSource);
@@ -895,13 +856,12 @@ groups:
         std::uint64_t rows = 0;
         int callbacks = 0;
         const auto streamed = ds.queryEach(
-            "MULTI", {}, [&](const common::Row&) { return ++callbacks < 2; }, rows);
+            "MULTI", {}, [&](const common::Row &) { return ++callbacks < 2; }, rows);
         check(streamed.ok() && callbacks == 2 && rows == 2,
               "逐行回调可提前停止并返回已消费行数");
         rows = 0;
         const auto callbackFailure = ds.queryEach(
-            "MULTI", {}, [](const common::Row&) -> bool
-            {
+            "MULTI", {}, [](const common::Row &) -> bool {
                 throw std::runtime_error("consumer failed");
             }, rows);
         check(callbackFailure.code == common::ErrorCode::QueryError && rows == 1,
@@ -925,8 +885,7 @@ groups:
         MockConnection::resetLog();
         auto pool = makePool(0, 1);
         core::DataSource ds(pool, "mock");
-        const auto status = ds.transaction([](core::Session& session)
-        {
+        const auto status = ds.transaction([](core::Session &session) {
             if (auto st = session.savepoint("before_optional"); !st.ok()) return st;
             std::int64_t affected = 0;
             if (auto st = session.execute("UPDATE optional SET v=1", affected); !st.ok())
@@ -951,8 +910,7 @@ groups:
         core::DataSource ds(pool, "watcher");
         common::TransactionOptions opt;
         opt.timeout = std::chrono::milliseconds(60);
-        const auto status = ds.transaction(opt, [](core::Session&)
-        {
+        const auto status = ds.transaction(opt, [](core::Session &) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
             return Status::OK();
         });
@@ -975,8 +933,7 @@ groups:
         core::DataSource ds(pool, "cancellable");
         common::TransactionOptions opt;
         opt.timeout = std::chrono::milliseconds(60);
-        const auto status = ds.transaction(opt, [](core::Session&)
-        {
+        const auto status = ds.transaction(opt, [](core::Session &) {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             return Status::OK();
         });
@@ -987,8 +944,7 @@ groups:
               "到期确实调用了驱动的取消原语");
         MockConnection::resetLog();
         MockConnection::cancelUnsupported = true;
-        const auto unsupporting = ds.transaction(opt, [](core::Session&)
-        {
+        const auto unsupporting = ds.transaction(opt, [](core::Session &) {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             return Status::OK();
         });
@@ -1009,25 +965,22 @@ groups:
         auto pool = makePool(0, 2);
         core::DataSource ds(pool, "tx-breaker", {}, breaker);
         int reached = 0;
-        for (int i = 0; i < 2; ++i)
-        {
-            ds.transaction([&](core::Session& s)
-            {
+        for (int i = 0; i < 2; ++i) {
+            ds.transaction([&](core::Session &s) {
                 ++reached;
                 common::ResultSet rs;
                 return s.query("SELECT 1", rs);
             });
         }
         const auto blocked = ds.transaction(
-            [&](core::Session&)
-            {
+            [&](core::Session &) {
                 ++reached;
                 return Status::OK();
             });
         check(blocked.code == common::ErrorCode::CircuitOpen && reached == 2,
               "熔断开启后事务快速失败，不再触达驱动（实际触达 "
               + std::to_string(reached) + " 次）");
-        const auto sessionBlocked = ds.withSession([](core::Session&) { return Status::OK(); });
+        const auto sessionBlocked = ds.withSession([](core::Session &) { return Status::OK(); });
         check(sessionBlocked.code == common::ErrorCode::CircuitOpen,
               "熔断开启后 withSession 同样快速失败");
         MockConnection::queryFailuresRemaining = 0;
@@ -1043,14 +996,12 @@ groups:
         core::DataSource group("app", primary, {replica},
                                std::chrono::milliseconds(300), true);
         std::vector<std::string> targets;
-        common::Observability::setObserver([&](const common::OperationEvent& event)
-        {
+        common::Observability::setObserver([&](const common::OperationEvent &event) {
             if (event.type == common::OperationType::Query) targets.push_back(event.dataSource);
         });
         common::ResultSet rs;
         group.query("SELECT 1", rs);
-        group.withSession([](core::Session& s)
-        {
+        group.withSession([](core::Session &s) {
             std::int64_t affected = 0;
             return s.execute("UPDATE t SET v=1", affected);
         });
@@ -1058,8 +1009,7 @@ groups:
         group.query("SELECT 2", rs);
         common::Observability::setObserver({});
         std::string actual;
-        for (const auto& t : targets)
-        {
+        for (const auto &t: targets) {
             if (!actual.empty()) actual += ",";
             actual += t;
         }
@@ -1091,8 +1041,7 @@ groups:
 
         MockConnection::resetLog();
         MockConnection::executeOkBeforeFail = -1;
-        const auto inTx = ds.transaction([&](core::Session& s)
-        {
+        const auto inTx = ds.transaction([&](core::Session &s) {
             common::BatchResult inner;
             return s.executeBatch("UPDATE t SET v=?", batch, inner);
         });
@@ -1114,8 +1063,7 @@ groups:
         core::DataSource ds(pool, "jitter", retry);
         std::vector<long long> samples;
         common::ResultSet rs;
-        for (int i = 0; i < 6; ++i)
-        {
+        for (int i = 0; i < 6; ++i) {
             const auto t0 = std::chrono::steady_clock::now();
             ds.query("SELECT 1", rs);
             samples.push_back(std::chrono::duration_cast<std::chrono::microseconds>(
@@ -1173,8 +1121,7 @@ groups:
         auto pool = makePool(0, 1);
         core::DataSource ds(pool, "reentrant");
         Status second;
-        const auto outer = ds.withSession([&](core::Session& s)
-        {
+        const auto outer = ds.withSession([&](core::Session &s) {
             const auto first = s.begin();
             second = s.begin();
             return first;
@@ -1184,7 +1131,7 @@ groups:
               "（MySQL 过去会隐式 COMMIT 上一事务，静默丢数据）");
 
         MockConnection::resetLog();
-        ds.withSession([](core::Session& s) { return s.begin(); });
+        ds.withSession([](core::Session &s) { return s.begin(); });
         check(MockConnection::joined().find("rollback") != std::string::npos,
               "会话结束时事务仍开着会自动回滚，不会把半个事务的连接还池"
               "\n          实际: " + MockConnection::joined());
@@ -1206,13 +1153,13 @@ groups:
 
         common::OperationEvent captured;
         common::Observability::setObserver(
-            [&](const common::OperationEvent& event) { captured = event; });
+            [&](const common::OperationEvent &event) { captured = event; });
         auto pool = makePool(0, 1);
         core::DataSource ds(pool, "diagnostics");
         common::ResultSet rs;
         const common::Params first{std::string("O'Brien"), std::int64_t(42)};
         std::ostringstream sqlLog;
-        auto* previousLogBuffer = std::cerr.rdbuf(sqlLog.rdbuf());
+        auto *previousLogBuffer = std::cerr.rdbuf(sqlLog.rdbuf());
         const auto status = ds.query(
             "SELECT * FROM users WHERE name=? AND id=?", first, rs);
         std::cerr.rdbuf(previousLogBuffer);
@@ -1288,7 +1235,7 @@ groups:
     std::cout << "== 37. 可观测配置：解析、边界校验与物理池列表 ==\n";
     {
         const std::string path =
-            (std::filesystem::temp_directory_path() / "sqlconduit_observability_test.json").string();
+                (std::filesystem::temp_directory_path() / "sqlconduit_observability_test.json").string();
         {
             std::ofstream file(path);
             file << R"({
@@ -1337,8 +1284,7 @@ groups:
         obs.slow_sql.histogram_buckets_ms = {10, 100, 1000};
         common::Observability::configure(obs);
         std::vector<std::uint64_t> eventFingerprints;
-        common::Observability::setObserver([&](const common::OperationEvent& event)
-        {
+        common::Observability::setObserver([&](const common::OperationEvent &event) {
             eventFingerprints.push_back(event.sqlFingerprint);
         });
 
@@ -1348,8 +1294,7 @@ groups:
             "SELECT * FROM t WHERE id=3",
             "SELECT * FROM t WHERE id=99"
         };
-        for (const auto& sql : variants)
-        {
+        for (const auto &sql: variants) {
             common::OperationEvent e;
             e.dataSource = "db";
             e.type = common::OperationType::Query;
@@ -1376,7 +1321,7 @@ groups:
         common::Observability::emitSql(u, "UPDATE t SET v=1 WHERE id=5");
         agg = common::Observability::slowSqlStats(1000);
         check(agg.size() == 2, "结构不同的查询保持独立（实测 "
-              + std::to_string(agg.size()) + " 条）");
+                               + std::to_string(agg.size()) + " 条）");
         check(agg.front().histogram.size() == agg.front().histogramBucketsMs.size() + 1,
               "聚合项的直方图长度与分桶配置一致");
 
@@ -1395,10 +1340,9 @@ groups:
             u, "DO $body$ BEGIN RAISE NOTICE 'second'; END $body$");
         agg = common::Observability::slowSqlStats(1000);
         check(agg.size() == 2 &&
-              std::all_of(agg.begin(), agg.end(), [](const auto& item)
-              {
+              std::all_of(agg.begin(), agg.end(), [](const auto &item) {
                   return item.sqlTemplate.find("RAISE NOTICE") == std::string::npos &&
-                      item.sqlTemplate.find("<body_hash:") != std::string::npos;
+                         item.sqlTemplate.find("<body_hash:") != std::string::npos;
               }),
               "PostgreSQL tagged dollar-quoted 内容以哈希区分且不会泄漏代码块原文");
 
@@ -1421,8 +1365,7 @@ groups:
 
         common::OperationEvent captured;
         bool fired = false;
-        common::Observability::setObserver([&](const common::OperationEvent& e)
-        {
+        common::Observability::setObserver([&](const common::OperationEvent &e) {
             captured = e;
             fired = true;
         });
@@ -1434,27 +1377,21 @@ groups:
         const std::string sql = "SELECT 'a fairly long string literal that is truncated'";
         common::Observability::emitSql(e, sql);
 
-        auto balancedQuotes = [](const std::string& s)
-        {
+        auto balancedQuotes = [](const std::string &s) {
             int depth = 0;
             bool esc = false;
-            for (std::size_t i = 0; i < s.size(); ++i)
-            {
+            for (std::size_t i = 0; i < s.size(); ++i) {
                 const char c = s[i];
-                if (esc)
-                {
+                if (esc) {
                     esc = false;
                     continue;
                 }
-                if (c == '\\')
-                {
+                if (c == '\\') {
                     esc = true;
                     continue;
                 }
-                if (c == '\'')
-                {
-                    if (i + 1 < s.size() && s[i + 1] == '\'')
-                    {
+                if (c == '\'') {
+                    if (i + 1 < s.size() && s[i + 1] == '\'') {
                         ++i;
                         continue;
                     }
@@ -1490,8 +1427,7 @@ groups:
         slow.duration = std::chrono::milliseconds(1000);
         common::Observability::emitSql(slow, "SELECT very_slow_once");
 
-        for (int i = 0; i < 1000; ++i)
-        {
+        for (int i = 0; i < 1000; ++i) {
             common::OperationEvent fast;
             fast.dataSource = "db";
             fast.type = common::OperationType::Query;
@@ -1545,8 +1481,7 @@ groups:
 
         int events = 0;
         std::uint64_t capturedFp = 1;
-        common::Observability::setObserver([&](const common::OperationEvent& e)
-        {
+        common::Observability::setObserver([&](const common::OperationEvent &e) {
             ++events;
             capturedFp = e.sqlFingerprint;
         });
@@ -1564,8 +1499,7 @@ groups:
         common::Observability::setObserver({});
         common::Observability::configure(config::ObservabilityConfig{});
         bool threw = false;
-        try { common::Observability::emitSql(e, "SELECT 1"); }
-        catch (...) { threw = true; }
+        try { common::Observability::emitSql(e, "SELECT 1"); } catch (...) { threw = true; }
         check(!threw && common::Observability::slowSqlStats(1000).empty(),
               "观测彻底关闭时 emitSql 为空操作且不抛异常");
 
@@ -1695,8 +1629,7 @@ groups:
         core::DataSource readGroup("safe-read", primary, {replica},
                                    std::chrono::milliseconds(0), false);
         std::vector<std::string> readTargets;
-        common::Observability::setObserver([&](const common::OperationEvent& event)
-        {
+        common::Observability::setObserver([&](const common::OperationEvent &event) {
             if (event.type == common::OperationType::Query)
                 readTargets.push_back(event.dataSource);
         });
@@ -1713,8 +1646,7 @@ groups:
                                     {primary, candidate});
         MockConnection::executeFailuresRemaining = 1;
         std::vector<std::string> writeTargets;
-        common::Observability::setObserver([&](const common::OperationEvent& event)
-        {
+        common::Observability::setObserver([&](const common::OperationEvent &event) {
             if (event.type == common::OperationType::Execute)
                 writeTargets.push_back(event.dataSource);
         });
@@ -1736,11 +1668,9 @@ groups:
         MockConnection::resetLog();
         auto pool = makePool(0, 2);
         core::DataSource ds(pool, "move-session");
-        const auto status = ds.withSession([&](core::Session& target)
-        {
+        const auto status = ds.withSession([&](core::Session &target) {
             if (const auto begun = target.begin(); !begun.ok()) return begun;
-            return ds.withSession([&](core::Session& source)
-            {
+            return ds.withSession([&](core::Session &source) {
                 target = std::move(source);
                 return Status::OK();
             });
@@ -1754,16 +1684,15 @@ groups:
     std::cout << "== 47. 高风险语义与扩展类型：必须显式确认且类型不丢失 ==\n";
     {
         const auto path = (std::filesystem::temp_directory_path()
-            / "sqlconduit_failover_ack_test.json").string();
-        auto load = [&](const std::string& failover, config::GlobalConfig& parsed,
-                        std::string& error)
-        {
+                           / "sqlconduit_failover_ack_test.json").string();
+        auto load = [&](const std::string &failover, config::GlobalConfig &parsed,
+                        std::string &error) {
             std::ofstream file(path);
             file << "{\"default_datasource\":\"g\",\"datasources\":["
-                "{\"name\":\"p\",\"type\":\"mock\"},"
-                "{\"name\":\"s\",\"type\":\"mock\"}],"
-                "\"groups\":[{\"name\":\"g\",\"primary\":\"p\","
-                "\"failover\":" << failover << "}]}";
+                    "{\"name\":\"p\",\"type\":\"mock\"},"
+                    "{\"name\":\"s\",\"type\":\"mock\"}],"
+                    "\"groups\":[{\"name\":\"g\",\"primary\":\"p\","
+                    "\"failover\":" << failover << "}]}";
             file.close();
             return config::ConfigLoader::loadFromFile(path, parsed, error);
         };

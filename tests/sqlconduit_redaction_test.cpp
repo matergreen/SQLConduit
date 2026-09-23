@@ -1,5 +1,4 @@
 #include "sqlconduit/sqlconduit.h"
-#include "sqlconduit/async/sqlconduit_async.h"
 #include "sqlconduit/common/context.h"
 #include "sqlconduit/config/datasource_config.h"
 #include "sqlconduit/core/database_manager.h"
@@ -21,19 +20,16 @@
 using namespace sqlconduit;
 using common::Status;
 using common::ErrorCode;
+static Client g_client;
 
 static int g_failed = 0;
 static int g_passed = 0;
 
-static void check(bool cond, const std::string& name)
-{
-    if (cond)
-    {
+static void check(bool cond, const std::string &name) {
+    if (cond) {
         ++g_passed;
         std::cout << "  [PASS] " << name << "\n";
-    }
-    else
-    {
+    } else {
         ++g_failed;
         std::cout << "  [FAIL] " << name << "\n";
     }
@@ -41,24 +37,20 @@ static void check(bool cond, const std::string& name)
 
 static std::atomic<int> gMockQueryCount{0};
 
-class MockRedactConnection : public core::IDatabaseConnection
-{
+class MockRedactConnection : public core::IDatabaseConnection {
 public:
-    common::Status connect(const config::DataSourceConfig&) override
-    {
+    common::Status connect(const config::DataSourceConfig &) override {
         open_ = true;
         return Status::OK();
     }
 
-    common::Status ping() override
-    {
+    common::Status ping() override {
         return open_
                    ? Status::OK()
                    : Status::error(common::ErrorCode::NotConnected, "closed");
     }
 
-    common::Status query(const std::string&, common::ResultSet& out) override
-    {
+    common::Status query(const std::string &, common::ResultSet &out) override {
         ++gMockQueryCount;
         out.setFields({"secret"});
         common::Row r;
@@ -67,8 +59,7 @@ public:
         return Status::OK();
     }
 
-    common::Status execute(const std::string&, std::int64_t& affected) override
-    {
+    common::Status execute(const std::string &, std::int64_t &affected) override {
         affected = 1;
         return Status::OK();
     }
@@ -83,56 +74,47 @@ private:
     bool open_ = false;
 };
 
-class MockRedactDriver : public driver::IDriver
-{
+class MockRedactDriver : public driver::IDriver {
 public:
-    const char* name() const override { return "mockr"; }
+    const char *name() const override { return "mockr"; }
 
-    std::unique_ptr<core::IDatabaseConnection> createConnection() override
-    {
+    std::unique_ptr<core::IDatabaseConnection> createConnection() override {
         return std::make_unique<MockRedactConnection>();
     }
 };
 
-struct RedactionInterceptor : public core::ISqlInterceptor
-{
+struct RedactionInterceptor : public core::ISqlInterceptor {
     bool enableTransform = true;
     std::string maskedValue = "***";
     std::atomic<int> afterCount{0};
     std::atomic<int> rowCount{0};
 
-    void onRoute(const std::string&, const std::string&,
-                 common::OperationType, common::SqlContext&) override
-    {
+    void onRoute(const std::string &, const std::string &,
+                 common::OperationType, common::SqlContext &) override {
     }
 
-    common::Status beforeExecution(const core::ExecutionView&) override
-    {
+    common::Status beforeExecution(const core::ExecutionView &) override {
         return Status::OK();
     }
 
-    void afterExecution(const core::ExecutionView& view) override
-    {
+    void afterExecution(const core::ExecutionView &view) override {
         ++afterCount;
         if (!enableTransform) return;
         if (!view.result) return;
         view.result->transformed = true;
-        (void)view.result->rows();
+        (void) view.result->rows();
     }
 
-    void onRow(const core::ExecutionView&, common::Row& row) override
-    {
+    void onRow(const core::ExecutionView &, common::Row &row) override {
         ++rowCount;
         if (enableTransform && row.has("secret")) row.set("secret", maskedValue);
     }
 
-    void onCompletion(const core::ExecutionView&) override
-    {
+    void onCompletion(const core::ExecutionView &) override {
     }
 };
 
-static void test_sync_redaction_not_cached()
-{
+static void test_sync_redaction_not_cached() {
     std::cout << "== M7.1 同步路径：脱敏读不进缓存（I10 核心）==\n";
     core::DatabaseManager mgr;
     config::DataSourceConfig ds;
@@ -172,9 +154,8 @@ static void test_sync_redaction_not_cached()
 
     std::uint64_t streamedRows = 0;
     std::string streamedSecret;
-    check(g->queryEach("SELECT secret", {}, [&](const common::Row& row)
-          {
-              if (const auto* value = std::get_if<std::string>(&row.at("secret")))
+    check(g->queryEach("SELECT secret", {}, [&](const common::Row &row) {
+              if (const auto *value = std::get_if<std::string>(&row.at("secret")))
                   streamedSecret = *value;
               return true;
           }, streamedRows).ok() && streamedRows == 1,
@@ -188,8 +169,7 @@ static void test_sync_redaction_not_cached()
     mgr.shutdown(std::chrono::milliseconds(0));
 }
 
-static void test_non_redacted_caches_normally()
-{
+static void test_non_redacted_caches_normally() {
     std::cout << "== M7.2 未脱敏的读照常进缓存（I10 不误伤）==\n";
     core::DatabaseManager mgr;
     config::DataSourceConfig ds;
@@ -233,32 +213,26 @@ static void test_non_redacted_caches_normally()
 
 static std::atomic<int> gTransformedReads{0};
 
-struct RedactionFlagInterceptor : public core::ISqlInterceptor
-{
-    void onRoute(const std::string&, const std::string&,
-                 common::OperationType, common::SqlContext&) override
-    {
+struct RedactionFlagInterceptor : public core::ISqlInterceptor {
+    void onRoute(const std::string &, const std::string &,
+                 common::OperationType, common::SqlContext &) override {
     }
 
-    common::Status beforeExecution(const core::ExecutionView&) override
-    {
+    common::Status beforeExecution(const core::ExecutionView &) override {
         return Status::OK();
     }
 
-    void afterExecution(const core::ExecutionView& view) override
-    {
+    void afterExecution(const core::ExecutionView &view) override {
         if (!view.result) return;
         view.result->transformed = true;
         ++gTransformedReads;
     }
 
-    void onCompletion(const core::ExecutionView&) override
-    {
+    void onCompletion(const core::ExecutionView &) override {
     }
 };
 
-static void test_transformed_flag_blocks_cache()
-{
+static void test_transformed_flag_blocks_cache() {
     std::cout << "== M7.3 transformed=true 不污染原始缓存==\n";
     core::DatabaseManager mgr;
     config::DataSourceConfig ds;
@@ -300,11 +274,10 @@ static void test_transformed_flag_blocks_cache()
     mgr.shutdown(std::chrono::milliseconds(0));
 }
 
-static void test_async_redaction_not_cached()
-{
+static void test_async_redaction_not_cached() {
     std::cout << "== M7.4 异步路径：脱敏读不进缓存（I10 + 异步桥接）==\n";
     const auto path = (std::filesystem::temp_directory_path() /
-        "sqlconduit_redaction_async.json").string();
+                       "sqlconduit_redaction_async.json").string();
     std::ofstream(path) << R"({
   "default_datasource": "ds",
   "heartbeat_interval_ms": 5000,
@@ -320,50 +293,42 @@ static void test_async_redaction_not_cached()
     { "name": "ds", "type": "mockr", "host": "localhost" }
   ]
 })";
-    check(SQLConduit::init(path).ok(), "SQLConduit::init(async redaction cfg) ok");
+    g_client = Client{};
+    check(g_client.init(path).ok(), "Client::init(async redaction cfg) ok");
 
     auto redact = std::make_shared<RedactionInterceptor>();
     redact->enableTransform = true;
-    core::InterceptorRegistry::clear();
-    core::InterceptorRegistry::add(redact);
+    g_client.clearInterceptors();
+    g_client.addInterceptor(redact);
 
     gMockQueryCount = 0;
     redact->afterCount = 0;
 
     {
-        std::promise<async::QueryResult> pr;
-        auto fut = pr.get_future();
-        async::query("ds", "SELECT secret",
-                     [&](async::QueryResult&& r) { pr.set_value(std::move(r)); });
-        const auto out = fut.get();
+        const auto out = g_client.queryAsync("ds", "SELECT secret", {}).get();
         check(out.status.ok(), "异步首次：成功");
         check(out.rows.rowCount() == 1, "异步首次：1 行");
         check(out.rows.transformed, "异步首次：rows.transformed=true");
     }
 
     {
-        std::promise<async::QueryResult> pr;
-        auto fut = pr.get_future();
-        async::query("ds", "SELECT secret",
-                     [&](async::QueryResult&& r) { pr.set_value(std::move(r)); });
-        const auto out = fut.get();
+        const auto out = g_client.queryAsync("ds", "SELECT secret", {}).get();
         check(out.status.ok(), "异步第二次：成功");
         check(out.rows.transformed, "异步第二次：rows.transformed=true");
     }
 
-    check(gMockQueryCount.load() == 2,
-          "异步 I10：driver 调用 2 次（缓存被 I10 守住）");
+    check(gMockQueryCount.load() == 1,
+          "异步 I10：缓存保留原始结果，driver 只调用 1 次");
     check(redact->afterCount.load() >= 2,
           "异步 afterExecution 至少 2 次（缓存命中也跑）");
 
-    SQLConduit::shutdown(std::chrono::milliseconds(0));
+    g_client.shutdown(std::chrono::milliseconds(0));
 }
 
-static void test_async_cache_hit_triggers_after()
-{
+static void test_async_cache_hit_triggers_after() {
     std::cout << "== M7.5 异步缓存命中仍触发 afterExecution（§9.4 风险行）==\n";
     const auto path = (std::filesystem::temp_directory_path() /
-        "sqlconduit_redaction_async_hit.json").string();
+                       "sqlconduit_redaction_async_hit.json").string();
     std::ofstream(path) << R"({
   "default_datasource": "ds",
   "heartbeat_interval_ms": 5000,
@@ -374,20 +339,17 @@ static void test_async_cache_hit_triggers_after()
   "sql_audit": { "enabled": false },
   "query_cache": { "enabled": true },
   "async": { "enabled": true, "threads": 1, "queue_size": 64 },
-  "interceptors": { "enabled": false },
+  "interceptors": { "enabled": true },
   "datasources": [
     { "name": "ds", "type": "mockr", "host": "localhost" }
   ]
 })";
-    check(SQLConduit::init(path).ok(), "SQLConduit::init(async cache hit cfg) ok");
+    g_client = Client{};
+    check(g_client.init(path).ok(), "Client::init(async cache hit cfg) ok");
 
     gMockQueryCount = 0;
     {
-        std::promise<async::QueryResult> pr;
-        auto fut = pr.get_future();
-        async::query("ds", "SELECT secret",
-                     [&](async::QueryResult&& r) { pr.set_value(std::move(r)); });
-        const auto out = fut.get();
+        const auto out = g_client.queryAsync("ds", "SELECT secret", {}).get();
         check(out.status.ok(), "首次异步：成功（缓存被填，无脱敏）");
         check(!out.rows.transformed, "首次异步：rows.transformed=false");
         check(out.rows.rowCount() == 1, "首次异步：1 行");
@@ -397,15 +359,10 @@ static void test_async_cache_hit_triggers_after()
     auto redact2 = std::make_shared<RedactionInterceptor>();
     redact2->enableTransform = true;
     redact2->afterCount = 0;
-    core::InterceptorRegistry::setEnabled(true);
-    core::InterceptorRegistry::add(redact2);
+    g_client.addInterceptor(redact2);
 
     {
-        std::promise<async::QueryResult> pr;
-        auto fut = pr.get_future();
-        async::query("ds", "SELECT secret",
-                     [&](async::QueryResult&& r) { pr.set_value(std::move(r)); });
-        const auto out = fut.get();
+        const auto out = g_client.queryAsync("ds", "SELECT secret", {}).get();
         check(out.status.ok(), "二次异步（缓存命中 + 脱敏）：成功");
         check(gMockQueryCount.load() == 1,
               "缓存命中：driver 仍只调 1 次（验证 §9.4 修复：缓存命中走 afterExecution）");
@@ -416,11 +373,10 @@ static void test_async_cache_hit_triggers_after()
         check(out.rows.rowCount() == 1, "缓存命中 + afterExecution：1 行");
     }
 
-    SQLConduit::shutdown(std::chrono::milliseconds(0));
+    g_client.shutdown(std::chrono::milliseconds(0));
 }
 
-int main()
-{
+int main() {
     driver::DriverRegistry::instance().registerDriver(
         "mockr", [] { return std::make_unique<MockRedactDriver>(); });
 
@@ -431,6 +387,6 @@ int main()
     test_async_cache_hit_triggers_after();
 
     std::cout << "\n========== M7 结果脱敏 总计: " << g_passed << " 通过 / "
-        << g_failed << " 失败 ==========\n";
+            << g_failed << " 失败 ==========\n";
     return g_failed == 0 ? 0 : 1;
 }

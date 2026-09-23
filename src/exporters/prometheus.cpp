@@ -7,57 +7,45 @@
 #include <string>
 #include <vector>
 
-namespace sqlconduit::exporters
-{
-    namespace
-    {
-        std::string escapeLabel(const std::string& s)
-        {
+namespace sqlconduit::exporters {
+    namespace {
+        std::string escapeLabel(const std::string &s) {
             std::string out;
             out.reserve(s.size() + 8);
-            for (const char c : s)
-            {
-                switch (c)
-                {
-                case '\\': out += "\\\\";
-                    break;
-                case '"': out += "\\\"";
-                    break;
-                case '\n': out += "\\n";
-                    break;
-                default:
-                    if (static_cast<unsigned char>(c) < 0x20)
-                    {
-                        out.push_back('?');
-                    }
-                    else
-                    {
-                        out += c;
-                    }
+            for (const char c: s) {
+                switch (c) {
+                    case '\\': out += "\\\\";
+                        break;
+                    case '"': out += "\\\"";
+                        break;
+                    case '\n': out += "\\n";
+                        break;
+                    default:
+                        if (static_cast<unsigned char>(c) < 0x20) {
+                            out.push_back('?');
+                        } else {
+                            out += c;
+                        }
                 }
             }
             return out;
         }
 
-        void emitHelp(std::ostringstream& os, const std::string& name,
-                      const std::string& help)
-        {
+        void emitHelp(std::ostringstream &os, const std::string &name,
+                      const std::string &help) {
             os << "# HELP " << name << ' ' << help << '\n';
         }
 
-        void emitType(std::ostringstream& os, const std::string& name,
-                      const std::string& type)
-        {
+        void emitType(std::ostringstream &os, const std::string &name,
+                      const std::string &type) {
             os << "# TYPE " << name << ' ' << type << '\n';
         }
 
-        std::string renderLabels(const std::vector<std::pair<std::string, std::string>>& kvs)
-        {
+        std::string renderLabels(const std::vector<std::pair<std::string, std::string> > &kvs) {
             if (kvs.empty()) return {};
             std::ostringstream os;
             bool first = true;
-            for (const auto& kv : kvs)
-            {
+            for (const auto &kv: kvs) {
                 if (!first) os << ',';
                 first = false;
                 os << kv.first << "=\"" << escapeLabel(kv.second) << '"';
@@ -65,26 +53,23 @@ namespace sqlconduit::exporters
             return os.str();
         }
 
-        void emitMetric(std::ostringstream& os, const std::string& name,
-                        const std::string& labels, std::uint64_t value)
-        {
+        void emitMetric(std::ostringstream &os, const std::string &name,
+                        const std::string &labels, std::uint64_t value) {
             if (labels.empty()) os << name << ' ' << value << '\n';
             else os << name << '{' << labels << "} " << value << '\n';
         }
 
-        void emitMetric(std::ostringstream& os, const std::string& name,
-                        const std::string& labels, double value)
-        {
+        void emitMetric(std::ostringstream &os, const std::string &name,
+                        const std::string &labels, double value) {
             if (labels.empty()) os << name << ' ' << value << '\n';
             else os << name << '{' << labels << "} " << value << '\n';
         }
     }
 
-    std::string toPrometheusText(const common::PoolMetricsEvent& pools,
-                                 const std::vector<common::SlowSqlStats>& slow,
-                                 const std::string& prefix,
-                                 std::size_t maxFingerprintLabels)
-    {
+    std::string toPrometheusText(const common::PoolMetricsEvent &pools,
+                                 const std::vector<common::SlowSqlStats> &slow,
+                                 const std::string &prefix,
+                                 std::size_t maxFingerprintLabels) {
         std::ostringstream os;
 
         const std::string p_conn = prefix + "_pool_connections";
@@ -116,62 +101,54 @@ namespace sqlconduit::exporters
         bool lev_emitted = false, created_emitted = false, closed_emitted = false;
         bool wait_secs_emitted = false, wait_max_emitted = false;
 
-        for (const auto& np : pools.pools)
-        {
+        for (const auto &np: pools.pools) {
             const std::string lbl = renderLabels(
                 {{"data_source", np.dataSource}});
-            const auto& s = np.stats;
+            const auto &s = np.stats;
 
-            if (!conn_emitted)
-            {
+            if (!conn_emitted) {
                 emitHelp(os, p_conn, "Current total connections in the pool.");
                 emitType(os, p_conn, "gauge");
                 conn_emitted = true;
             }
             emitMetric(os, p_conn, lbl, static_cast<std::uint64_t>(s.total));
 
-            if (!max_emitted)
-            {
+            if (!max_emitted) {
                 emitHelp(os, p_max, "Configured maximum connections.");
                 emitType(os, p_max, "gauge");
                 max_emitted = true;
             }
             emitMetric(os, p_max, lbl, static_cast<std::uint64_t>(s.maxConnections));
 
-            if (!min_emitted)
-            {
+            if (!min_emitted) {
                 emitHelp(os, p_min, "Configured minimum connections.");
                 emitType(os, p_min, "gauge");
                 min_emitted = true;
             }
             emitMetric(os, p_min, lbl, static_cast<std::uint64_t>(s.minConnections));
 
-            if (!idle_emitted)
-            {
+            if (!idle_emitted) {
                 emitHelp(os, p_idle, "Idle (free) connections.");
                 emitType(os, p_idle, "gauge");
                 idle_emitted = true;
             }
             emitMetric(os, p_idle, lbl, static_cast<std::uint64_t>(s.idle));
 
-            if (!borrowed_emitted)
-            {
+            if (!borrowed_emitted) {
                 emitHelp(os, p_borrowed, "Currently borrowed connections.");
                 emitType(os, p_borrowed, "gauge");
                 borrowed_emitted = true;
             }
             emitMetric(os, p_borrowed, lbl, static_cast<std::uint64_t>(s.borrowed));
 
-            if (!util_emitted)
-            {
+            if (!util_emitted) {
                 emitHelp(os, p_util, "Pool utilization (borrowed / maxConnections).");
                 emitType(os, p_util, "gauge");
                 util_emitted = true;
             }
             emitMetric(os, p_util, lbl, s.utilization());
 
-            if (!waiting_emitted)
-            {
+            if (!waiting_emitted) {
                 emitHelp(os, p_waiting, "Threads + futures waiting for a connection.");
                 emitType(os, p_waiting, "gauge");
                 waiting_emitted = true;
@@ -179,96 +156,84 @@ namespace sqlconduit::exporters
             emitMetric(os, p_waiting, lbl,
                        static_cast<std::uint64_t>(s.waiting + s.asyncWaiting));
 
-            if (!req_emitted)
-            {
+            if (!req_emitted) {
                 emitHelp(os, p_req, "Total borrow attempts.");
                 emitType(os, p_req, "counter");
                 req_emitted = true;
             }
             emitMetric(os, p_req, lbl, s.borrowRequests);
 
-            if (!succ_emitted)
-            {
+            if (!succ_emitted) {
                 emitHelp(os, p_succ, "Successful borrows.");
                 emitType(os, p_succ, "counter");
                 succ_emitted = true;
             }
             emitMetric(os, p_succ, lbl, s.borrowSuccesses);
 
-            if (!to_emitted)
-            {
+            if (!to_emitted) {
                 emitHelp(os, p_to, "Borrow timeouts.");
                 emitType(os, p_to, "counter");
                 to_emitted = true;
             }
             emitMetric(os, p_to, lbl, s.borrowTimeouts);
 
-            if (!ccf_emitted)
-            {
+            if (!ccf_emitted) {
                 emitHelp(os, p_ccf, "Connection create failures.");
                 emitType(os, p_ccf, "counter");
                 ccf_emitted = true;
             }
             emitMetric(os, p_ccf, lbl, s.connectionCreateFailures);
 
-            if (!inv_emitted)
-            {
+            if (!inv_emitted) {
                 emitHelp(os, p_inv, "Connections invalidated by health check.");
                 emitType(os, p_inv, "counter");
                 inv_emitted = true;
             }
             emitMetric(os, p_inv, lbl, s.invalidatedConnections);
 
-            if (!vf_emitted)
-            {
+            if (!vf_emitted) {
                 emitHelp(os, p_vf, "Validation failures during borrow.");
                 emitType(os, p_vf, "counter");
                 vf_emitted = true;
             }
             emitMetric(os, p_vf, lbl, s.validationFailures);
 
-            if (!leak_emitted)
-            {
+            if (!leak_emitted) {
                 emitHelp(os, p_leak, "Connection leak warnings emitted.");
                 emitType(os, p_leak, "counter");
                 leak_emitted = true;
             }
             emitMetric(os, p_leak, lbl, s.leakWarnings);
 
-            if (!iev_emitted)
-            {
+            if (!iev_emitted) {
                 emitHelp(os, p_iev, "Idle-timeout evictions.");
                 emitType(os, p_iev, "counter");
                 iev_emitted = true;
             }
             emitMetric(os, p_iev, lbl, s.idleEvictions);
 
-            if (!lev_emitted)
-            {
+            if (!lev_emitted) {
                 emitHelp(os, p_lev, "Lifetime evictions.");
                 emitType(os, p_lev, "counter");
                 lev_emitted = true;
             }
             emitMetric(os, p_lev, lbl, s.lifetimeEvictions);
 
-            if (!created_emitted)
-            {
+            if (!created_emitted) {
                 emitHelp(os, p_created, "Connections ever created (lifetime).");
                 emitType(os, p_created, "counter");
                 created_emitted = true;
             }
             emitMetric(os, p_created, lbl, s.connectionsCreated);
 
-            if (!closed_emitted)
-            {
+            if (!closed_emitted) {
                 emitHelp(os, p_closed, "Connections ever closed (lifetime).");
                 emitType(os, p_closed, "counter");
                 closed_emitted = true;
             }
             emitMetric(os, p_closed, lbl, s.connectionsClosed);
 
-            if (!wait_secs_emitted)
-            {
+            if (!wait_secs_emitted) {
                 emitHelp(os, p_wait_secs, "Cumulative borrow wait time in seconds.");
                 emitType(os, p_wait_secs, "counter");
                 wait_secs_emitted = true;
@@ -276,8 +241,7 @@ namespace sqlconduit::exporters
             emitMetric(os, p_wait_secs, lbl,
                        static_cast<double>(s.totalBorrowWait.count()) / 1e6);
 
-            if (!wait_max_emitted)
-            {
+            if (!wait_max_emitted) {
                 emitHelp(os, p_wait_max, "Max single borrow wait in seconds.");
                 emitType(os, p_wait_max, "gauge");
                 wait_max_emitted = true;
@@ -286,8 +250,7 @@ namespace sqlconduit::exporters
                        static_cast<double>(s.maxBorrowWait.count()) / 1e6);
         }
 
-        if (!slow.empty())
-        {
+        if (!slow.empty()) {
             const std::size_t take = maxFingerprintLabels == 0
                                          ? slow.size()
                                          : (std::min)(slow.size(), maxFingerprintLabels);
@@ -304,40 +267,35 @@ namespace sqlconduit::exporters
             bool count_emitted = false, err_emitted = false, to_emitted_s = false;
             bool duration_family_emitted = false, max_emitted_s = false;
 
-            for (std::size_t i = 0; i < take; ++i)
-            {
-                const auto& s = slow[i];
+            for (std::size_t i = 0; i < take; ++i) {
+                const auto &s = slow[i];
                 const std::string lbl = renderLabels({
                     {"data_source", s.dataSource},
                     {"fingerprint", std::to_string(s.fingerprint)},
                 });
 
-                if (!count_emitted)
-                {
+                if (!count_emitted) {
                     emitHelp(os, s_count, "Slow SQL occurrence count.");
                     emitType(os, s_count, "counter");
                     count_emitted = true;
                 }
                 emitMetric(os, s_count, lbl, s.count);
 
-                if (!err_emitted)
-                {
+                if (!err_emitted) {
                     emitHelp(os, s_err, "Slow SQL error count.");
                     emitType(os, s_err, "counter");
                     err_emitted = true;
                 }
                 emitMetric(os, s_err, lbl, s.errorCount);
 
-                if (!to_emitted_s)
-                {
+                if (!to_emitted_s) {
                     emitHelp(os, s_to, "Slow SQL timeout count.");
                     emitType(os, s_to, "counter");
                     to_emitted_s = true;
                 }
                 emitMetric(os, s_to, lbl, s.timeoutCount);
 
-                if (!duration_family_emitted)
-                {
+                if (!duration_family_emitted) {
                     emitHelp(os, s_duration, "Slow SQL duration histogram in seconds.");
                     emitType(os, s_duration, "histogram");
                     duration_family_emitted = true;
@@ -345,8 +303,7 @@ namespace sqlconduit::exporters
                 emitMetric(os, s_sum, lbl,
                            static_cast<double>(s.totalDuration.count()) / 1e6);
 
-                if (!max_emitted_s)
-                {
+                if (!max_emitted_s) {
                     emitHelp(os, s_max, "Max slow SQL duration in seconds.");
                     emitType(os, s_max, "gauge");
                     max_emitted_s = true;
@@ -357,11 +314,10 @@ namespace sqlconduit::exporters
                 const std::size_t n = std::min(s.histogramBucketsMs.size(),
                                                s.histogram.size());
                 std::uint64_t cumulative = 0;
-                for (std::size_t b = 0; b < n; ++b)
-                {
+                for (std::size_t b = 0; b < n; ++b) {
                     cumulative += s.histogram[b];
                     const double leSec =
-                        static_cast<double>(s.histogramBucketsMs[b]) / 1000.0;
+                            static_cast<double>(s.histogramBucketsMs[b]) / 1000.0;
                     std::ostringstream leStream;
                     leStream << leSec;
                     const std::string bucketLbl = renderLabels({

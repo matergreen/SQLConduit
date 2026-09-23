@@ -4,6 +4,40 @@ This file contains the user-facing highlights for each SQLConduit release. A mat
 required before pushing a `v*` tag; the release workflow uses that section as the GitHub Release
 description.
 
+## [Unreleased]
+
+### Public API foundation
+
+- Added a move-only, RAII `sqlconduit::Client` with configuration-file and programmatic
+  initialization, explicit lifecycle errors, reload, synchronous statement/session/cursor APIs,
+  pool statistics, and dynamic data-source/group management.
+- **Breaking (preview API):** removed the process-wide static `SQLConduit` facade and the
+  `sqlconduit::async` callback, cancellation-handle, and coroutine layers. Applications now create
+  a `Client`; mapping and utility operations that need a runtime take `Client&`, and asynchronous
+  operations use the future-returning `Client::*Async` methods.
+- Made query-cache contents and policy, SQL-audit policy and counters, and prepared-statement-cache
+  settings runtime-scoped. Separate `Client` instances can now use the same data-source names with
+  different cache and audit configurations without affecting each other.
+- Made interceptor enablement, registration and re-entrancy tracking runtime-scoped, and added
+  `Client::addInterceptor()` / `clearInterceptors()`. Nested calls into a different client no longer
+  suppress that client's interceptor chain, while recursion through the same chain remains guarded.
+- Moved observers, pool metric collectors, and slow-SQL aggregation into each `Client` runtime.
+  Added `Client::setObserver()`, `slowSqlStats()`, `recentSlowSql()`, and `clearSlowSqlStats()`.
+- Added `sqlconduit/version.h`, a documented public-API stability policy, and a build check that
+  compiles every installed header independently under C++17. Internal `RuntimeServices` and
+  `StatsReporter` headers are no longer installed.
+- Added future-based instance async operations to `Client`. Each client owns its executor and
+  resolves asynchronous queries, writes, batches, streams, and transactions through its own
+  data-source topology; shutting down one client does not stop another client's executor.
+- Added a frozen public-header inventory, compile-time API contract tests, explicit values for all
+  public enums, and the portable `SQLCONDUIT_DEPRECATED` marker. Runtime state classes now live in
+  `detail`, and public `DataSource` / `DatabaseManager` construction no longer exposes runtime
+  service ownership.
+- Assigned explicit numeric values to `ErrorCode` and added `NotInitialized`,
+  `AlreadyInitialized`, and `ClientClosed` for deterministic client lifecycle reporting.
+- Changed pre-1.0 CMake package matching from `SameMajorVersion` to `SameMinorVersion`, preventing a
+  future breaking 0.x minor from being selected as a compatible package automatically.
+
 ## [0.6.0]
 
 ### Highlights

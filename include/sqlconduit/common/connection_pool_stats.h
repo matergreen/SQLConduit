@@ -5,10 +5,8 @@
 #include <cstdint>
 #include <string>
 
-namespace sqlconduit::common
-{
-    struct ConnectionPoolStats
-    {
+namespace sqlconduit::common {
+    struct ConnectionPoolStats {
         std::size_t minConnections = 0;
         std::size_t maxConnections = 0;
         std::size_t idle = 0;
@@ -32,16 +30,14 @@ namespace sqlconduit::common
         std::chrono::microseconds maxBorrowWait{0};
         std::size_t asyncWaiting = 0;
 
-        [[nodiscard]] double utilization() const
-        {
+        [[nodiscard]] double utilization() const {
             return maxConnections == 0
                        ? 0.0
                        : static_cast<double>(borrowed) / static_cast<double>(maxConnections);
         }
     };
 
-    struct NamedPoolStats
-    {
+    struct NamedPoolStats {
         std::string dataSource;
         ConnectionPoolStats stats;
     };

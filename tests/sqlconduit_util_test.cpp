@@ -1,17 +1,13 @@
 #include "sqlconduit/sqlconduit.h"
 #include "sqlconduit/util.h"
-#include "sqlconduit/async/sqlconduit_async.h"
 #include "sqlconduit/common/context.h"
 #include "sqlconduit/common/sql_analyze.h"
 #include "sqlconduit/core/idatabase_connection.h"
 #include "sqlconduit/core/query_cache.h"
 #include "sqlconduit/core/sql_auditor.h"
 #include "sqlconduit/config/datasource_config.h"
+#include "sqlconduit/config/config_loader.h"
 #include "sqlconduit/driver/driver_registry.h"
-
-#if defined(SQLCONDUIT_ENABLE_ASYNC_CORO)
-#include "sqlconduit/async/task.h"
-#endif
 
 #include <atomic>
 #include <chrono>
@@ -32,28 +28,25 @@ using namespace sqlconduit;
 using common::Status;
 using common::ErrorCode;
 namespace util = sqlconduit::common::util;
+static Client g_client;
 
 static int g_failed = 0;
 static int g_passed = 0;
 
-static void check(const bool cond, const std::string& name)
-{
-    if (cond)
-    {
+static void check(const bool cond, const std::string &name) {
+    if (cond) {
         ++g_passed;
         std::cout << "  [PASS] " << name << "\n";
-    }
-    else
-    {
+    } else {
         ++g_failed;
         std::cout << "  [FAIL] " << name << "\n";
     }
 }
 
-using RowData = std::vector<std::pair<std::string, common::Value>>;
+using RowData = std::vector<std::pair<std::string, common::Value> >;
 
 static std::vector<RowData> gRows;
-static std::vector<std::vector<RowData>> gSets;
+static std::vector<std::vector<RowData> > gSets;
 static std::atomic<int> gMainExec{0};
 static std::atomic<int> gMainQuery{0};
 static std::atomic<int> gShadowExec{0};
@@ -65,66 +58,55 @@ static std::atomic<int> gExecDelayMs{0};
 static std::int64_t gAffected = 1;
 static std::string gLastSql;
 
-static common::ResultSet buildResultSet(const std::vector<RowData>& rows)
-{
+static common::ResultSet buildResultSet(const std::vector<RowData> &rows) {
     common::ResultSet rs;
-    if (!rows.empty())
-    {
+    if (!rows.empty()) {
         std::vector<std::string> fields;
-        for (const auto& kv : rows.front()) fields.push_back(kv.first);
+        for (const auto &kv: rows.front()) fields.push_back(kv.first);
         rs.setFields(std::move(fields));
     }
-    for (const auto& rd : rows)
-    {
+    for (const auto &rd: rows) {
         common::Row r;
-        for (const auto& kv : rd) r.set(kv.first, kv.second);
+        for (const auto &kv: rd) r.set(kv.first, kv.second);
         rs.addRow(std::move(r));
     }
     return rs;
 }
 
-class UtilMockConnection : public core::IDatabaseConnection
-{
+class UtilMockConnection : public core::IDatabaseConnection {
 public:
-    explicit UtilMockConnection(std::atomic<int>* execCounter,
-                                std::atomic<int>* queryCounter)
-        : exec_(execCounter), query_(queryCounter)
-    {
+    explicit UtilMockConnection(std::atomic<int> *execCounter,
+                                std::atomic<int> *queryCounter)
+        : exec_(execCounter), query_(queryCounter) {
     }
 
-    Status connect(const config::DataSourceConfig&) override
-    {
+    Status connect(const config::DataSourceConfig &) override {
         open_ = true;
         return Status::OK();
     }
 
-    Status ping() override
-    {
+    Status ping() override {
         return open_ ? Status::OK() : Status::error(ErrorCode::NotConnected, "closed");
     }
 
-    Status query(const std::string& sql, common::ResultSet& out) override
-    {
+    Status query(const std::string &sql, common::ResultSet &out) override {
         gLastSql = sql;
         if (query_) ++(*query_);
         out = buildResultSet(gRows);
         return Status::OK();
     }
 
-    Status query(const std::string& sql, const common::Params&,
-                 common::ResultSet& out) override
-    {
+    Status query(const std::string &sql, const common::Params &,
+                 common::ResultSet &out) override {
         return query(sql, out);
     }
 
-    Status execute(const std::string& sql, std::int64_t& affected) override
-    {
+    Status execute(const std::string &sql, std::int64_t &affected) override {
         gLastSql = sql;
         if (exec_) ++(*exec_);
         if (gExecDelayMs.load() > 0)
             std::this_thread::sleep_for(std::chrono::milliseconds(gExecDelayMs.load()));
-        if (gFailRemaining.load() > 0)
-        {
+        if (gFailRemaining.load() > 0) {
             gFailRemaining.fetch_sub(1);
             Status st = Status::error(ErrorCode::QueryError, "mock injected failure");
             st.retryable = true;
@@ -134,20 +116,17 @@ public:
         return Status::OK();
     }
 
-    Status execute(const std::string& sql, const common::Params&,
-                   std::int64_t& affected) override
-    {
+    Status execute(const std::string &sql, const common::Params &,
+                   std::int64_t &affected) override {
         return execute(sql, affected);
     }
 
-    Status queryEach(const std::string& sql, const common::Params&,
-                     const common::RowCallback& cb, std::uint64_t& rows) override
-    {
+    Status queryEach(const std::string &sql, const common::Params &,
+                     const common::RowCallback &cb, std::uint64_t &rows) override {
         gLastSql = sql;
         if (query_) ++(*query_);
         rows = 0;
-        for (const auto& rd : gRows)
-        {
+        for (const auto &rd: gRows) {
             const auto rs = buildResultSet({rd});
             if (!cb(rs.rows().front())) break;
             ++rows;
@@ -155,24 +134,21 @@ public:
         return Status::OK();
     }
 
-    Status begin() override
-    {
+    Status begin() override {
         ++gBegin;
         tx_ = true;
         return Status::OK();
     }
 
-    Status begin(const common::TransactionOptions&) override { return begin(); }
+    Status begin(const common::TransactionOptions &) override { return begin(); }
 
-    Status commit() override
-    {
+    Status commit() override {
         ++gCommit;
         tx_ = false;
         return Status::OK();
     }
 
-    Status rollback() override
-    {
+    Status rollback() override {
         ++gRollback;
         tx_ = false;
         return Status::OK();
@@ -188,47 +164,41 @@ public:
 
     bool supportsMultipleResultSets() const override { return true; }
 
-    Status queryAll(const std::string& sql, const common::Params&,
-                    std::vector<common::ResultSet>& out) override
-    {
+    Status queryAll(const std::string &sql, const common::Params &,
+                    std::vector<common::ResultSet> &out) override {
         gLastSql = sql;
         if (query_) ++(*query_);
         out.clear();
-        for (const auto& set : gSets) out.push_back(buildResultSet(set));
+        for (const auto &set: gSets) out.push_back(buildResultSet(set));
         return Status::OK();
     }
 
 private:
-    std::atomic<int>* exec_;
-    std::atomic<int>* query_;
+    std::atomic<int> *exec_;
+    std::atomic<int> *query_;
     bool open_ = false;
     bool tx_ = false;
 };
 
-class MainDriver : public driver::IDriver
-{
+class MainDriver : public driver::IDriver {
 public:
-    const char* name() const override { return "umock"; }
+    const char *name() const override { return "umock"; }
 
-    std::unique_ptr<core::IDatabaseConnection> createConnection() override
-    {
+    std::unique_ptr<core::IDatabaseConnection> createConnection() override {
         return std::make_unique<UtilMockConnection>(&gMainExec, &gMainQuery);
     }
 };
 
-class ShadowDriver : public driver::IDriver
-{
+class ShadowDriver : public driver::IDriver {
 public:
-    const char* name() const override { return "ushadow"; }
+    const char *name() const override { return "ushadow"; }
 
-    std::unique_ptr<core::IDatabaseConnection> createConnection() override
-    {
+    std::unique_ptr<core::IDatabaseConnection> createConnection() override {
         return std::make_unique<UtilMockConnection>(&gShadowExec, nullptr);
     }
 };
 
-static void resetCounters()
-{
+static void resetCounters() {
     gMainExec = 0;
     gMainQuery = 0;
     gShadowExec = 0;
@@ -244,8 +214,7 @@ static void resetCounters()
 
 static std::string g_configPath;
 
-static void writeConfig()
-{
+static void writeConfig() {
     const std::string cfg = R"({
   "default_datasource": "main",
   "heartbeat_interval_ms": 3600000,
@@ -273,56 +242,31 @@ static void writeConfig()
     std::ofstream(g_configPath) << cfg;
 }
 
-static void disableAudit()
-{
-    config::SqlAuditConfig cfg;
-    cfg.enabled = false;
-    core::SqlAuditor::configure(cfg);
+static void applyAudit(const config::SqlAuditConfig &audit) {
+    config::GlobalConfig cfg;
+    std::string error;
+    if (!config::ConfigLoader::loadFromFile(g_configPath, cfg, error))
+        throw std::runtime_error(error);
+    cfg.sql_audit = audit;
+    const auto status = g_client.reload(cfg, std::chrono::milliseconds(0));
+    if (!status.ok()) throw std::runtime_error(status.message);
 }
 
-static void enableBlockingAudit()
-{
+static void disableAudit() {
+    config::SqlAuditConfig audit;
+    audit.enabled = false;
+    applyAudit(audit);
+}
+
+static void enableBlockingAudit() {
     config::SqlAuditConfig cfg;
     cfg.enabled = true;
     cfg.action = "block";
     cfg.log_blocked = false;
-    core::SqlAuditor::configure(cfg);
+    applyAudit(cfg);
 }
 
-#if defined(SQLCONDUIT_ENABLE_ASYNC_CORO)
-static async::Task<void> coroCallBody(std::promise<async::ExecResult> pr)
-{
-    common::Params p;
-    p.push_back(common::Value(std::int64_t(1)));
-    async::util::Options o;
-    o.dataSource = "main";
-    auto r = co_await async::util::callAsync("CALL cp(?)", p, o);
-    pr.set_value(std::move(r));
-}
-#endif
-
-#if defined(SQLCONDUIT_ENABLE_ASYNC_CORO)
-static async::Task<void> coroCallAllBody(std::promise<async::MultiQueryResult> pr)
-{
-    common::Params p;
-    p.push_back(common::Value(std::int64_t(1)));
-    async::util::Options o;
-    o.dataSource = "mymock";
-    auto r = co_await async::util::callAllAsync("CALL `p`(?)", p, o);
-    pr.set_value(std::move(r));
-}
-
-static async::Task<void> coroScriptBody(std::promise<async::ExecResult> pr)
-{
-    common::util::ScriptOptions o;
-    o.dataSource = "main";
-    auto r = co_await async::util::runScriptTextAsync("SELECT 1; SELECT 2; SELECT 3", o);
-    pr.set_value(std::move(r));
-}
-#endif
-
-int main()
-{
+int main() {
     g_configPath = (std::filesystem::temp_directory_path() / "sqlconduit_util_test.json").string();
 
     driver::DriverRegistry::instance().registerDriver(
@@ -335,8 +279,7 @@ int main()
         "mysql_mock", [] { return std::make_unique<MainDriver>(); });
 
     writeConfig();
-    if (!SQLConduit::init(g_configPath).ok())
-    {
+    if (!g_client.init(g_configPath).ok()) {
         std::cout << "init failed\n";
         return 1;
     }
@@ -383,13 +326,13 @@ int main()
 
     std::cout << "== U2. detectDialect ==\n";
     {
-        check(util::detectDialect("my") == util::Dialect::MySQL, "type=mysql → MySQL");
-        check(util::detectDialect("pg") == util::Dialect::Postgres, "type=postgres → Postgres");
-        check(util::detectDialect("ms") == util::Dialect::SqlServer, "type=odbc → SqlServer");
-        check(util::detectDialect("ora") == util::Dialect::Oracle, "type=oracle → Oracle");
-        check(util::detectDialect("pgm") == util::Dialect::Postgres,
+        check(util::detectDialect(g_client, "my") == util::Dialect::MySQL, "type=mysql → MySQL");
+        check(util::detectDialect(g_client, "pg") == util::Dialect::Postgres, "type=postgres → Postgres");
+        check(util::detectDialect(g_client, "ms") == util::Dialect::SqlServer, "type=odbc → SqlServer");
+        check(util::detectDialect(g_client, "ora") == util::Dialect::Oracle, "type=oracle → Oracle");
+        check(util::detectDialect(g_client, "pgm") == util::Dialect::Postgres,
               "type 含 postgres → Postgres");
-        check(util::detectDialect("main") == util::Dialect::Auto,
+        check(util::detectDialect(g_client, "main") == util::Dialect::Auto,
               "未知驱动 → Auto（要求显式传方言）");
     }
 
@@ -402,16 +345,16 @@ int main()
 
         resetCounters();
         const std::string raw =
-            "DELIMITER //\nCREATE PROCEDURE p() BEGIN SELECT 1; END //\nDELIMITER ;\n";
+                "DELIMITER //\nCREATE PROCEDURE p() BEGIN SELECT 1; END //\nDELIMITER ;\n";
         util::CreateRoutineOptions on;
         on.dataSource = "main";
-        check(util::createRoutine(raw, on).ok(), "默认 stripDelimiter=true → 执行成功");
+        check(util::createRoutine(g_client, raw, on).ok(), "默认 stripDelimiter=true → 执行成功");
         check(gLastSql.find("DELIMITER") == std::string::npos, "发送的 SQL 已无 DELIMITER");
 
         util::CreateRoutineOptions off;
         off.dataSource = "main";
         off.stripDelimiter = false;
-        check(util::createRoutine(raw, off).ok(), "stripDelimiter=false → 原样执行");
+        check(util::createRoutine(g_client, raw, off).ok(), "stripDelimiter=false → 原样执行");
         check(gLastSql.find("DELIMITER") != std::string::npos, "原样发送（保留 DELIMITER）");
     }
 
@@ -426,7 +369,7 @@ int main()
         check(hasMultipleStatements(myProc), "默认参数下例程体判 true（既有行为不变）");
         check(!hasMultipleStatements(myProc, true), "allowRoutineBody 下例程体判 false");
         const std::string pgFn =
-            "CREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END; $$ LANGUAGE plpgsql";
+                "CREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END; $$ LANGUAGE plpgsql";
         check(!hasMultipleStatements(pgFn) && !hasMultipleStatements(pgFn, true),
               "PG $$ 体本来就被 mask");
         check(isRoutineDdl(myProc) && isRoutineDdl(pgFn), "isRoutineDdl 识别两种方言");
@@ -435,8 +378,8 @@ int main()
         const std::string smuggle = "CREATE PROCEDURE p() BEGIN SELECT 1; END; DROP TABLE t";
         check(hasMultipleStatements(smuggle, true), "例程体后紧跟的独立语句仍被判 true");
         const std::string nested =
-            "CREATE PROCEDURE p() BEGIN IF 1 THEN SELECT 1; END IF; "
-            "CASE WHEN 1 THEN SELECT 2; ELSE SELECT 3; END CASE; END";
+                "CREATE PROCEDURE p() BEGIN IF 1 THEN SELECT 1; END IF; "
+                "CASE WHEN 1 THEN SELECT 2; ELSE SELECT 3; END CASE; END";
         check(!hasMultipleStatements(nested, true), "嵌套 IF/CASE 块仍正确配对");
     }
 
@@ -444,11 +387,11 @@ int main()
     {
         enableBlockingAudit();
         std::int64_t aff = 0;
-        const auto a = SQLConduit::execute("CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END", aff);
+        const auto a = g_client.execute("CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END", aff);
         check(a.ok(), "U5 例程 DDL 不被多语句规则拦下");
         check(a.code != ErrorCode::SqlBlocked, "U5 错误码不是 SqlBlocked");
 
-        const auto b = SQLConduit::execute("SELECT 1; DROP TABLE t", aff);
+        const auto b = g_client.execute("SELECT 1; DROP TABLE t", aff);
         check(!b.ok() && b.code == ErrorCode::SqlBlocked, "U6 真多语句仍被拦下");
 
         config::SqlAuditConfig cfg;
@@ -457,8 +400,8 @@ int main()
         cfg.log_blocked = false;
         cfg.whitelist_fingerprints.push_back(
             common::sql::fingerprintTemplate("SELECT 42"));
-        core::SqlAuditor::configure(cfg);
-        const auto c = SQLConduit::execute("CREATE PROCEDURE q() BEGIN SELECT 1; END", aff);
+        applyAudit(cfg);
+        const auto c = g_client.execute("CREATE PROCEDURE q() BEGIN SELECT 1; END", aff);
         check(!c.ok() && c.code == ErrorCode::SqlBlocked, "U7 不在白名单的例程 DDL 仍被拦下");
         disableAudit();
     }
@@ -471,7 +414,8 @@ int main()
             common::SqlContext ctx;
             ctx.shadow = true;
             common::ContextScope scope(ctx);
-            SQLConduit::execute("grp", "UPDATE t SET a = 1", aff);
+            const auto writeStatus = g_client.execute("grp", "UPDATE t SET a = 1", aff);
+            check(writeStatus.ok(), "对照组写入成功");
         }
         check(gShadowExec.load() == 1 && gMainExec.load() == 0,
               "对照组：普通写在 shadow 上下文落到影子库");
@@ -484,7 +428,7 @@ int main()
             common::SqlContext ctx;
             ctx.shadow = true;
             common::ContextScope scope(ctx);
-            st = util::createRoutine("CREATE PROCEDURE p() BEGIN SELECT 1; END", o);
+            st = util::createRoutine(g_client, "CREATE PROCEDURE p() BEGIN SELECT 1; END", o);
         }
         check(st.ok(), "U8 util DDL 在 shadow 上下文执行成功");
         check(gMainExec.load() == 1 && gShadowExec.load() == 0,
@@ -497,7 +441,7 @@ int main()
         gFailRemaining = 10;
         util::CreateRoutineOptions o;
         o.dataSource = "main";
-        const auto a = util::createRoutine("CREATE PROCEDURE p() BEGIN SELECT 1; END", o);
+        const auto a = util::createRoutine(g_client, "CREATE PROCEDURE p() BEGIN SELECT 1; END", o);
         check(!a.ok(), "DDL 失败");
         check(gMainExec.load() == 1, "U9 默认 NonIdempotent → 只尝试 1 次");
 
@@ -506,28 +450,29 @@ int main()
         util::CreateRoutineOptions idm;
         idm.dataSource = "main";
         idm.idempotency = common::Idempotency::Idempotent;
-        util::createRoutine("CREATE PROCEDURE p() BEGIN SELECT 1; END", idm);
+        util::createRoutine(g_client, "CREATE PROCEDURE p() BEGIN SELECT 1; END", idm);
         check(gMainExec.load() == 2, "U9 显式 Idempotent → 按 max_attempts=2 重试");
         resetCounters();
     }
 
     std::cout << "== U10. 缓存失效 ==\n";
     {
-        common::ResultSet seed = buildResultSet({
-            {
-                std::make_pair(
-                    "a", common::Value(std::int64_t(1)))
-            }
-        });
-        core::QueryCache::put("main", "k1", seed);
-        common::ResultSet probe;
-        check(core::QueryCache::get("main", "k1", probe), "前置：缓存里已有条目");
+        resetCounters();
+        common::ResultSet first;
+        common::ResultSet cached;
+        check(g_client.query("main", "SELECT cache_seed", first).ok() &&
+              g_client.query("main", "SELECT cache_seed", cached).ok() &&
+              gMainQuery.load() == 1,
+              "前置：第二次相同查询命中本 Client 的缓存");
 
         util::CreateRoutineOptions o;
         o.dataSource = "main";
-        check(util::createRoutine("CREATE PROCEDURE p() BEGIN SELECT 1; END", o).ok(),
+        check(util::createRoutine(g_client, "CREATE PROCEDURE p() BEGIN SELECT 1; END", o).ok(),
               "创建例程成功");
-        check(!core::QueryCache::get("main", "k1", probe), "U10 结构变更后该源缓存失效");
+        common::ResultSet afterDdl;
+        check(g_client.query("main", "SELECT cache_seed", afterDdl).ok() &&
+              gMainQuery.load() == 2,
+              "U10 结构变更后该源缓存失效");
         resetCounters();
     }
 
@@ -536,12 +481,12 @@ int main()
         util::CreateRoutineOptions my;
         my.dataSource = "my";
         my.replace = true;
-        check(util::createRoutine("CREATE PROCEDURE p() BEGIN SELECT 1; END", my).code ==
+        check(util::createRoutine(g_client, "CREATE PROCEDURE p() BEGIN SELECT 1; END", my).code ==
               ErrorCode::NotSupported, "U11 MySQL 不支持 CREATE OR REPLACE");
         util::CreateRoutineOptions ine;
         ine.dataSource = "pg";
         ine.ifNotExists = true;
-        check(util::createRoutine("CREATE PROCEDURE p() BEGIN SELECT 1; END", ine).code ==
+        check(util::createRoutine(g_client, "CREATE PROCEDURE p() BEGIN SELECT 1; END", ine).code ==
               ErrorCode::NotSupported, "U11 IF NOT EXISTS 三个方言都不支持");
 
         util::RoutineRef ref;
@@ -550,7 +495,7 @@ int main()
         util::DropRoutineOptions cas;
         cas.dataSource = "my";
         cas.cascade = true;
-        check(util::dropRoutine(ref, cas).code == ErrorCode::NotSupported,
+        check(util::dropRoutine(g_client, ref, cas).code == ErrorCode::NotSupported,
               "U12 CASCADE 仅 PG");
 
         std::string s;
@@ -654,18 +599,18 @@ int main()
         spec.concurrent = true;
         util::CreateIndexOptions o;
         o.dataSource = "pgm";
-        const auto outside = util::createIndex(spec, o);
+        const auto outside = util::createIndex(g_client, spec, o);
         check(outside.ok(), "事务外 CONCURRENTLY 通过");
 
         bool insideFailed = false;
         ErrorCode insideCode = ErrorCode::Ok;
-        SQLConduit::transaction("pgm", [&](core::Session&)
-        {
-            const auto st = util::createIndex(spec, o);
+        const auto txStatus = g_client.transaction("pgm", [&](core::Session &) {
+            const auto st = util::createIndex(g_client, spec, o);
             insideFailed = !st.ok();
             insideCode = st.code;
             return Status::OK();
         });
+        check(txStatus.ok(), "U15 外层事务完成");
         check(insideFailed && insideCode == ErrorCode::TxError,
               "U15 事务内 CONCURRENTLY → TxError");
     }
@@ -679,7 +624,7 @@ int main()
         p.push_back(common::Value(std::int64_t(1)));
         util::CallOptions o;
         o.dataSource = "main";
-        check(util::call("CALL p(?)", p, aff, o).ok() && aff == 7, "U16 affected 正确返回");
+        check(util::call(g_client, "CALL p(?)", p, aff, o).ok() && aff == 7, "U16 affected 正确返回");
         check(gLastSql == "CALL p(?)", "U16 SQL 原样送达");
 
         gRows = {
@@ -687,14 +632,13 @@ int main()
             {{"id", common::Value(std::int64_t(2))}, {"n", common::Value(std::string("b"))}}
         };
         common::ResultSet rs;
-        check(util::callQuery("SELECT * FROM f(?)", p, rs, o).ok() && rs.rowCount() == 2,
+        check(util::callQuery(g_client, "SELECT * FROM f(?)", p, rs, o).ok() && rs.rowCount() == 2,
               "U17 callQuery 结果集正确");
 
         std::uint64_t rows = 0;
         std::vector<std::int64_t> seen;
-        check(util::callEach("SELECT * FROM f(?)", p,
-                             [&seen](const common::Row& r)
-                             {
+        check(util::callEach(g_client, "SELECT * FROM f(?)", p,
+                             [&seen](const common::Row &r) {
                                  seen.push_back(std::get<std::int64_t>(r.at("id")));
                                  return true;
                              }, rows, o).ok() && rows == 2 && seen.size() == 2,
@@ -702,9 +646,8 @@ int main()
 
         std::uint64_t stopped = 0;
         int visited = 0;
-        util::callEach("SELECT * FROM f(?)", p,
-                       [&visited](const common::Row&)
-                       {
+        util::callEach(g_client, "SELECT * FROM f(?)", p,
+                       [&visited](const common::Row &) {
                            ++visited;
                            return false;
                        }, stopped, o);
@@ -719,71 +662,13 @@ int main()
         p.push_back(common::Value(std::int64_t(1)));
         std::int64_t aff = 0;
         bool inTx = false;
-        const auto st = SQLConduit::transaction("main", [&](core::Session& s)
-        {
+        const auto st = g_client.transaction("main", [&](core::Session &s) {
             inTx = s.inTransaction();
             return util::call(s, "CALL p(?)", p, aff);
         });
         check(st.ok() && aff == 1 && inTx, "U19 事务内 call 与 Session::execute 语义一致");
         check(gBegin.load() == 1 && gCommit.load() == 1, "U19 begin/commit 各 1 次");
         check(core::currentTransactionDepth() == 0, "U19 事务结束后深度归零");
-        resetCounters();
-    }
-
-    std::cout << "== U20. 异步三形态 ==\n";
-    {
-        resetCounters();
-        gAffected = 3;
-        common::Params p;
-        p.push_back(common::Value(std::int64_t(1)));
-        async::util::Options o;
-        o.dataSource = "main";
-
-        std::promise<async::ExecResult> pr1;
-        auto f1 = pr1.get_future();
-        async::util::call("CALL p(?)", p,
-                          [&pr1](async::ExecResult&& r) { pr1.set_value(std::move(r)); }, o);
-        const auto r1 = f1.get();
-        check(r1.status.ok() && r1.affected == 3, "U20 回调形态与同步同结果");
-
-        auto f2 = async::util::callQuery("SELECT * FROM f(?)", p, o);
-        const auto r2 = f2.get();
-        check(r2.status.ok() && r2.rows.rowCount() == 2, "U20 future 形态与同步同结果");
-
-        resetCounters();
-        std::promise<async::OpResult> pr3;
-        auto f3 = pr3.get_future();
-        async::util::createRoutine("CREATE PROCEDURE p() BEGIN SELECT 1; END",
-                                   [&pr3](async::OpResult&& r) { pr3.set_value(std::move(r)); },
-                                   o);
-        check(f3.get().status.ok(), "U20 异步 createRoutine 成功");
-
-        resetCounters();
-        std::promise<async::OpResult> pr4;
-        auto f4 = pr4.get_future();
-        async::util::Options grp;
-        grp.dataSource = "grp";
-        {
-            common::SqlContext ctx;
-            ctx.shadow = true;
-            common::ContextScope scope(ctx);
-            async::util::createRoutine("CREATE PROCEDURE p() BEGIN SELECT 1; END",
-                                       [&pr4](async::OpResult&& r) { pr4.set_value(std::move(r)); },
-                                       grp);
-        }
-        check(f4.get().status.ok(), "U20 异步 DDL 成功");
-        check(gMainExec.load() == 1 && gShadowExec.load() == 0,
-              "U20 异步同样强制主库（I7 治理一致）");
-
-#if defined(SQLCONDUIT_ENABLE_ASYNC_CORO)
-        resetCounters();
-        gAffected = 5;
-        std::promise<async::ExecResult> pr5;
-        auto f5 = pr5.get_future();
-        async::run(coroCallBody(std::move(pr5)));
-        const auto r5 = f5.get();
-        check(r5.status.ok() && r5.affected == 5, "U20 协程形态与同步同结果");
-#endif
         resetCounters();
     }
 
@@ -862,7 +747,7 @@ int main()
         o.dataSource = "mymock";
 
         util::CallResult r;
-        const auto st = util::call(proc, params, r, o);
+        const auto st = util::call(g_client, proc, params, r, o);
         check(st.ok() && r.sets.size() == 2, "U22 一次调用收集到 2 个结果集");
         check(r.rowCount() == 3 && r.sets[0].rowCount() == 2 && r.sets[1].rowCount() == 1,
               "U22 行分布在各结果集内正确");
@@ -886,7 +771,7 @@ int main()
         util::CallOptions o;
         o.dataSource = "mymock";
         util::CallResult r;
-        const auto st = util::call(proc, withOut, r, o);
+        const auto st = util::call(g_client, proc, withOut, r, o);
         check(st.code == ErrorCode::NotSupported && r.outParams.empty(),
               "U23 池路径 + OUT → NotSupported（提示改用 Session）");
     }
@@ -911,9 +796,8 @@ int main()
         });
 
         util::CallResult r;
-        const auto st = SQLConduit::transaction("mymock", [&](core::Session& s)
-        {
-            return util::call(s, proc, withOut, r);
+        const auto st = g_client.transaction("mymock", [&](core::Session &s) {
+            return util::call(g_client, s, proc, withOut, r);
         });
         check(st.ok() && r.outParams.size() == 1 &&
               r.outParams[0] == common::Value(std::int64_t(42)), "U24 Session 路径读回 OUT=42");
@@ -937,9 +821,8 @@ int main()
         });
 
         util::CallResult r;
-        const auto st = SQLConduit::transaction("mymock", [&](core::Session& s)
-        {
-            return util::call(s, proc, inOut, r);
+        const auto st = g_client.transaction("mymock", [&](core::Session &s) {
+            return util::call(g_client, s, proc, inOut, r);
         });
         check(st.ok() && gMainExec.load() == 1, "U25 INOUT 先执行 SET 赋值（1 次 execute）");
         check(r.outParams.size() == 1 && r.outParams[0] == common::Value(std::int64_t(11)),
@@ -969,7 +852,7 @@ int main()
         o.dataSource = "pgm";
 
         util::CallResult r;
-        const auto st = util::call(fn, params, r, o);
+        const auto st = util::call(g_client, fn, params, r, o);
         check(st.ok() && r.outParams.size() == 1 &&
               r.outParams[0] == common::Value(std::int64_t(7)),
               "U26 PG OUT 取结果首行首列=7");
@@ -998,65 +881,6 @@ int main()
               "U27 列数不足 → QueryError");
     }
 
-    std::cout << "== U28. 异步多结果集 ==\n";
-    {
-        resetCounters();
-        RowData r1a{{"id", common::Value(std::int64_t(1))}};
-        RowData r1b{{"id", common::Value(std::int64_t(2))}};
-        RowData r2a{{"total", common::Value(std::int64_t(9))}};
-        gSets = {{r1a, r1b}, {r2a}};
-
-        async::util::Options ao;
-        ao.dataSource = "mymock";
-        common::Params p;
-        p.push_back(common::Value(std::int64_t(1)));
-        const auto ar = async::util::callAll("CALL `p`(?)", p, ao).get();
-        check(ar.status.ok() && ar.sets.size() == 2 && ar.rowCount() == 3,
-              "U28 future 形态收集 2 个结果集");
-
-        std::promise<async::MultiQueryResult> pr;
-        auto fut = pr.get_future();
-        async::util::callAll("CALL `p`(?)", p,
-                             [&pr](async::MultiQueryResult&& r) { pr.set_value(std::move(r)); },
-                             ao);
-        check(fut.get().sets.size() == 2, "U28 回调形态收集 2 个结果集");
-
-        util::RoutineRef proc;
-        proc.name = "p";
-        proc.dataSource = "mymock";
-        util::CallParams params;
-        params.emplace_back(common::Value(std::int64_t(1)));
-        std::promise<async::MultiQueryResult> pr2;
-        auto fut2 = pr2.get_future();
-        async::util::call(proc, params,
-                          [&pr2](async::MultiQueryResult&& r) { pr2.set_value(std::move(r)); },
-                          ao);
-        check(fut2.get().status.ok(), "U28 结构化异步调用");
-
-        util::CallParams withOut;
-        withOut.emplace_back(common::Value(std::int64_t(7)));
-        withOut.emplace_back(util::CallParam{
-            util::ParamDirection::Out,
-            common::Value(std::int64_t(0))
-        });
-        std::promise<async::MultiQueryResult> pr3;
-        auto fut3 = pr3.get_future();
-        async::util::call(proc, withOut,
-                          [&pr3](async::MultiQueryResult&& r) { pr3.set_value(std::move(r)); },
-                          ao);
-        check(fut3.get().status.code == ErrorCode::NotSupported,
-              "U28 异步路径拒绝 OUT/INOUT");
-
-#if defined(SQLCONDUIT_ENABLE_ASYNC_CORO)
-        std::promise<async::MultiQueryResult> pr4;
-        auto fut4 = pr4.get_future();
-        async::run(coroCallAllBody(std::move(pr4)));
-        const auto cr = fut4.get();
-        check(cr.status.ok() && cr.sets.size() == 2, "U28 协程形态收集 2 个结果集");
-#endif
-        resetCounters();
-    }
-
     std::cout << "== U29. returnsRows=false 走 execute ==\n";
     {
         resetCounters();
@@ -1071,7 +895,7 @@ int main()
         o.dataSource = "mymock";
         o.returnsRows = false;
         util::CallResult r;
-        const auto st = util::call(proc, params, r, o);
+        const auto st = util::call(g_client, proc, params, r, o);
         check(st.ok() && r.sets.empty() && r.affected == 4,
               "U29 returnsRows=false → 只报 affected");
     }
@@ -1109,7 +933,7 @@ int main()
         util::ScriptOptions o;
         o.dataSource = "main";
         std::size_t ex = 0;
-        const auto st = util::runScriptText("SELECT 1; SELECT 2; SELECT 3", o, &ex);
+        const auto st = util::runScriptText(g_client, "SELECT 1; SELECT 2; SELECT 3", o, &ex);
         check(st.ok() && ex == 3, "U31 三条语句全部执行");
         check(gMainExec.load() == 3, "U31 主库 execute 计数 = 3");
         resetCounters();
@@ -1123,7 +947,7 @@ int main()
         o.dataSource = "main";
         o.stopOnError = false;
         std::size_t ex = 0;
-        const auto st = util::runScriptText("SELECT 1; SELECT 2; SELECT 3", o, &ex);
+        const auto st = util::runScriptText(g_client, "SELECT 1; SELECT 2; SELECT 3", o, &ex);
         check(!st.ok() && st.code == ErrorCode::QueryError, "U32 失败后返回错误");
         check(ex == 2, "U32 后续语句仍执行（executed=2）");
         check(gMainExec.load() == 3, "U32 三条语句都尝试过");
@@ -1134,12 +958,11 @@ int main()
     std::cout << "== U33/U34. runScripts / runScriptsInDir ==\n";
     {
         const std::string base = (std::filesystem::temp_directory_path() /
-            "sqlconduit_script_test").string();
+                                  "sqlconduit_script_test").string();
         std::error_code rec;
         std::filesystem::remove_all(base, rec);
         std::filesystem::create_directories(base + "/sub", rec);
-        auto writef = [](const std::string& p, const std::string& c)
-        {
+        auto writef = [](const std::string &p, const std::string &c) {
             std::ofstream(p) << c;
         };
         writef(base + "/01.sql", "SELECT 1; SELECT 2");
@@ -1151,7 +974,7 @@ int main()
         util::ScriptOptions o;
         o.dataSource = "main";
         std::vector<util::ScriptResult> per;
-        const auto s1 = util::runScripts({base + "/01.sql", base + "/02.sql"}, o, &per);
+        const auto s1 = util::runScripts(g_client, {base + "/01.sql", base + "/02.sql"}, o, &per);
         check(s1.ok() && per.size() == 2, "U33 两个文件均执行");
         check(per[0].statements == 2 && per[0].executed == 2, "U33 01.sql 2 条全执行");
         check(per[1].statements == 1 && per[1].executed == 1, "U33 02.sql 1 条全执行");
@@ -1159,10 +982,10 @@ int main()
         resetCounters();
 
         std::vector<util::ScriptResult> per2;
-        const auto s2 = util::runScriptsInDir(base, o, &per2);
+        const auto s2 = util::runScriptsInDir(g_client, base, o, &per2);
         check(s2.ok() && per2.size() == 3, "U34 递归发现 3 个 .sql（notes.txt 被过滤）");
         std::size_t totalExec = 0;
-        for (const auto& r : per2) totalExec += r.executed;
+        for (const auto &r: per2) totalExec += r.executed;
         check(totalExec == 6, "U34 共执行 6 条语句");
         check(gMainExec.load() == 6, "U34 主库 execute = 6");
 
@@ -1170,7 +993,7 @@ int main()
         util::ScriptOptions flat = o;
         flat.recursive = false;
         std::vector<util::ScriptResult> per3;
-        const auto s3 = util::runScriptsInDir(base, flat, &per3);
+        const auto s3 = util::runScriptsInDir(g_client, base, flat, &per3);
         check(s3.ok() && per3.size() == 2, "U34 非递归仅顶层 2 个 .sql");
         resetCounters();
         std::filesystem::remove_all(base, rec);
@@ -1180,7 +1003,7 @@ int main()
     {
         util::ScriptOptions o;
         o.dataSource = "main";
-        const auto st = util::runScriptsInDir("/no/such/sqlconduit_dir_xyz", o);
+        const auto st = util::runScriptsInDir(g_client, "/no/such/sqlconduit_dir_xyz", o);
         check(!st.ok() && st.code == ErrorCode::IoError, "U35 目录不存在返回 IoError");
     }
 
@@ -1189,94 +1012,28 @@ int main()
         util::ScriptOptions o;
         o.dataSource = "main";
         std::vector<util::ScriptResult> per;
-        const auto st = util::runScripts({"/no/such/sqlconduit_file.sql"}, o, &per);
+        const auto st = util::runScripts(g_client, {"/no/such/sqlconduit_file.sql"}, o, &per);
         check(!st.ok() && st.code == ErrorCode::IoError, "U36 缺文件返回 IoError");
         check(!per.empty() && per[0].status.code == ErrorCode::IoError, "U36 perFile 记录 IoError");
 
         const std::string base = (std::filesystem::temp_directory_path() /
-            "sqlconduit_script_test2").string();
+                                  "sqlconduit_script_test2").string();
         std::error_code rec;
         std::filesystem::remove_all(base, rec);
         std::filesystem::create_directories(base, rec);
-        auto writef = [](const std::string& p, const std::string& c)
-        {
+        auto writef = [](const std::string &p, const std::string &c) {
             std::ofstream(p) << c;
         };
         writef(base + "/ok.sql", "SELECT 1");
         util::ScriptOptions no = o;
         no.stopOnError = false;
         std::vector<util::ScriptResult> per2;
-        const auto st2 = util::runScripts({base + "/ok.sql", "/no/such/sqlconduit_file.sql"}, no, &per2);
+        const auto st2 = util::runScripts(g_client, {base + "/ok.sql", "/no/such/sqlconduit_file.sql"}, no, &per2);
         check(!st2.ok() && per2.size() == 2, "U36 不停止时两文件都记录");
         std::filesystem::remove_all(base, rec);
     }
 
-    std::cout << "== U37. 异步三形态 ==\n";
-    {
-        util::ScriptOptions o;
-        o.dataSource = "main";
-
-        const auto fr = async::util::runScriptText("SELECT 1; SELECT 2; SELECT 3", o).get();
-        check(fr.status.ok(), "U37 future 形态执行成功");
-
-        std::promise<async::ExecResult> pr;
-        auto fut = pr.get_future();
-        const auto handle = async::util::runScriptText(
-            "SELECT 1; SELECT 2",
-            [&pr](async::ExecResult&& r) { pr.set_value(std::move(r)); }, o);
-        check(handle.valid(), "U37 回调形态返回可跟踪句柄");
-        check(fut.get().status.ok(), "U37 回调形态执行成功");
-
-        resetCounters();
-        gFailRemaining = 1;
-        util::ScriptOptions continueOnError = o;
-        continueOnError.stopOnError = false;
-        const auto failed = async::util::runScriptText(
-            "SELECT 1; SELECT 2; SELECT 3", continueOnError).get();
-        check(!failed.status.ok() && failed.status.code == ErrorCode::QueryError,
-              "U37 stopOnError=false 继续执行后仍返回错误");
-        check(gMainExec.load() == 3, "U37 异步脚本严格按顺序尝试全部语句");
-        resetCounters();
-        gFailRemaining = 0;
-
-        std::promise<async::ExecResult> cancelledPromise;
-        auto cancelledFuture = cancelledPromise.get_future();
-        gExecDelayMs = 100;
-        const auto cancellable = async::util::runScriptText(
-            "SELECT 1; SELECT 2; SELECT 3",
-            [&cancelledPromise](async::ExecResult&& r)
-            {
-                cancelledPromise.set_value(std::move(r));
-            }, o);
-        for (int i = 0; i < 100 && gMainExec.load() == 0; ++i)
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        cancellable.cancel();
-        const auto cancelled = cancelledFuture.get();
-        check(cancelled.status.code == ErrorCode::Cancelled,
-              "U37 取消脚本后以 Cancelled 完成");
-        check(gMainExec.load() == 1, "U37 取消后不再调度后续语句");
-        resetCounters();
-
-        const std::string base = (std::filesystem::temp_directory_path() /
-            "sqlconduit_script_test3").string();
-        std::error_code rec;
-        std::filesystem::remove_all(base, rec);
-        std::filesystem::create_directories(base, rec);
-        std::ofstream(base + "/a.sql") << "SELECT 1; SELECT 2";
-        std::ofstream(base + "/b.sql") << "SELECT 3";
-        const auto dr = async::util::runScriptsInDir(base, o).get();
-        check(dr.status.ok(), "U37 runScriptsInDir future 成功");
-        std::filesystem::remove_all(base, rec);
-
-#if defined(SQLCONDUIT_ENABLE_ASYNC_CORO)
-        std::promise<async::ExecResult> prc;
-        auto futc = prc.get_future();
-        async::run(coroScriptBody(std::move(prc)));
-        check(futc.get().status.ok(), "U37 协程形态执行成功");
-#endif
-    }
-
     std::cout << "\npassed=" << g_passed << " failed=" << g_failed << "\n";
-    SQLConduit::shutdown(std::chrono::milliseconds(0));
+    g_client.shutdown(std::chrono::milliseconds(0));
     return g_failed == 0 ? 0 : 1;
 }

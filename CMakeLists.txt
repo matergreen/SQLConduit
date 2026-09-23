@@ -1,5 +1,39 @@
 cmake_minimum_required(VERSION 3.16)
-project(sqlconduit VERSION 0.6.0 LANGUAGES CXX)
+project(sqlconduit VERSION 0.7.0 LANGUAGES CXX)
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/public_api.cmake")
+file(GLOB_RECURSE _sqlconduit_header_inventory CONFIGURE_DEPENDS
+     RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/include"
+     "${CMAKE_CURRENT_SOURCE_DIR}/include/sqlconduit/*.h")
+list(REMOVE_ITEM _sqlconduit_header_inventory
+     "sqlconduit/async/executor.h"
+     "sqlconduit/core/runtime_services.h"
+     "sqlconduit/core/stats_reporter.h")
+list(SORT _sqlconduit_header_inventory)
+set(_sqlconduit_frozen_headers "${SQLCONDUIT_FROZEN_PUBLIC_HEADERS}")
+list(SORT _sqlconduit_frozen_headers)
+if(NOT _sqlconduit_header_inventory STREQUAL _sqlconduit_frozen_headers)
+    message(FATAL_ERROR
+        "Installed public headers differ from cmake/public_api.cmake. "
+        "Public API changes must update the frozen inventory and changelog.\n"
+        "Expected: ${_sqlconduit_frozen_headers}\n"
+        "Actual:   ${_sqlconduit_header_inventory}")
+endif()
+
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/include/sqlconduit/version.h"
+     _sqlconduit_version_header)
+foreach(_part MAJOR MINOR PATCH)
+    if(NOT _sqlconduit_version_header MATCHES
+       "#define SQLCONDUIT_VERSION_${_part} ${PROJECT_VERSION_${_part}}([^0-9]|$)")
+        message(FATAL_ERROR
+            "include/sqlconduit/version.h does not match project version ${PROJECT_VERSION}")
+    endif()
+endforeach()
+if(NOT _sqlconduit_version_header MATCHES
+   "#define SQLCONDUIT_VERSION_STRING \"${PROJECT_VERSION}\"")
+    message(FATAL_ERROR
+        "SQLCONDUIT_VERSION_STRING does not match project version ${PROJECT_VERSION}")
+endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL "" FORCE)
 
@@ -19,7 +53,6 @@ option(SQLCONDUIT_BUILD_TESTS     "Build core behaviour tests (no external deps)
 option(SQLCONDUIT_INSTALL         "Generate install and package config rules"       ON)
 option(SQLCONDUIT_BUILD_INTEGRATION_TESTS
        "Build integration tests that require live database services"          OFF)
-option(SQLCONDUIT_ENABLE_ASYNC_CORO "Build the C++20 coroutine layer (task.h)"     OFF)
 
 set(_nl_inc_dir "")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann/json.hpp")
@@ -52,13 +85,13 @@ set(SQLCONDUIT_SOURCES
     src/config/config_loader.cpp
     src/config/yaml_parser.cpp
     src/async/executor.cpp
-    src/async/async_engine.cpp
     src/core/idatabase_connection.cpp
     src/core/connection_pool.cpp
     src/core/heartbeat_manager.cpp
     src/core/database_manager.cpp
     src/core/sql_auditor.cpp
     src/core/query_cache.cpp
+    src/core/runtime_services.cpp
     src/core/write_buffer.cpp
     src/core/stats_reporter.cpp
     src/core/interceptor.cpp
@@ -68,23 +101,11 @@ set(SQLCONDUIT_SOURCES
     src/driver/postgres_driver.cpp
     src/driver/odbc_driver.cpp
     src/driver/oracle_driver.cpp
-    src/sqlconduit.cpp
+    src/client.cpp
     src/exporters/prometheus.cpp
 )
 
-if(SQLCONDUIT_ENABLE_ASYNC_CORO)
-    add_library(sqlconduit_coro OBJECT src/async/task.cpp)
-    target_include_directories(sqlconduit_coro PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
-    set_target_properties(sqlconduit_coro PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
-    target_compile_definitions(sqlconduit_coro PRIVATE SQLCONDUIT_ENABLE_ASYNC_CORO=1)
-    set(SQLCONDUIT_CORO_OBJ "$<TARGET_OBJECTS:sqlconduit_coro>")
-else()
-    set(SQLCONDUIT_CORO_OBJ "")
-endif()
-
-add_library(sqlconduit STATIC ${SQLCONDUIT_SOURCES} ${SQLCONDUIT_CORO_OBJ})
+add_library(sqlconduit STATIC ${SQLCONDUIT_SOURCES})
 add_library(sqlconduit::sqlconduit ALIAS sqlconduit)
 target_include_directories(sqlconduit
     PUBLIC
@@ -92,9 +113,6 @@ target_include_directories(sqlconduit
         $<INSTALL_INTERFACE:include>
     PRIVATE
         ${_nl_inc_dir})
-if(SQLCONDUIT_ENABLE_ASYNC_CORO)
-    target_compile_definitions(sqlconduit PUBLIC SQLCONDUIT_ENABLE_ASYNC_CORO=1)
-endif()
 
 # The library owns worker threads, so static consumers need the thread flag too.
 set(THREADS_PREFER_PTHREAD_FLAG ON)
@@ -222,7 +240,10 @@ install(TARGETS sqlconduit
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(DIRECTORY include/sqlconduit DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY include/sqlconduit DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        PATTERN "async/executor.h" EXCLUDE
+        PATTERN "core/runtime_services.h" EXCLUDE
+        PATTERN "core/stats_reporter.h" EXCLUDE)
 
 set(_sqlconduit_cmake_dir "${CMAKE_INSTALL_LIBDIR}/cmake/sqlconduit")
 configure_package_config_file(
@@ -232,7 +253,7 @@ configure_package_config_file(
 write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/sqlconduitConfigVersion.cmake"
     VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMajorVersion)
+    COMPATIBILITY SameMinorVersion)
 install(FILES
     "${CMAKE_CURRENT_BINARY_DIR}/sqlconduitConfig.cmake"
     "${CMAKE_CURRENT_BINARY_DIR}/sqlconduitConfigVersion.cmake"

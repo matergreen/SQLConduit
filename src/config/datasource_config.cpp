@@ -2,31 +2,23 @@
 
 #include <string>
 
-namespace sqlconduit::config
-{
-    std::string DataSourceConfig::describe() const
-    {
+namespace sqlconduit::config {
+    std::string DataSourceConfig::describe() const {
         std::string s = name + "[" + type + "]";
-        if (!dsn.empty())
-        {
+        if (!dsn.empty()) {
             s += " dsn=" + dsn;
-        }
-        else
-        {
+        } else {
             s += " " + host + ":" + std::to_string(port) + "/" + database;
         }
         s += " user=" + user;
         return s;
     }
 
-    std::string DataSourceConfig::redact(std::string text) const
-    {
-        auto replaceAll = [&](const std::string& secret)
-        {
+    std::string DataSourceConfig::redact(std::string text) const {
+        auto replaceAll = [&](const std::string &secret) {
             if (secret.empty()) return;
             std::size_t pos = 0;
-            while ((pos = text.find(secret, pos)) != std::string::npos)
-            {
+            while ((pos = text.find(secret, pos)) != std::string::npos) {
                 text.replace(pos, secret.size(), "***");
                 pos += 3;
             }

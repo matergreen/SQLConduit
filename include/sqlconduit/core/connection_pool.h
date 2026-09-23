@@ -17,18 +17,15 @@
 #include <queue>
 #include <string>
 
-namespace sqlconduit::core
-{
-    struct AsyncIo
-    {
+namespace sqlconduit::core {
+    struct AsyncIo {
         std::function<void(std::function<void()>)> post;
         std::function<void(std::function<void()>)> deliver;
 
         [[nodiscard]] bool usable() const { return static_cast<bool>(post) && static_cast<bool>(deliver); }
     };
 
-    class ConnectionPool : public std::enable_shared_from_this<ConnectionPool>
-    {
+    class ConnectionPool : public std::enable_shared_from_this<ConnectionPool> {
         struct State;
 
     public:
@@ -43,38 +40,34 @@ namespace sqlconduit::core
                        std::chrono::milliseconds idleTimeout = std::chrono::milliseconds(0),
                        std::chrono::milliseconds maxLifetime = std::chrono::milliseconds(0),
                        std::chrono::milliseconds leakDetectionThreshold =
-                           std::chrono::milliseconds(0),
+                               std::chrono::milliseconds(0),
                        std::chrono::milliseconds validationInterval =
-                           std::chrono::milliseconds(500),
+                               std::chrono::milliseconds(500),
                        bool metricsEnabled = true,
                        bool pooled = true);
 
         ~ConnectionPool();
 
-        ConnectionPool(const ConnectionPool&) = delete;
+        ConnectionPool(const ConnectionPool &) = delete;
 
-        ConnectionPool& operator=(const ConnectionPool&) = delete;
+        ConnectionPool &operator=(const ConnectionPool &) = delete;
 
-        class Handle
-        {
+        class Handle {
         public:
             ~Handle();
 
-            Handle(const Handle&) = delete;
+            Handle(const Handle &) = delete;
 
-            Handle& operator=(const Handle&) = delete;
+            Handle &operator=(const Handle &) = delete;
 
-            Handle(Handle&& other) noexcept
+            Handle(Handle &&other) noexcept
                 : state_(std::move(other.state_)), conn_(std::move(other.conn_)),
                   createdAt_(other.createdAt_), borrowedAt_(other.borrowedAt_),
-                  reusable_(other.reusable_.load())
-            {
+                  reusable_(other.reusable_.load()) {
             }
 
-            Handle& operator=(Handle&& other) noexcept
-            {
-                if (this != &other)
-                {
+            Handle &operator=(Handle &&other) noexcept {
+                if (this != &other) {
                     state_ = std::move(other.state_);
                     conn_ = std::move(other.conn_);
                     createdAt_ = other.createdAt_;
@@ -84,8 +77,8 @@ namespace sqlconduit::core
                 return *this;
             }
 
-            IDatabaseConnection* operator->() const { return conn_.get(); }
-            [[nodiscard]] IDatabaseConnection* get() const { return conn_.get(); }
+            IDatabaseConnection *operator->() const { return conn_.get(); }
+            [[nodiscard]] IDatabaseConnection *get() const { return conn_.get(); }
 
             void invalidate() { reusable_.store(false); }
 
@@ -98,8 +91,7 @@ namespace sqlconduit::core
                    std::chrono::steady_clock::time_point createdAt,
                    std::chrono::steady_clock::time_point borrowedAt)
                 : state_(std::move(state)), conn_(std::move(conn)),
-                  createdAt_(createdAt), borrowedAt_(borrowedAt)
-            {
+                  createdAt_(createdAt), borrowedAt_(borrowedAt) {
             }
 
             std::weak_ptr<State> state_;
@@ -109,21 +101,21 @@ namespace sqlconduit::core
             std::atomic<bool> reusable_{true};
         };
 
-        std::unique_ptr<Handle> borrow(common::ErrorCode& code, std::string& error,
+        std::unique_ptr<Handle> borrow(common::ErrorCode &code, std::string &error,
                                        std::chrono::milliseconds timeout =
-                                           std::chrono::milliseconds(-1)) const;
+                                               std::chrono::milliseconds(-1)) const;
 
-        std::unique_ptr<Handle> borrow(std::string& error) const;
+        std::unique_ptr<Handle> borrow(std::string &error) const;
 
         void borrowAsync(std::chrono::milliseconds timeout,
-                         const AsyncIo& io,
+                         const AsyncIo &io,
                          std::function<void(std::unique_ptr<Handle>, common::Status)> complete) const;
 
         void healthCheck() const;
 
         void shutdown(std::chrono::milliseconds grace = std::chrono::milliseconds(5000)) const;
 
-        [[nodiscard]] const std::string& name() const { return cfg_.name; }
+        [[nodiscard]] const std::string &name() const { return cfg_.name; }
 
         [[nodiscard]] size_t idleCount() const;
 
@@ -136,18 +128,15 @@ namespace sqlconduit::core
         [[nodiscard]] Stats stats() const;
 
     private:
-        struct State : std::enable_shared_from_this<State>
-        {
-            struct IdleConnection
-            {
+        struct State : std::enable_shared_from_this<State> {
+            struct IdleConnection {
                 std::unique_ptr<IDatabaseConnection> conn;
                 std::chrono::steady_clock::time_point createdAt;
                 std::chrono::steady_clock::time_point returnedAt;
                 std::chrono::steady_clock::time_point lastValidated{};
             };
 
-            struct AsyncWaiter
-            {
+            struct AsyncWaiter {
                 std::chrono::steady_clock::time_point enqueuedAt;
                 std::chrono::steady_clock::time_point deadline;
                 std::function<void(std::unique_ptr<Handle>, common::Status)> complete;
@@ -192,12 +181,12 @@ namespace sqlconduit::core
                             bool reusable);
         };
 
-        std::unique_ptr<IDatabaseConnection> createConnection(common::ErrorCode& code,
-                                                              std::string& error) const;
+        std::unique_ptr<IDatabaseConnection> createConnection(common::ErrorCode &code,
+                                                              std::string &error) const;
 
         void expireWaiters() const;
 
-        void postCreateTask(const AsyncIo& io,
+        void postCreateTask(const AsyncIo &io,
                             std::function<void(std::unique_ptr<Handle>, common::Status)> complete,
                             bool slotReserved) const;
 

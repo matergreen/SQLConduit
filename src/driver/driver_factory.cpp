@@ -5,15 +5,12 @@
 #include "sqlconduit/driver/odbc_driver.h"
 #include "sqlconduit/driver/oracle_driver.h"
 
-namespace sqlconduit::driver
-{
-    std::unique_ptr<IDriver> createDriver(const std::string& type)
-    {
+namespace sqlconduit::driver {
+    std::unique_ptr<IDriver> createDriver(const std::string &type) {
         return DriverRegistry::instance().create(type);
     }
 
-    void registerBuiltinDrivers()
-    {
+    void registerBuiltinDrivers() {
         registerMySQLDriver();
         registerPostgresDriver();
         registerOdbcDriver();

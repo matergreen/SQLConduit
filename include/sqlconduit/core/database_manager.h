@@ -20,50 +20,53 @@
 #include <unordered_set>
 #include <vector>
 
-namespace sqlconduit
-{
-    namespace async::detail
-    {
+namespace sqlconduit {
+    class Client;
+
+    namespace async::detail {
         class AsyncEngine;
     }
 
-    namespace core
-    {
+    namespace core {
+        namespace detail {
+            struct RuntimeServices;
+
+            std::shared_ptr<RuntimeServices> defaultRuntimeServices();
+
+            class StatsReporter;
+            struct PoolCollectorLease;
+        }
+
         class Cursor;
 
-        class Session
-        {
+        class Session {
         public:
-            struct AuditContext
-            {
+            struct AuditContext {
                 bool enabled = false;
                 bool readOnly = false;
 
                 AuditContext() = default;
 
-                AuditContext(bool e, bool ro) : enabled(e), readOnly(ro)
-                {
+                AuditContext(bool e, bool ro) : enabled(e), readOnly(ro) {
                 }
             };
 
-            Session(const Session&) = delete;
+            Session(const Session &) = delete;
 
-            Session& operator=(const Session&) = delete;
+            Session &operator=(const Session &) = delete;
 
             ~Session();
 
-            Session(Session&& other) noexcept
+            Session(Session &&other) noexcept
                 : h_(std::move(other.h_)), dataSource_(std::move(other.dataSource_)),
                   audit_(other.audit_), txOpen_(other.txOpen_),
-                  didWrite_(other.didWrite_.load())
-            {
+                  didWrite_(other.didWrite_.load()), services_(std::move(other.services_)),
+                  driverType_(std::move(other.driverType_)) {
                 other.txOpen_ = false;
             }
 
-            Session& operator=(Session&& other) noexcept
-            {
-                if (this != &other)
-                {
+            Session &operator=(Session &&other) noexcept {
+                if (this != &other) {
                     cleanupOpenTransaction();
                     h_ = std::move(other.h_);
                     dataSource_ = std::move(other.dataSource_);
@@ -71,81 +74,83 @@ namespace sqlconduit
                     txOpen_ = other.txOpen_;
                     other.txOpen_ = false;
                     didWrite_.store(other.didWrite_.load());
+                    services_ = std::move(other.services_);
+                    driverType_ = std::move(other.driverType_);
                 }
                 return *this;
             }
 
-            common::Status query(const std::string& sql, common::ResultSet& out) const;
+            common::Status query(const std::string &sql, common::ResultSet &out) const;
 
-            common::Status query(const std::string& sql, const common::Params& params,
-                                 common::ResultSet& out) const;
+            common::Status query(const std::string &sql, const common::Params &params,
+                                 common::ResultSet &out) const;
 
-            common::Status queryAll(const std::string& sql,
-                                    std::vector<common::ResultSet>& out) const;
+            common::Status queryAll(const std::string &sql,
+                                    std::vector<common::ResultSet> &out) const;
 
-            common::Status queryAll(const std::string& sql, const common::Params& params,
-                                    std::vector<common::ResultSet>& out) const;
+            common::Status queryAll(const std::string &sql, const common::Params &params,
+                                    std::vector<common::ResultSet> &out) const;
 
-            common::Status call(const std::string& sql, const common::CallParams& params,
-                                common::CallOutput& out) const;
+            common::Status call(const std::string &sql, const common::CallParams &params,
+                                common::CallOutput &out) const;
 
-            common::Status execute(const std::string& sql, std::int64_t& affected) const;
+            common::Status execute(const std::string &sql, std::int64_t &affected) const;
 
-            common::Status execute(const std::string& sql, const common::Params& params,
-                                   std::int64_t& affected) const;
+            common::Status execute(const std::string &sql, const common::Params &params,
+                                   std::int64_t &affected) const;
 
-            common::Status queryEach(const std::string& sql, const common::Params& params,
-                                     const common::RowCallback& callback,
-                                     std::uint64_t& rows) const;
+            common::Status queryEach(const std::string &sql, const common::Params &params,
+                                     const common::RowCallback &callback,
+                                     std::uint64_t &rows) const;
 
-            common::Status executeBatch(const std::string& sql,
-                                        const common::ParamBatch& batch,
-                                        common::BatchResult& out) const;
+            common::Status executeBatch(const std::string &sql,
+                                        const common::ParamBatch &batch,
+                                        common::BatchResult &out) const;
 
-            common::Status execute(const std::string& sql, std::int64_t& affected,
-                                   common::GeneratedKeys& out) const;
+            common::Status execute(const std::string &sql, std::int64_t &affected,
+                                   common::GeneratedKeys &out) const;
 
-            common::Status execute(const std::string& sql, const common::Params& params,
-                                   std::int64_t& affected, common::GeneratedKeys& out) const;
+            common::Status execute(const std::string &sql, const common::Params &params,
+                                   std::int64_t &affected, common::GeneratedKeys &out) const;
 
-            common::Status query(const std::string& sql, const common::StreamParams& params,
-                                 common::ResultSet& out) const;
+            common::Status query(const std::string &sql, const common::StreamParams &params,
+                                 common::ResultSet &out) const;
 
-            common::Status execute(const std::string& sql, const common::StreamParams& params,
-                                   std::int64_t& affected, common::GeneratedKeys& out) const;
+            common::Status execute(const std::string &sql, const common::StreamParams &params,
+                                   std::int64_t &affected, common::GeneratedKeys &out) const;
 
-            common::Status executeBatch(const std::string& sql,
-                                        const common::StreamParamBatch& batch,
-                                        common::BatchResult& out) const;
+            common::Status executeBatch(const std::string &sql,
+                                        const common::StreamParamBatch &batch,
+                                        common::BatchResult &out) const;
 
-            common::Status prepare(const std::string& sql, const common::Params& typesSample,
-                                   PreparedStatementHandle& out) const;
+            common::Status prepare(const std::string &sql, const common::Params &typesSample,
+                                   PreparedStatementHandle &out) const;
 
-            common::Status executePrepared(const PreparedStatementHandle& h,
-                                           const common::Params& params,
-                                           common::ResultSet& out) const;
+            common::Status executePrepared(const PreparedStatementHandle &h,
+                                           const common::Params &params,
+                                           common::ResultSet &out) const;
 
-            common::Status executePrepared(const PreparedStatementHandle& h,
-                                           const common::Params& params,
-                                           std::int64_t& affected) const;
+            common::Status executePrepared(const PreparedStatementHandle &h,
+                                           const common::Params &params,
+                                           std::int64_t &affected) const;
 
-            common::Status openCursor(const std::string& sql, const common::Params& params,
-                                      const CursorOptions& opts,
-                                      std::unique_ptr<Cursor>& out) const;
+            common::Status openCursor(const std::string &sql, const common::Params &params,
+                                      const CursorOptions &opts,
+                                      std::unique_ptr<Cursor> &out) const;
 
             common::Status begin();
 
-            common::Status begin(const common::TransactionOptions& options);
+            common::Status begin(const common::TransactionOptions &options);
 
             common::Status commit();
 
             common::Status rollback();
 
-            common::Status savepoint(const std::string& name);
+            common::Status savepoint(const std::string &name);
 
-            common::Status releaseSavepoint(const std::string& name);
+            common::Status releaseSavepoint(const std::string &name);
 
-            common::Status rollbackToSavepoint(const std::string& name);
+            common::Status rollbackToSavepoint(const std::string &name);
 
             [[nodiscard]] common::Status cancel() const;
 
@@ -153,33 +158,40 @@ namespace sqlconduit
 
             [[nodiscard]] bool didWrite() const { return didWrite_.load(); }
 
-            [[nodiscard]] const std::string& dataSourceName() const { return dataSource_; }
+            [[nodiscard]] const std::string &dataSourceName() const { return dataSource_; }
+
+            [[nodiscard]] const std::string &driverType() const { return driverType_; }
 
         private:
             friend class DataSource;
 
-            explicit Session(std::unique_ptr<ConnectionPool::Handle> h, std::string dataSource)
-                : h_(std::move(h)), dataSource_(std::move(dataSource)), audit_()
-            {
+            explicit Session(std::unique_ptr<ConnectionPool::Handle> h, std::string dataSource,
+                             std::string driverType,
+                             std::shared_ptr<detail::RuntimeServices> services)
+                : h_(std::move(h)), dataSource_(std::move(dataSource)), audit_(),
+                  services_(std::move(services)), driverType_(std::move(driverType)) {
             }
 
             explicit Session(std::unique_ptr<ConnectionPool::Handle> h, std::string dataSource,
-                             AuditContext audit)
-                : h_(std::move(h)), dataSource_(std::move(dataSource)), audit_(std::move(audit))
-            {
+                             AuditContext audit,
+                             std::string driverType,
+                             std::shared_ptr<detail::RuntimeServices> services)
+                : h_(std::move(h)), dataSource_(std::move(dataSource)),
+                  audit_(std::move(audit)), services_(std::move(services)),
+                  driverType_(std::move(driverType)) {
             }
 
-            [[nodiscard]] common::Status auditStatement(const std::string& sql,
+            [[nodiscard]] common::Status auditStatement(const std::string &sql,
                                                         common::OperationType type) const;
 
-            [[nodiscard]] common::Status runPreparedQuery(const std::string& sql,
-                                                          const common::Params& params,
-                                                          common::ResultSet& out) const;
+            [[nodiscard]] common::Status runPreparedQuery(const std::string &sql,
+                                                          const common::Params &params,
+                                                          common::ResultSet &out) const;
 
-            [[nodiscard]] common::Status runPreparedExec(const std::string& sql,
-                                                         const common::Params& params,
-                                                         std::int64_t& affected,
-                                                         common::GeneratedKeys* keys) const;
+            [[nodiscard]] common::Status runPreparedExec(const std::string &sql,
+                                                         const common::Params &params,
+                                                         std::int64_t &affected,
+                                                         common::GeneratedKeys *keys) const;
 
             void cleanupOpenTransaction() noexcept;
 
@@ -188,14 +200,15 @@ namespace sqlconduit
             AuditContext audit_;
             bool txOpen_ = false;
             mutable std::atomic<bool> didWrite_{false};
+            std::shared_ptr<detail::RuntimeServices> services_;
+            std::string driverType_;
         };
 
-        class Cursor
-        {
+        class Cursor {
         public:
-            enum class Binding { OwnsHandle, BorrowedInSession };
+            enum class Binding { OwnsHandle = 0, BorrowedInSession = 1 };
 
-            using RowTransform = std::function<void(common::Row&)>;
+            using RowTransform = std::function<void(common::Row &)>;
 
             Cursor(std::unique_ptr<ConnectionPool::Handle> h,
                    std::unique_ptr<ICursor> impl,
@@ -206,36 +219,32 @@ namespace sqlconduit
                 : handle_(std::move(h)), impl_(std::move(impl)),
                   audit_(std::move(audit)), binding_(binding),
                   cursorLease_(std::move(cursorLease)),
-                  rowTransform_(std::move(rowTransform))
-            {
+                  rowTransform_(std::move(rowTransform)) {
             }
 
-            Cursor(const Cursor&) = delete;
+            Cursor(const Cursor &) = delete;
 
-            Cursor& operator=(const Cursor&) = delete;
+            Cursor &operator=(const Cursor &) = delete;
 
-            Cursor(Cursor&&) noexcept = default;
+            Cursor(Cursor &&) noexcept = default;
 
-            Cursor& operator=(Cursor&&) noexcept = default;
+            Cursor &operator=(Cursor &&) noexcept = default;
 
-            common::Status fetch(std::size_t n, common::ResultSet& out)
-            {
+            common::Status fetch(std::size_t n, common::ResultSet &out) {
                 if (!impl_)
                     return common::Status::error(common::ErrorCode::CursorClosed,
                                                  "cursor already closed or moved-from");
                 const auto firstNewRow = out.rowCount();
                 const auto status = impl_->fetch(n, out);
-                if (status.ok() && rowTransform_)
-                {
-                    auto& rows = out.mutableRows();
+                if (status.ok() && rowTransform_) {
+                    auto &rows = out.mutableRows();
                     for (std::size_t i = firstNewRow; i < rows.size(); ++i)
                         rowTransform_(rows[i]);
                 }
                 return status;
             }
 
-            common::Status fetchRow(common::Row& out, bool& ok)
-            {
+            common::Status fetchRow(common::Row &out, bool &ok) {
                 ok = false;
                 if (!impl_)
                     return common::Status::error(common::ErrorCode::CursorClosed,
@@ -245,10 +254,8 @@ namespace sqlconduit
                 return status;
             }
 
-            common::Status close()
-            {
-                if (!impl_)
-                {
+            common::Status close() {
+                if (!impl_) {
                     if (binding_ == Binding::OwnsHandle) handle_.reset();
                     return common::Status::OK();
                 }
@@ -262,8 +269,7 @@ namespace sqlconduit
             [[nodiscard]] bool isOpen() const { return impl_ && impl_->isOpen(); }
             [[nodiscard]] bool hasNext() const { return impl_ && impl_->hasNext(); }
 
-            [[nodiscard]] std::uint64_t rowsFetched() const
-            {
+            [[nodiscard]] std::uint64_t rowsFetched() const {
                 return impl_ ? impl_->rowsFetched() : 0;
             }
 
@@ -278,12 +284,11 @@ namespace sqlconduit
             RowTransform rowTransform_;
         };
 
-        using SessionFn = std::function<common::Status(Session&)>;
+        using SessionFn = std::function<common::Status(Session &)>;
 
         using NamedPoolStats = common::NamedPoolStats;
 
-        struct DataSourceOptions
-        {
+        struct DataSourceOptions {
             config::RetryConfig retry = {};
             config::CircuitBreakerConfig circuit_breaker = {};
             std::shared_ptr<IRateLimiter> rate_limiter = nullptr;
@@ -292,117 +297,100 @@ namespace sqlconduit
             bool attach_heartbeat = true;
         };
 
-        struct GroupOptions
-        {
+        struct GroupOptions {
             std::shared_ptr<IRateLimiter> rate_limiter = nullptr;
             config::CursorConfig cursor = {};
             bool acknowledge_external_fencing = false;
             bool acknowledge_data_loss_and_duplicates = false;
         };
 
-        class DataSource
-        {
+        class DataSource {
         public:
             DataSource(std::weak_ptr<ConnectionPool> pool, std::string name,
                        config::RetryConfig retry = {},
                        config::CircuitBreakerConfig circuitBreaker = {},
                        std::shared_ptr<IRateLimiter> rateLimiter = nullptr,
-                       bool readOnly = false, bool readReplica = false)
-                : pool_(std::move(pool)), name_(std::move(name)), retry_(retry),
-                  circuitBreaker_(circuitBreaker), rateLimiter_(std::move(rateLimiter)),
-                  readOnly_(readOnly), readReplica_(readReplica)
-            {
-            }
+                       bool readOnly = false, bool readReplica = false);
 
             DataSource(std::string name, std::shared_ptr<DataSource> primary,
-                       std::vector<std::shared_ptr<DataSource>> weightedReplicas,
+                       std::vector<std::shared_ptr<DataSource> > weightedReplicas,
                        std::chrono::milliseconds readAfterWrite,
                        bool fallbackToPrimary,
                        std::shared_ptr<IRateLimiter> rateLimiter = nullptr,
                        bool readOnly = false,
-                       std::vector<std::shared_ptr<DataSource>> failoverPrimaries = {},
+                       std::vector<std::shared_ptr<DataSource> > failoverPrimaries = {},
                        bool requireHealthy = false,
-                       std::shared_ptr<WriteBuffer> writeBuffer = nullptr)
-                : name_(std::move(name)), primary_(std::move(primary)),
-                  replicas_(std::move(weightedReplicas)),
-                  readAfterWrite_(readAfterWrite), fallbackToPrimary_(fallbackToPrimary),
-                  rateLimiter_(std::move(rateLimiter)), readOnly_(readOnly),
-                  failoverPrimaries_(std::move(failoverPrimaries)),
-                  requireHealthy_(requireHealthy),
-                  writeBuffer_(std::move(writeBuffer))
-            {
-            }
+                       std::shared_ptr<WriteBuffer> writeBuffer = nullptr);
 
-            common::Status query(const std::string& sql, common::ResultSet& out) const;
+            common::Status query(const std::string &sql, common::ResultSet &out) const;
 
-            common::Status query(const std::string& sql, const common::Params& params,
-                                 common::ResultSet& out) const;
+            common::Status query(const std::string &sql, const common::Params &params,
+                                 common::ResultSet &out) const;
 
-            common::Status queryAll(const std::string& sql,
-                                    std::vector<common::ResultSet>& out) const;
+            common::Status queryAll(const std::string &sql,
+                                    std::vector<common::ResultSet> &out) const;
 
-            common::Status queryAll(const std::string& sql, const common::Params& params,
-                                    std::vector<common::ResultSet>& out) const;
+            common::Status queryAll(const std::string &sql, const common::Params &params,
+                                    std::vector<common::ResultSet> &out) const;
 
-            common::Status call(const std::string& sql, const common::CallParams& params,
-                                common::CallOutput& out) const;
+            common::Status call(const std::string &sql, const common::CallParams &params,
+                                common::CallOutput &out) const;
 
-            common::Status execute(const std::string& sql, std::int64_t& affected) const;
+            common::Status execute(const std::string &sql, std::int64_t &affected) const;
 
-            common::Status execute(const std::string& sql, const common::Params& params,
-                                   std::int64_t& affected) const;
+            common::Status execute(const std::string &sql, const common::Params &params,
+                                   std::int64_t &affected) const;
 
-            common::Status queryEach(const std::string& sql, const common::Params& params,
-                                     const common::RowCallback& callback,
-                                     std::uint64_t& rows) const;
+            common::Status queryEach(const std::string &sql, const common::Params &params,
+                                     const common::RowCallback &callback,
+                                     std::uint64_t &rows) const;
 
-            common::Status executeBatch(const std::string& sql,
-                                        const common::ParamBatch& batch,
-                                        common::BatchResult& out) const;
+            common::Status executeBatch(const std::string &sql,
+                                        const common::ParamBatch &batch,
+                                        common::BatchResult &out) const;
 
-            common::Status execute(const std::string& sql, std::int64_t& affected,
-                                   common::GeneratedKeys& out) const;
+            common::Status execute(const std::string &sql, std::int64_t &affected,
+                                   common::GeneratedKeys &out) const;
 
-            common::Status execute(const std::string& sql, const common::Params& params,
-                                   std::int64_t& affected, common::GeneratedKeys& out) const;
+            common::Status execute(const std::string &sql, const common::Params &params,
+                                   std::int64_t &affected, common::GeneratedKeys &out) const;
 
-            common::Status query(const std::string& sql, const common::StreamParams& params,
-                                 common::ResultSet& out) const;
+            common::Status query(const std::string &sql, const common::StreamParams &params,
+                                 common::ResultSet &out) const;
 
-            common::Status execute(const std::string& sql, const common::StreamParams& params,
-                                   std::int64_t& affected, common::GeneratedKeys& out) const;
+            common::Status execute(const std::string &sql, const common::StreamParams &params,
+                                   std::int64_t &affected, common::GeneratedKeys &out) const;
 
-            common::Status executeBatch(const std::string& sql,
-                                        const common::StreamParamBatch& batch,
-                                        common::BatchResult& out) const;
+            common::Status executeBatch(const std::string &sql,
+                                        const common::StreamParamBatch &batch,
+                                        common::BatchResult &out) const;
 
-            common::Status openCursor(const std::string& sql, const common::Params& params,
-                                      const CursorOptions& opts,
-                                      std::unique_ptr<Cursor>& out) const;
+            common::Status openCursor(const std::string &sql, const common::Params &params,
+                                      const CursorOptions &opts,
+                                      std::unique_ptr<Cursor> &out) const;
 
-            common::Status withSession(const SessionFn& fn) const;
+            common::Status withSession(const SessionFn &fn) const;
 
-            common::Status withSession(const SessionFn& fn, std::chrono::milliseconds borrowTimeout) const;
+            common::Status withSession(const SessionFn &fn, std::chrono::milliseconds borrowTimeout) const;
 
-            common::Status transaction(const SessionFn& fn) const;
+            common::Status transaction(const SessionFn &fn) const;
 
-            common::Status transaction(const SessionFn& fn, std::chrono::milliseconds borrowTimeout) const;
+            common::Status transaction(const SessionFn &fn, std::chrono::milliseconds borrowTimeout) const;
 
-            common::Status transaction(const common::TransactionOptions& options,
-                                       const SessionFn& fn) const;
+            common::Status transaction(const common::TransactionOptions &options,
+                                       const SessionFn &fn) const;
 
-            common::Status transaction(const common::TransactionOptions& options,
-                                       const SessionFn& fn,
+            common::Status transaction(const common::TransactionOptions &options,
+                                       const SessionFn &fn,
                                        std::chrono::milliseconds borrowTimeout) const;
 
-            [[nodiscard]] const std::string& name() const { return name_; }
+            [[nodiscard]] const std::string &name() const { return name_; }
 
-            [[nodiscard]] const std::string& driverType() const { return driverType_; }
+            [[nodiscard]] const std::string &driverType() const { return driverType_; }
 
-            bool poolStats(ConnectionPool::Stats& out) const;
+            bool poolStats(ConnectionPool::Stats &out) const;
 
-            void applyCursorConfig(const config::CursorConfig& cfg)
-            {
+            void applyCursorConfig(const config::CursorConfig &cfg) {
                 cursorEnabled_ = cfg.enabled;
                 defaultBatchSize_ = cfg.default_batch_size > 0 ? cfg.default_batch_size : 256;
                 cursorScrollable_ = cfg.allow_scrollable;
@@ -413,9 +401,27 @@ namespace sqlconduit
             friend class DatabaseManager;
             friend class async::detail::AsyncEngine;
 
+            DataSource(std::weak_ptr<ConnectionPool> pool, std::string name,
+                       config::RetryConfig retry,
+                       config::CircuitBreakerConfig circuitBreaker,
+                       std::shared_ptr<IRateLimiter> rateLimiter,
+                       bool readOnly, bool readReplica,
+                       std::shared_ptr<detail::RuntimeServices> services);
+
+            DataSource(std::string name, std::shared_ptr<DataSource> primary,
+                       std::vector<std::shared_ptr<DataSource> > weightedReplicas,
+                       std::chrono::milliseconds readAfterWrite,
+                       bool fallbackToPrimary,
+                       std::shared_ptr<IRateLimiter> rateLimiter,
+                       bool readOnly,
+                       std::vector<std::shared_ptr<DataSource> > failoverPrimaries,
+                       bool requireHealthy,
+                       std::shared_ptr<WriteBuffer> writeBuffer,
+                       std::shared_ptr<detail::RuntimeServices> services);
+
             common::Status beforeAttempt() const;
 
-            void afterAttempt(const common::Status& status) const;
+            void afterAttempt(const common::Status &status) const;
 
             [[nodiscard]] std::chrono::milliseconds retryDelay(int attempt) const;
 
@@ -423,87 +429,87 @@ namespace sqlconduit
 
             void markWrite() const;
 
-            common::Status preGate(const std::string& sql, common::OperationType type) const;
+            common::Status preGate(const std::string &sql, common::OperationType type) const;
 
             common::Status gateSession() const;
 
-            common::Status queryUngated(const std::string& sql, common::ResultSet& out) const;
+            common::Status queryUngated(const std::string &sql, common::ResultSet &out) const;
 
-            common::Status queryUngated(const std::string& sql, const common::Params& params,
-                                        common::ResultSet& out) const;
+            common::Status queryUngated(const std::string &sql, const common::Params &params,
+                                        common::ResultSet &out) const;
 
-            common::Status executeUngated(const std::string& sql, std::int64_t& affected) const;
+            common::Status executeUngated(const std::string &sql, std::int64_t &affected) const;
 
-            common::Status executeUngated(const std::string& sql, const common::Params& params,
-                                          std::int64_t& affected) const;
+            common::Status executeUngated(const std::string &sql, const common::Params &params,
+                                          std::int64_t &affected) const;
 
-            common::Status queryEachUngated(const std::string& sql, const common::Params& params,
-                                            const common::RowCallback& callback,
-                                            std::uint64_t& rows) const;
+            common::Status queryEachUngated(const std::string &sql, const common::Params &params,
+                                            const common::RowCallback &callback,
+                                            std::uint64_t &rows) const;
 
-            common::Status executeBatchUngated(const std::string& sql,
-                                               const common::ParamBatch& batch,
-                                               common::BatchResult& out) const;
+            common::Status executeBatchUngated(const std::string &sql,
+                                               const common::ParamBatch &batch,
+                                               common::BatchResult &out) const;
 
-            common::Status executeUngated(const std::string& sql, std::int64_t& affected,
-                                          common::GeneratedKeys& out) const;
+            common::Status executeUngated(const std::string &sql, std::int64_t &affected,
+                                          common::GeneratedKeys &out) const;
 
-            common::Status executeUngated(const std::string& sql, const common::Params& params,
-                                          std::int64_t& affected,
-                                          common::GeneratedKeys& out) const;
+            common::Status executeUngated(const std::string &sql, const common::Params &params,
+                                          std::int64_t &affected,
+                                          common::GeneratedKeys &out) const;
 
-            common::Status queryUngated(const std::string& sql, const common::StreamParams& params,
-                                        common::ResultSet& out) const;
+            common::Status queryUngated(const std::string &sql, const common::StreamParams &params,
+                                        common::ResultSet &out) const;
 
-            common::Status executeUngated(const std::string& sql, const common::StreamParams& params,
-                                          std::int64_t& affected,
-                                          common::GeneratedKeys& out) const;
+            common::Status executeUngated(const std::string &sql, const common::StreamParams &params,
+                                          std::int64_t &affected,
+                                          common::GeneratedKeys &out) const;
 
-            common::Status executeBatchUngated(const std::string& sql,
-                                               const common::StreamParamBatch& batch,
-                                               common::BatchResult& out) const;
+            common::Status executeBatchUngated(const std::string &sql,
+                                               const common::StreamParamBatch &batch,
+                                               common::BatchResult &out) const;
 
-            common::Status openCursorUngated(const std::string& sql, const common::Params& params,
-                                             const CursorOptions& opts,
-                                             std::unique_ptr<Cursor>& out) const;
+            common::Status openCursorUngated(const std::string &sql, const common::Params &params,
+                                             const CursorOptions &opts,
+                                             std::unique_ptr<Cursor> &out) const;
 
-            bool cursorBudgetAcquire(std::shared_ptr<void>& lease) const;
+            bool cursorBudgetAcquire(std::shared_ptr<void> &lease) const;
 
             common::Status dispatchWrite(
-                const std::function<common::Status(const std::shared_ptr<DataSource>&)>& attempt,
-                const std::function<common::Status()>& buffered) const;
+                const std::function<common::Status(const std::shared_ptr<DataSource> &)> &attempt,
+                const std::function<common::Status()> &buffered) const;
 
             [[nodiscard]] bool isCircuitOpen() const;
 
-            [[nodiscard]] std::vector<std::shared_ptr<DataSource>> writeTargets() const;
+            [[nodiscard]] std::vector<std::shared_ptr<DataSource> > writeTargets() const;
 
-            [[nodiscard]] static bool safeToFailoverWrite(const common::Status& status);
+            [[nodiscard]] static bool safeToFailoverWrite(const common::Status &status);
 
-            common::Status borrowSession(std::unique_ptr<ConnectionPool::Handle>& out,
+            common::Status borrowSession(std::unique_ptr<ConnectionPool::Handle> &out,
                                          std::chrono::milliseconds timeout) const;
 
             std::unique_ptr<Session> makeSession(
-                std::unique_ptr<ConnectionPool::Handle> h) const
-            {
-                return std::unique_ptr<Session>(new Session(std::move(h), name_));
+                std::unique_ptr<ConnectionPool::Handle> h) const {
+                return std::unique_ptr<Session>(
+                    new Session(std::move(h), name_, driverType_, services_));
             }
 
             [[nodiscard]] std::shared_ptr<ConnectionPool> pool() const { return pool_.lock(); }
 
             [[nodiscard]] bool cacheEligible() const;
 
-            bool cacheLookup(const std::string& sql, const common::Params& params,
-                             common::ResultSet& out, std::string& key) const;
+            bool cacheLookup(const std::string &sql, const common::Params &params,
+                             common::ResultSet &out, std::string &key) const;
 
-            void cacheStore(const std::string& key, const common::ResultSet& rows) const;
+            void cacheStore(const std::string &key, const common::ResultSet &rows) const;
 
-            common::Status withSessionInternal(const SessionFn& fn,
+            common::Status withSessionInternal(const SessionFn &fn,
                                                std::chrono::milliseconds borrowTimeout,
-                                               bool* wroteOut,
+                                               bool *wroteOut,
                                                bool enforceReadOnly) const;
 
-            common::Status transactionInternal(const common::TransactionOptions& options,
-                                               const SessionFn& fn,
+            common::Status transactionInternal(const common::TransactionOptions &options,
+                                               const SessionFn &fn,
                                                std::chrono::milliseconds borrowTimeout,
                                                bool enforceReadOnly) const;
 
@@ -515,7 +521,7 @@ namespace sqlconduit
             mutable std::atomic<bool> halfOpenInFlight_{false};
             mutable std::atomic<std::chrono::steady_clock::time_point> circuitOpenUntil_{};
             std::shared_ptr<DataSource> primary_;
-            std::vector<std::shared_ptr<DataSource>> replicas_;
+            std::vector<std::shared_ptr<DataSource> > replicas_;
             std::chrono::milliseconds readAfterWrite_{0};
             bool fallbackToPrimary_ = true;
             mutable std::atomic<std::int64_t> lastWriteNs_{0};
@@ -523,63 +529,59 @@ namespace sqlconduit
             bool inheritsDefaultRateLimiter_ = false;
             bool readOnly_ = false;
             std::atomic<bool> readReplica_{false};
-            std::vector<std::shared_ptr<DataSource>> failoverPrimaries_;
+            std::vector<std::shared_ptr<DataSource> > failoverPrimaries_;
             bool requireHealthy_ = false;
             std::string shadowName_;
             std::shared_ptr<DataSource> shadow_;
             std::string driverType_;
             std::shared_ptr<WriteBuffer> writeBuffer_;
 
-            struct CursorBudgetState
-            {
+            struct CursorBudgetState {
                 std::atomic<int> limit{0};
                 std::atomic<int> open{0};
             };
 
             std::shared_ptr<CursorBudgetState> cursorBudget_ =
-                std::make_shared<CursorBudgetState>();
+                    std::make_shared<CursorBudgetState>();
             bool cursorEnabled_ = true;
             int defaultBatchSize_ = 256;
             bool cursorScrollable_ = false;
+            std::shared_ptr<detail::RuntimeServices> services_;
         };
 
         int currentTransactionDepth() noexcept;
 
-        class StatsReporter;
-        struct PoolCollectorLease;
-
-        class DatabaseManager
-        {
+        class DatabaseManager {
         public:
             DatabaseManager();
 
             ~DatabaseManager();
 
-            DatabaseManager(const DatabaseManager&) = delete;
+            DatabaseManager(const DatabaseManager &) = delete;
 
-            DatabaseManager& operator=(const DatabaseManager&) = delete;
+            DatabaseManager &operator=(const DatabaseManager &) = delete;
 
-            common::Status init(const config::GlobalConfig& cfg,
+            common::Status init(const config::GlobalConfig &cfg,
                                 std::chrono::milliseconds replacementGrace =
-                                    std::chrono::milliseconds(0));
+                                        std::chrono::milliseconds(0));
 
-            std::shared_ptr<DataSource> getDataSource(const std::string& name);
+            std::shared_ptr<DataSource> getDataSource(const std::string &name);
 
             std::shared_ptr<DataSource> getDefault();
 
-            common::Status addDataSource(const config::DataSourceConfig& cfg,
-                                         const DataSourceOptions& opts = DataSourceOptions{});
+            common::Status addDataSource(const config::DataSourceConfig &cfg,
+                                         const DataSourceOptions &opts = DataSourceOptions{});
 
-            common::Status removeDataSource(const std::string& name,
+            common::Status removeDataSource(const std::string &name,
                                             std::chrono::milliseconds grace =
-                                                std::chrono::milliseconds(5000));
+                                                    std::chrono::milliseconds(5000));
 
-            common::Status addGroup(const config::DataSourceGroupConfig& cfg,
-                                    const GroupOptions& opts = GroupOptions{});
+            common::Status addGroup(const config::DataSourceGroupConfig &cfg,
+                                    const GroupOptions &opts = GroupOptions{});
 
-            common::Status removeGroup(const std::string& name,
+            common::Status removeGroup(const std::string &name,
                                        std::chrono::milliseconds grace =
-                                           std::chrono::milliseconds(5000));
+                                               std::chrono::milliseconds(5000));
 
             void shutdown(std::chrono::milliseconds grace = std::chrono::milliseconds(5000));
 
@@ -590,46 +592,51 @@ namespace sqlconduit
             std::vector<NamedPoolStats> allPoolStats() const;
 
         private:
+            friend class ::sqlconduit::Client;
+
+            explicit DatabaseManager(std::shared_ptr<detail::RuntimeServices> services);
+
             [[nodiscard]] common::Status validateGroupRefs(
-                const config::DataSourceGroupConfig& cfg,
-                const std::unordered_map<std::string, std::shared_ptr<ConnectionPool>>& candidates,
-                const std::unordered_set<std::string>& replicaNames) const;
+                const config::DataSourceGroupConfig &cfg,
+                const std::unordered_map<std::string, std::shared_ptr<ConnectionPool> > &candidates,
+                const std::unordered_set<std::string> &replicaNames) const;
 
             [[nodiscard]] common::Status checkLeafNotInUse_Unused(
-                const std::string& leafName) const;
+                const std::string &leafName) const;
 
             [[nodiscard]] common::Status buildSingleDataSource(
-                const config::DataSourceConfig& dsc,
-                const config::PoolConfig& poolCfg,
-                const config::RetryConfig& retry,
-                const config::CircuitBreakerConfig& circuit,
-                const config::CursorConfig& cursor,
+                const config::DataSourceConfig &dsc,
+                const config::PoolConfig &poolCfg,
+                const config::RetryConfig &retry,
+                const config::CircuitBreakerConfig &circuit,
+                const config::CursorConfig &cursor,
                 std::shared_ptr<IRateLimiter> rateLimiter,
-                const std::unordered_set<std::string>& replicaNames,
+                const std::unordered_set<std::string> &replicaNames,
                 bool attachHeartbeat,
-                std::shared_ptr<ConnectionPool>& outPool,
-                std::shared_ptr<DataSource>& outSource);
+                std::shared_ptr<ConnectionPool> &outPool,
+                std::shared_ptr<DataSource> &outSource);
 
             [[nodiscard]] common::Status buildSingleDataSourceGroup(
-                const config::DataSourceGroupConfig& group,
-                const config::PoolConfig& poolCfg,
-                const GroupOptions& opts,
-                const std::unordered_map<std::string, std::shared_ptr<DataSource>>& sources,
-                const std::unordered_set<std::string>& replicaNames,
-                std::vector<std::shared_ptr<WriteBuffer>>& outBuffers,
-                std::shared_ptr<DataSource>& outSource);
+                const config::DataSourceGroupConfig &group,
+                const config::PoolConfig &poolCfg,
+                const GroupOptions &opts,
+                const std::unordered_map<std::string, std::shared_ptr<DataSource> > &sources,
+                const std::unordered_set<std::string> &replicaNames,
+                std::vector<std::shared_ptr<WriteBuffer> > &outBuffers,
+                std::shared_ptr<DataSource> &outSource);
 
             [[nodiscard]] common::Status resolveShadows();
 
             mutable std::mutex mtx_;
-            std::unordered_map<std::string, std::shared_ptr<ConnectionPool>> pools_;
-            std::unordered_map<std::string, std::shared_ptr<DataSource>> datasources_;
+            std::unordered_map<std::string, std::shared_ptr<ConnectionPool> > pools_;
+            std::unordered_map<std::string, std::shared_ptr<DataSource> > datasources_;
             std::unique_ptr<HeartbeatManager> heartbeat_;
-            std::vector<std::shared_ptr<WriteBuffer>> writeBuffers_;
+            std::vector<std::shared_ptr<WriteBuffer> > writeBuffers_;
             std::string defaultName_;
             std::shared_ptr<IRateLimiter> defaultRateLimiter_;
-            std::unique_ptr<StatsReporter> statsReporter_;
-            std::shared_ptr<PoolCollectorLease> poolCollectorLease_;
+            std::unique_ptr<detail::StatsReporter> statsReporter_;
+            std::shared_ptr<detail::PoolCollectorLease> poolCollectorLease_;
+            std::shared_ptr<detail::RuntimeServices> services_;
         };
     }
 }

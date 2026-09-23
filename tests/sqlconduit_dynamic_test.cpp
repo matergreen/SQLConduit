@@ -19,33 +19,28 @@
 
 using namespace sqlconduit;
 using common::Status;
+static Client g_client;
 
 static int g_failed = 0;
 static int g_passed = 0;
 
-static void check(bool cond, const std::string& name)
-{
-    if (cond)
-    {
+static void check(bool cond, const std::string &name) {
+    if (cond) {
         ++g_passed;
         std::cout << "  [PASS] " << name << "\n";
-    }
-    else
-    {
+    } else {
         ++g_failed;
         std::cout << "  [FAIL] " << name << "\n";
     }
 }
 
-class MockConnection : public core::IDatabaseConnection
-{
+class MockConnection : public core::IDatabaseConnection {
 public:
     static std::atomic<int> alive;
     static std::atomic<bool> connectFails;
 
-    common::Status connect(const config::DataSourceConfig& cfg) override
-    {
-        (void)cfg;
+    common::Status connect(const config::DataSourceConfig &cfg) override {
+        (void) cfg;
         if (connectFails.load())
             return Status::error(common::ErrorCode::ConnectionFailed, "mock connect failed");
         open_ = true;
@@ -53,14 +48,12 @@ public:
         return Status::OK();
     }
 
-    common::Status ping() override
-    {
+    common::Status ping() override {
         if (!open_) return Status::error(common::ErrorCode::NotConnected, "closed");
         return Status::OK();
     }
 
-    common::Status query(const std::string& sql, common::ResultSet& out) override
-    {
+    common::Status query(const std::string &sql, common::ResultSet &out) override {
         if (!open_) return Status::error(common::ErrorCode::NotConnected, "closed");
         common::Row r;
         r.set("echo", std::string(sql));
@@ -68,33 +61,28 @@ public:
         return Status::OK();
     }
 
-    common::Status execute(const std::string&, std::int64_t& affected) override
-    {
+    common::Status execute(const std::string &, std::int64_t &affected) override {
         if (!open_) return Status::error(common::ErrorCode::NotConnected, "closed");
         affected = 1;
         return Status::OK();
     }
 
-    common::Status begin() override
-    {
+    common::Status begin() override {
         if (!open_) return Status::error(common::ErrorCode::NotConnected, "closed");
         return Status::OK();
     }
 
-    common::Status commit() override
-    {
+    common::Status commit() override {
         if (!open_) return Status::error(common::ErrorCode::NotConnected, "closed");
         return Status::OK();
     }
 
-    common::Status rollback() override
-    {
+    common::Status rollback() override {
         if (!open_) return Status::error(common::ErrorCode::NotConnected, "closed");
         return Status::OK();
     }
 
-    void close() override
-    {
+    void close() override {
         open_ = false;
         --alive;
     }
@@ -108,25 +96,21 @@ private:
 std::atomic<int> MockConnection::alive{0};
 std::atomic<bool> MockConnection::connectFails{false};
 
-class MockDriver : public driver::IDriver
-{
+class MockDriver : public driver::IDriver {
 public:
-    const char* name() const override { return "mock"; }
+    const char *name() const override { return "mock"; }
 
-    std::unique_ptr<core::IDatabaseConnection> createConnection() override
-    {
+    std::unique_ptr<core::IDatabaseConnection> createConnection() override {
         return std::make_unique<MockConnection>();
     }
 };
 
-static void resetMock()
-{
+static void resetMock() {
     MockConnection::alive = 0;
     MockConnection::connectFails = false;
 }
 
-static config::DataSourceConfig mockLeafCfg(const std::string& name)
-{
+static config::DataSourceConfig mockLeafCfg(const std::string &name) {
     config::DataSourceConfig c;
     c.name = name;
     c.type = "mock";
@@ -135,8 +119,7 @@ static config::DataSourceConfig mockLeafCfg(const std::string& name)
     return c;
 }
 
-static config::PoolConfig smallPool()
-{
+static config::PoolConfig smallPool() {
     config::PoolConfig p;
     p.min = 0;
     p.max = 2;
@@ -144,8 +127,7 @@ static config::PoolConfig smallPool()
     return p;
 }
 
-static config::GlobalConfig makeBaseGlobal(const std::string& defaultName = "anchor")
-{
+static config::GlobalConfig makeBaseGlobal(const std::string &defaultName = "anchor") {
     config::GlobalConfig g;
     g.default_datasource = defaultName;
     g.pool = smallPool();
@@ -153,8 +135,7 @@ static config::GlobalConfig makeBaseGlobal(const std::string& defaultName = "anc
     return g;
 }
 
-int main()
-{
+int main() {
     driver::DriverRegistry::instance().registerDriver(
         "mock", [] { return std::make_unique<MockDriver>(); });
 
@@ -175,8 +156,7 @@ int main()
 
         const auto ds = mgr.getDataSource("leaf1");
         check(ds != nullptr, "getDataSource(leaf1) 非空");
-        if (ds)
-        {
+        if (ds) {
             common::ResultSet rs;
             check(ds->query("select 1", rs).ok(), "leaf1 可正常执行 query");
             check(rs.rowCount() == 1, "返回 1 行");
@@ -200,8 +180,7 @@ int main()
 
         const auto ds = mgr.getDataSource("dup");
         check(ds != nullptr, "原 dup 仍可见");
-        if (ds)
-        {
+        if (ds) {
             common::ResultSet rs;
             check(ds->query("SELECT 1", rs).ok(), "原 dup 仍可查询（未被新请求破坏）");
         }
@@ -450,26 +429,20 @@ int main()
         std::atomic<int> ok{0};
         std::atomic<int> fail{0};
         workers.reserve(kThreads);
-        for (int t = 0; t < kThreads; ++t)
-        {
-            workers.emplace_back([&, t]
-            {
-                for (int i = 0; i < kPerThread; ++i)
-                {
+        for (int t = 0; t < kThreads; ++t) {
+            workers.emplace_back([&, t] {
+                for (int i = 0; i < kPerThread; ++i) {
                     const std::string name = "conc_" + std::to_string(t) + "_" + std::to_string(i);
                     auto cfg = mockLeafCfg(name);
-                    if (mgr.addDataSource(cfg).ok())
-                    {
+                    if (mgr.addDataSource(cfg).ok()) {
                         ++ok;
-                    }
-                    else
-                    {
+                    } else {
                         ++fail;
                     }
                 }
             });
         }
-        for (auto& w : workers) w.join();
+        for (auto &w: workers) w.join();
 
         const int expected = kThreads * kPerThread;
         check(ok.load() == expected,
@@ -481,19 +454,18 @@ int main()
 
         common::ResultSet rs;
         check(mgr.getDataSource("conc_0_0") != nullptr, "conc_0_0 可见");
-        if (auto ds = mgr.getDataSource("conc_0_0"))
-        {
+        if (auto ds = mgr.getDataSource("conc_0_0")) {
             check(ds->query("SELECT 42", rs).ok(), "conc_0_0 可查询");
         }
 
         mgr.shutdown(std::chrono::milliseconds(0));
     }
 
-    std::cout << "== M4.15 SQLCONDUIT facade 入口与 DatabaseManager 行为一致 ==\n";
+    std::cout << "== M4.15 Client 入口与 DatabaseManager 行为一致 ==\n";
     {
         resetMock();
         const std::string cfgPath =
-            (std::filesystem::temp_directory_path() / "sqlconduit_m4_facade.json").string();
+                (std::filesystem::temp_directory_path() / "sqlconduit_m4_facade.json").string();
         {
             std::ofstream f(cfgPath);
             f << R"({
@@ -505,38 +477,38 @@ int main()
                 "pool": {"min": 0, "max": 2, "borrow_timeout_ms": 100}
             })";
         }
-        check(SQLConduit::init(cfgPath).ok(), "SQLConduit::init 成功");
+        check(g_client.init(cfgPath).ok(), "g_client.init 成功");
 
-        const auto st = SQLConduit::addDataSource(mockLeafCfg("via_facade"));
-        check(st.ok(), "SQLConduit::addDataSource 成功");
-        check(SQLConduit::dataSource("via_facade") != nullptr,
-              "SQLConduit::dataSource(via_facade) 可见");
+        const auto st = g_client.addDataSource(mockLeafCfg("via_facade"));
+        check(st.ok(), "g_client.addDataSource 成功");
+        check(g_client.dataSource("via_facade") != nullptr,
+              "g_client.dataSource(via_facade) 可见");
 
-        const auto routed = SQLConduit::dataSource("via_facade");
+        const auto routed = g_client.dataSource("via_facade");
         common::SqlContext routeContext;
         routeContext.targetDataSource = "via_facade";
         {
             common::ContextScope scope(routeContext);
-            check(SQLConduit::dataSource() == routed && SQLConduit::dataSource("anchor") == routed,
-                  "SqlContext.targetDataSource 覆盖默认与显式 facade 路由");
+            check(g_client.dataSource() == routed && g_client.dataSource("anchor") == routed,
+                  "SqlContext.targetDataSource 覆盖默认与显式 Client 路由");
         }
-        check(SQLConduit::dataSource() != routed,
+        check(g_client.dataSource() != routed,
               "ContextScope 退出后恢复默认数据源");
 
-        const auto removeDefault = SQLConduit::removeDataSource("anchor");
+        const auto removeDefault = g_client.removeDataSource("anchor");
         check(!removeDefault.ok() && removeDefault.code == common::ErrorCode::ConfigError,
               "运行期拒绝删除当前默认数据源");
 
-        const auto dup = SQLConduit::addDataSource(mockLeafCfg("via_facade"));
+        const auto dup = g_client.addDataSource(mockLeafCfg("via_facade"));
         check(!dup.ok() && dup.code == common::ErrorCode::ConfigError,
-              "SQLConduit::addDataSource 重名拒绝");
+              "g_client.addDataSource 重名拒绝");
 
-        check(SQLConduit::removeDataSource("via_facade").ok(),
-              "SQLConduit::removeDataSource 成功");
-        check(SQLConduit::dataSource("via_facade") == nullptr,
+        check(g_client.removeDataSource("via_facade").ok(),
+              "g_client.removeDataSource 成功");
+        check(g_client.dataSource("via_facade") == nullptr,
               "删除后不可见");
 
-        SQLConduit::shutdown(std::chrono::milliseconds(0));
+        g_client.shutdown(std::chrono::milliseconds(0));
     }
 
     std::cout << "== M4.16 removeDataSource 在途连接宽限期 ==\n";
@@ -546,11 +518,9 @@ int main()
         check(mgr.init(makeBaseGlobal("anchor")).ok(), "init 成功");
         check(mgr.addDataSource(mockLeafCfg("g1")).ok(), "addDataSource(g1)");
 
-        std::thread worker([&]
-        {
-            (void)mgr.getDataSource("g1")->withSession(
-                [&](core::Session&)
-                {
+        std::thread worker([&] {
+            (void) mgr.getDataSource("g1")->withSession(
+                [&](core::Session &) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(200));
                     return Status::OK();
                 });

@@ -25,22 +25,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04,     pkg: linux-x86_64-gcc,   drivers: 'ON',  tests: true, coro: 'OFF',
+          - { os: ubuntu-24.04,     pkg: linux-x86_64-gcc,   drivers: 'ON',  tests: true,
               cc: gcc,   cxx: g++ }
-          - { os: ubuntu-24.04,     pkg: linux-x86_64-clang, drivers: 'ON',  tests: true, coro: 'OFF',
+          - { os: ubuntu-24.04,     pkg: linux-x86_64-clang, drivers: 'ON',  tests: true,
               cc: clang, cxx: clang++ }
 
-          - { os: ubuntu-24.04-arm, pkg: linux-aarch64-gcc,  drivers: 'ON',  tests: true, coro: 'OFF',
+          - { os: ubuntu-24.04-arm, pkg: linux-aarch64-gcc,  drivers: 'ON',  tests: true,
               cc: gcc,   cxx: g++ }
 
-          - { os: macos-14,         pkg: macos-arm64-clang,  drivers: 'ON',  tests: true, coro: 'OFF',
+          - { os: macos-14,         pkg: macos-arm64-clang,  drivers: 'ON',  tests: true,
               cc: clang, cxx: clang++ }
 
-          - { os: windows-latest,   pkg: windows-x86_64-msvc, drivers: 'OFF', tests: true, coro: 'OFF' }
-
-          - { os: ubuntu-24.04,     pkg: linux-x86_64-gcc-coro,   drivers: 'OFF', tests: true, coro: 'ON',
-              cc: gcc,   cxx: g++ }
-          - { os: windows-latest,   pkg: windows-x86_64-msvc-coro, drivers: 'OFF', tests: true, coro: 'ON' }
+          - { os: windows-latest,   pkg: windows-x86_64-msvc, drivers: 'OFF', tests: true }
 
     steps:
       - uses: actions/checkout@v4
@@ -78,7 +74,6 @@ jobs:
             -DSQLCONDUIT_ENABLE_POSTGRES=${{ matrix.drivers }} \
             -DSQLCONDUIT_ENABLE_ODBC=${{ matrix.drivers }} \
             -DSQLCONDUIT_ENABLE_ORACLE=OFF \
-            -DSQLCONDUIT_ENABLE_ASYNC_CORO=${{ matrix.coro }} \
             -DSQLCONDUIT_BUILD_TESTS=ON
 
       - name: Configure (Windows)
@@ -89,7 +84,6 @@ jobs:
             -DSQLCONDUIT_ENABLE_POSTGRES=${{ matrix.drivers }} `
             -DSQLCONDUIT_ENABLE_ODBC=${{ matrix.drivers }} `
             -DSQLCONDUIT_ENABLE_ORACLE=OFF `
-            -DSQLCONDUIT_ENABLE_ASYNC_CORO=${{ matrix.coro }} `
             -DSQLCONDUIT_BUILD_TESTS=ON
 
       - name: Build
@@ -99,11 +93,7 @@ jobs:
         if: matrix.tests
         shell: bash
         run: |
-          if [ "${{ matrix.coro }}" = "ON" ]; then
-            ctest --test-dir build -C Release -R sqlconduit_coro_test --output-on-failure
-          else
-            ctest --test-dir build -C Release --output-on-failure
-          fi
+          ctest --test-dir build -C Release --output-on-failure
 
       - name: Consumer smoke test (installed package)
         if: runner.os != 'Windows' && matrix.drivers == 'ON'
@@ -132,6 +122,19 @@ jobs:
               $(pkg-config --libs --static sqlconduit) -o smoke-pkgconfig
             ./smoke-pkgconfig
           fi
+
+      - name: Consumer smoke test (installed package, MSVC)
+        if: runner.os == 'Windows' && matrix.tests
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $PWD 'smoke-prefix'
+          cmake --install build --config Release --prefix $prefix
+          cmake -S tests/consumer -B smoke-find-package -A x64 `
+            "-DCMAKE_PREFIX_PATH=$prefix" `
+            -DSQLCONDUIT_CONSUMER_REQUIRE_DRIVERS=OFF
+          cmake --build smoke-find-package --config Release
+          & .\smoke-find-package\Release\sqlconduit_consumer_smoke.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install to dist
         if: github.ref != 'refs/heads/dev'

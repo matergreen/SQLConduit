@@ -7,20 +7,18 @@
 #include <string>
 #include <vector>
 
-namespace sqlconduit::common
-{
-    enum class OracleTypeClass
-    {
-        Unknown,
-        Text,
-        Number,
-        Binary,
-        Date,
-        Timestamp,
-        TimestampTz,
-        Interval,
-        Lob,
-        Rowid
+namespace sqlconduit::common {
+    enum class OracleTypeClass {
+        Unknown = 0,
+        Text = 1,
+        Number = 2,
+        Binary = 3,
+        Date = 4,
+        Timestamp = 5,
+        TimestampTz = 6,
+        Interval = 7,
+        Lob = 8,
+        Rowid = 9
     };
 
     static constexpr std::uint16_t kSqltChr = 1;
@@ -61,39 +59,36 @@ namespace sqlconduit::common
 
     OracleTypeClass oracleTypeClass(std::uint16_t sqlt);
 
-    const char* oracleTypeName(std::uint16_t sqlt);
+    const char *oracleTypeName(std::uint16_t sqlt);
 
     bool oracleIsLob(std::uint16_t sqlt);
 
     bool oracleIsRowid(std::uint16_t sqlt);
 
-    Value oracleValueFromText(std::uint16_t sqlt, const std::string& text,
+    Value oracleValueFromText(std::uint16_t sqlt, const std::string &text,
                               std::int32_t precision = 0, std::int32_t scale = 0);
 
-    struct OracleBindValue
-    {
+    struct OracleBindValue {
         std::optional<std::string> text;
         std::optional<Blob> raw;
         bool unsupported = false;
 
-        [[nodiscard]] bool isNull() const
-        {
+        [[nodiscard]] bool isNull() const {
             return !unsupported && !text.has_value() && !raw.has_value();
         }
     };
 
-    OracleBindValue oracleBindValue(const Value& v);
+    OracleBindValue oracleBindValue(const Value &v);
 
     std::string oracleFormatDouble(double v);
 
-    bool oracleParseTimestamp(const std::string& text, Timestamp& out);
+    bool oracleParseTimestamp(const std::string &text, Timestamp &out);
 
-    std::string oracleFormatTimestamp(const Timestamp& t);
+    std::string oracleFormatTimestamp(const Timestamp &t);
 
     std::vector<std::string> oracleSessionSetupStatements();
 
-    struct OracleConnectOptions
-    {
+    struct OracleConnectOptions {
         std::string host = "localhost";
         int port = 1521;
         std::string serviceName;
@@ -105,19 +100,18 @@ namespace sqlconduit::common
         std::string serverCertDn;
     };
 
-    Status oracleBuildConnectDescriptor(const OracleConnectOptions& options, std::string& out);
+    Status oracleBuildConnectDescriptor(const OracleConnectOptions &options, std::string &out);
 
-    struct OracleReturning
-    {
+    struct OracleReturning {
         bool present = false;
         std::vector<std::string> columns;
         std::size_t firstBind = 0;
         std::size_t bindCount = 0;
     };
 
-    bool oracleParseReturningInto(const std::string& sql, OracleReturning& out);
+    bool oracleParseReturningInto(const std::string &sql, OracleReturning &out);
 
-    std::string oracleMakeReturningSuffix(const std::vector<std::string>& columns,
+    std::string oracleMakeReturningSuffix(const std::vector<std::string> &columns,
                                           std::size_t firstBind);
 
     std::string oracleSqlState(int oraCode);

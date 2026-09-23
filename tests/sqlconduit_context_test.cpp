@@ -12,32 +12,25 @@ using namespace sqlconduit::common;
 static int g_failed = 0;
 static int g_passed = 0;
 
-static void check(bool cond, const std::string& name)
-{
-    if (cond)
-    {
+static void check(bool cond, const std::string &name) {
+    if (cond) {
         ++g_passed;
         std::cout << "  [PASS] " << name << "\n";
-    }
-    else
-    {
+    } else {
         ++g_failed;
         std::cout << "  [FAIL] " << name << "\n";
     }
 }
 
-static bool isLowerHex16(const std::string& s)
-{
+static bool isLowerHex16(const std::string &s) {
     if (s.size() != 16) return false;
-    for (char c : s)
-    {
+    for (char c: s) {
         if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
     }
     return true;
 }
 
-int main()
-{
+int main() {
     std::cout << "== M1 上下文：SqlContext::empty() 状态切换 ==\n";
     {
         SqlContext c;
@@ -88,16 +81,13 @@ int main()
     std::cout << "== M1 上下文：异常 RAII 仍弹出栈 ==\n";
     {
         check(ContextScope::depth() == 0, "进入异常测试前栈空");
-        try
-        {
+        try {
             SqlContext a;
             a.traceId = "throw-trace";
             ContextScope s(a);
             check(ContextScope::depth() == 1, "异常路径中 push 也成功");
             throw std::runtime_error("boom");
-        }
-        catch (const std::runtime_error&)
-        {
+        } catch (const std::runtime_error &) {
         }
         check(ContextScope::depth() == 0, "RAII 保证异常路径栈深归零");
         check(ContextScope::current().empty(), "异常路径不污染 current()");
@@ -112,8 +102,7 @@ int main()
 
         std::atomic<bool> workerOk{false};
         std::string workerObserved;
-        std::thread t([&]
-        {
+        std::thread t([&] {
             workerObserved = ContextScope::current().traceId;
             workerOk.store(ContextScope::current().empty());
             SqlContext c;
@@ -221,12 +210,10 @@ int main()
 
         constexpr std::size_t kThreads = 8;
         constexpr std::size_t kPerThread = 128;
-        std::vector<std::vector<std::string>> generated(kThreads);
+        std::vector<std::vector<std::string> > generated(kThreads);
         std::vector<std::thread> workers;
-        for (std::size_t t = 0; t < kThreads; ++t)
-        {
-            workers.emplace_back([&, t]
-            {
+        for (std::size_t t = 0; t < kThreads; ++t) {
+            workers.emplace_back([&, t] {
                 SqlContext workerCtx;
                 workerCtx.traceId = "0af7651916cd43dd8448eb211c80319c";
                 ContextScope workerScope(workerCtx);
@@ -235,9 +222,9 @@ int main()
                     generated[t].push_back(nextSpanId());
             });
         }
-        for (auto& worker : workers) worker.join();
+        for (auto &worker: workers) worker.join();
         std::set<std::string> all;
-        for (const auto& perThread : generated)
+        for (const auto &perThread: generated)
             all.insert(perThread.begin(), perThread.end());
         check(all.size() == kThreads * kPerThread,
               "多线程生成的 spanId 不发生区间重叠");

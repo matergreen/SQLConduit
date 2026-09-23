@@ -1,5 +1,4 @@
 #include "sqlconduit/sqlconduit.h"
-#include "sqlconduit/async/sqlconduit_async.h"
 #include "sqlconduit/common/context.h"
 #include "sqlconduit/config/datasource_config.h"
 #include "sqlconduit/core/database_manager.h"
@@ -20,45 +19,38 @@
 using namespace sqlconduit;
 using common::Status;
 using common::ErrorCode;
+static Client g_client;
 
 static int g_failed = 0;
 static int g_passed = 0;
 
-static void check(bool cond, const std::string& name)
-{
-    if (cond)
-    {
+static void check(bool cond, const std::string &name) {
+    if (cond) {
         ++g_passed;
         std::cout << "  [PASS] " << name << "\n";
-    }
-    else
-    {
+    } else {
         ++g_failed;
         std::cout << "  [FAIL] " << name << "\n";
     }
 }
 
-class MockPrimaryConnection : public core::IDatabaseConnection
-{
+class MockPrimaryConnection : public core::IDatabaseConnection {
 public:
     static std::atomic<int> execCount;
     static std::atomic<int> queryCount;
 
-    common::Status connect(const config::DataSourceConfig&) override
-    {
+    common::Status connect(const config::DataSourceConfig &) override {
         open_ = true;
         return Status::OK();
     }
 
-    common::Status ping() override
-    {
+    common::Status ping() override {
         return open_
                    ? Status::OK()
                    : Status::error(common::ErrorCode::NotConnected, "closed");
     }
 
-    common::Status query(const std::string&, common::ResultSet& out) override
-    {
+    common::Status query(const std::string &, common::ResultSet &out) override {
         ++queryCount;
         common::Row r;
         r.set("source", std::string("primary"));
@@ -66,8 +58,7 @@ public:
         return Status::OK();
     }
 
-    common::Status execute(const std::string&, std::int64_t& affected) override
-    {
+    common::Status execute(const std::string &, std::int64_t &affected) override {
         ++execCount;
         affected = 1;
         return Status::OK();
@@ -86,38 +77,32 @@ private:
 std::atomic<int> MockPrimaryConnection::execCount{0};
 std::atomic<int> MockPrimaryConnection::queryCount{0};
 
-class MockPrimaryDriver : public driver::IDriver
-{
+class MockPrimaryDriver : public driver::IDriver {
 public:
-    const char* name() const override { return "mockp"; }
+    const char *name() const override { return "mockp"; }
 
-    std::unique_ptr<core::IDatabaseConnection> createConnection() override
-    {
+    std::unique_ptr<core::IDatabaseConnection> createConnection() override {
         return std::make_unique<MockPrimaryConnection>();
     }
 };
 
-class MockShadowConnection : public core::IDatabaseConnection
-{
+class MockShadowConnection : public core::IDatabaseConnection {
 public:
     static std::atomic<int> execCount;
     static std::atomic<int> queryCount;
 
-    common::Status connect(const config::DataSourceConfig&) override
-    {
+    common::Status connect(const config::DataSourceConfig &) override {
         open_ = true;
         return Status::OK();
     }
 
-    common::Status ping() override
-    {
+    common::Status ping() override {
         return open_
                    ? Status::OK()
                    : Status::error(common::ErrorCode::NotConnected, "closed");
     }
 
-    common::Status query(const std::string&, common::ResultSet& out) override
-    {
+    common::Status query(const std::string &, common::ResultSet &out) override {
         ++queryCount;
         common::Row r;
         r.set("source", std::string("shadow"));
@@ -125,8 +110,7 @@ public:
         return Status::OK();
     }
 
-    common::Status execute(const std::string&, std::int64_t& affected) override
-    {
+    common::Status execute(const std::string &, std::int64_t &affected) override {
         ++execCount;
         affected = 1;
         return Status::OK();
@@ -145,27 +129,23 @@ private:
 std::atomic<int> MockShadowConnection::execCount{0};
 std::atomic<int> MockShadowConnection::queryCount{0};
 
-class MockShadowDriver : public driver::IDriver
-{
+class MockShadowDriver : public driver::IDriver {
 public:
-    const char* name() const override { return "mocks"; }
+    const char *name() const override { return "mocks"; }
 
-    std::unique_ptr<core::IDatabaseConnection> createConnection() override
-    {
+    std::unique_ptr<core::IDatabaseConnection> createConnection() override {
         return std::make_unique<MockShadowConnection>();
     }
 };
 
-static void resetCounters()
-{
+static void resetCounters() {
     MockPrimaryConnection::execCount = 0;
     MockPrimaryConnection::queryCount = 0;
     MockShadowConnection::execCount = 0;
     MockShadowConnection::queryCount = 0;
 }
 
-static void test_sync_shadow_read()
-{
+static void test_sync_shadow_read() {
     std::cout << "== M6.1 同步读：onRoute 置 shadow → query 落到影子叶 ==\n";
     core::DatabaseManager mgr;
     config::DataSourceConfig pp;
@@ -206,8 +186,7 @@ static void test_sync_shadow_read()
     mgr.shutdown(std::chrono::milliseconds(0));
 }
 
-static void test_sync_shadow_write()
-{
+static void test_sync_shadow_write() {
     std::cout << "== M6.2 同步写：onRoute 置 shadow → execute 落到影子叶 ==\n";
     core::DatabaseManager mgr;
     config::DataSourceConfig pp;
@@ -244,14 +223,11 @@ static void test_sync_shadow_write()
 
 static std::atomic<int> gShadowFailRemaining{0};
 
-class FailingShadowConnection : public MockShadowConnection
-{
+class FailingShadowConnection : public MockShadowConnection {
 public:
-    common::Status execute(const std::string&, std::int64_t& affected) override
-    {
+    common::Status execute(const std::string &, std::int64_t &affected) override {
         int prev = gShadowFailRemaining.fetch_sub(1, std::memory_order_acq_rel);
-        if (prev > 0)
-        {
+        if (prev > 0) {
             auto st = Status::error(common::ErrorCode::NotConnected, "shadow broken");
             st.retryable = true;
             st.connectionBroken = true;
@@ -260,11 +236,9 @@ public:
         return MockShadowConnection::execute("", affected);
     }
 
-    common::Status query(const std::string&, common::ResultSet& out) override
-    {
+    common::Status query(const std::string &, common::ResultSet &out) override {
         int prev = gShadowFailRemaining.fetch_sub(1, std::memory_order_acq_rel);
-        if (prev > 0)
-        {
+        if (prev > 0) {
             auto st = Status::error(common::ErrorCode::NotConnected, "shadow broken");
             st.retryable = true;
             st.connectionBroken = true;
@@ -274,19 +248,16 @@ public:
     }
 };
 
-class FailingShadowDriver : public driver::IDriver
-{
+class FailingShadowDriver : public driver::IDriver {
 public:
-    const char* name() const override { return "mocks_fail"; }
+    const char *name() const override { return "mocks_fail"; }
 
-    std::unique_ptr<core::IDatabaseConnection> createConnection() override
-    {
+    std::unique_ptr<core::IDatabaseConnection> createConnection() override {
         return std::make_unique<FailingShadowConnection>();
     }
 };
 
-static void test_shadow_no_write_buffer()
-{
+static void test_shadow_no_write_buffer() {
     std::cout << "== M6.3 影子写不进写缓冲（I12）：故障应直返，不入队 ==\n";
     core::DatabaseManager mgr;
     config::DataSourceConfig pp;
@@ -332,8 +303,7 @@ static void test_shadow_no_write_buffer()
     mgr.shutdown(std::chrono::milliseconds(0));
 }
 
-static void test_shadow_no_cache()
-{
+static void test_shadow_no_cache() {
     std::cout << "== M6.4 影子读不进查询缓存 ==\n";
     core::DatabaseManager mgr;
     config::DataSourceConfig pp;
@@ -378,8 +348,7 @@ static void test_shadow_no_cache()
     mgr.shutdown(std::chrono::milliseconds(0));
 }
 
-static void test_validation_unknown_shadow()
-{
+static void test_validation_unknown_shadow() {
     std::cout << "== M6.5 校验：影子源不存在 ==\n";
     core::DatabaseManager mgr;
     config::DataSourceConfig pp;
@@ -398,8 +367,7 @@ static void test_validation_unknown_shadow()
     mgr.shutdown(std::chrono::milliseconds(0));
 }
 
-static void test_validation_self_primary()
-{
+static void test_validation_self_primary() {
     std::cout << "== M6.6 校验：影子源 = 本组主（自影自己） ==\n";
     core::DatabaseManager mgr;
     config::DataSourceConfig pp;
@@ -419,8 +387,7 @@ static void test_validation_self_primary()
     mgr.shutdown(std::chrono::milliseconds(0));
 }
 
-static void test_validation_self_replica()
-{
+static void test_validation_self_replica() {
     std::cout << "== M6.7 校验：影子源 = 本组副本 ==\n";
     core::DatabaseManager mgr;
     config::DataSourceConfig pp;
@@ -449,8 +416,7 @@ static void test_validation_self_replica()
     mgr.shutdown(std::chrono::milliseconds(0));
 }
 
-static void test_validation_shadow_is_group()
-{
+static void test_validation_shadow_is_group() {
     std::cout << "== M6.8 校验：影子源 = 另一个组名 ==\n";
     core::DatabaseManager mgr;
     config::DataSourceConfig pp;
@@ -479,11 +445,10 @@ static void test_validation_shadow_is_group()
     mgr.shutdown(std::chrono::milliseconds(0));
 }
 
-static void test_async_shadow_write()
-{
+static void test_async_shadow_write() {
     std::cout << "== M6.9 异步路径：onRoute 置 shadow → 异步 execute 落到影子叶 ==\n";
     const auto path = (std::filesystem::temp_directory_path() /
-        "sqlconduit_shadow_async.json").string();
+                       "sqlconduit_shadow_async.json").string();
     std::ofstream(path) << R"({
   "default_datasource": "grp",
   "heartbeat_interval_ms": 5000,
@@ -502,31 +467,27 @@ static void test_async_shadow_write()
     { "name": "grp", "primary": "prod", "shadow": "shadow_ds" }
   ]
 })";
-    check(SQLConduit::init(path).ok(), "SQLConduit::init(async cfg) ok");
+    g_client = Client{};
+    check(g_client.init(path).ok(), "Client::init(async cfg) ok");
     resetCounters();
 
-    std::promise<async::ExecResult> pr;
-    auto fut = pr.get_future();
     common::SqlContext shadowContext;
     shadowContext.shadow = true;
     common::ContextScope scope(shadowContext);
-    async::execute("grp", "INSERT INTO t VALUES (1)",
-                   [&](async::ExecResult&& r) { pr.set_value(std::move(r)); });
-    const auto out = fut.get();
+    const auto out = g_client.executeAsync("grp", "INSERT INTO t VALUES (1)", {}).get();
     check(out.status.ok(), "异步 shadow=true：execute 成功");
     check(MockShadowConnection::execCount.load() == 1,
           "异步 shadow=true：影子叶 execCount = 1");
     check(MockPrimaryConnection::execCount.load() == 0,
           "异步 shadow=true：主叶 execCount = 0（路由到影子）");
 
-    SQLConduit::shutdown(std::chrono::milliseconds(0));
+    g_client.shutdown(std::chrono::milliseconds(0));
 }
 
-static void test_async_shadow_query()
-{
+static void test_async_shadow_query() {
     std::cout << "== M6.10 异步路径：onRoute 置 shadow → async::query 落到影子叶 ==\n";
     const auto path = (std::filesystem::temp_directory_path() /
-        "sqlconduit_shadow_async_q.json").string();
+                       "sqlconduit_shadow_async_q.json").string();
     std::ofstream(path) << R"({
   "default_datasource": "grp",
   "heartbeat_interval_ms": 5000,
@@ -545,28 +506,24 @@ static void test_async_shadow_query()
     { "name": "grp", "primary": "prod", "shadow": "shadow_ds" }
   ]
 })";
-    check(SQLConduit::init(path).ok(), "SQLConduit::init(async query cfg) ok");
+    g_client = Client{};
+    check(g_client.init(path).ok(), "Client::init(async query cfg) ok");
     resetCounters();
 
-    std::promise<async::QueryResult> pr;
-    auto fut = pr.get_future();
     common::SqlContext shadowContext;
     shadowContext.shadow = true;
     common::ContextScope scope(shadowContext);
-    async::query("grp", "SELECT 1",
-                 [&](async::QueryResult&& r) { pr.set_value(std::move(r)); });
-    const auto out = fut.get();
+    const auto out = g_client.queryAsync("grp", "SELECT 1", {}).get();
     check(out.status.ok(), "异步 shadow=true：query 成功");
     check(MockShadowConnection::queryCount.load() == 1,
           "异步 shadow=true：影子叶 queryCount = 1");
     check(MockPrimaryConnection::queryCount.load() == 0,
           "异步 shadow=true：主叶 queryCount = 0");
 
-    SQLConduit::shutdown(std::chrono::milliseconds(0));
+    g_client.shutdown(std::chrono::milliseconds(0));
 }
 
-int main()
-{
+int main() {
     driver::DriverRegistry::instance().registerDriver(
         "mockp", [] { return std::make_unique<MockPrimaryDriver>(); });
     driver::DriverRegistry::instance().registerDriver(
@@ -586,6 +543,6 @@ int main()
     test_async_shadow_query();
 
     std::cout << "\n========== M6 影子库路由 总计: " << g_passed << " 通过 / "
-        << g_failed << " 失败 ==========\n";
+            << g_failed << " 失败 ==========\n";
     return g_failed == 0 ? 0 : 1;
 }

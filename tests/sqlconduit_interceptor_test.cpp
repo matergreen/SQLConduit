@@ -14,14 +14,13 @@ using namespace sqlconduit;
 using namespace sqlconduit::core;
 using namespace sqlconduit::common;
 
-namespace sqlconduit::core::detail
-{
-    void runOnRoute(const std::string& dataSource, const std::string& sql,
-                    common::OperationType type, common::SqlContext& ctx);
+namespace sqlconduit::core::detail {
+    void runOnRoute(const std::string &dataSource, const std::string &sql,
+                    common::OperationType type, common::SqlContext &ctx);
 
-    common::Status runBeforeExecution(const ExecutionView& view);
+    common::Status runBeforeExecution(const ExecutionView &view);
 
-    void runAfterExecution(const ExecutionView& view);
+    void runAfterExecution(const ExecutionView &view);
 
     std::size_t currentInterceptorDepth() noexcept;
 }
@@ -29,34 +28,27 @@ namespace sqlconduit::core::detail
 static int g_failed = 0;
 static int g_passed = 0;
 
-static void check(bool cond, const std::string& name)
-{
-    if (cond)
-    {
+static void check(bool cond, const std::string &name) {
+    if (cond) {
         ++g_passed;
         std::cout << "  [PASS] " << name << "\n";
-    }
-    else
-    {
+    } else {
         ++g_failed;
         std::cout << "  [FAIL] " << name << "\n";
     }
 }
 
-struct RecordingInterceptor : public ISqlInterceptor
-{
+struct RecordingInterceptor : public ISqlInterceptor {
     std::vector<std::string> log;
     bool rejectBefore = false;
 
-    void onRoute(const std::string& ds, const std::string& sql,
-                 common::OperationType type, common::SqlContext& ctx) override
-    {
+    void onRoute(const std::string &ds, const std::string &sql,
+                 common::OperationType type, common::SqlContext &ctx) override {
         log.push_back("onRoute:" + ds + ":" + std::to_string(static_cast<int>(type)) + ":" + sql);
         ctx.traceId = "filled-by-interceptor";
     }
 
-    common::Status beforeExecution(const ExecutionView& view) override
-    {
+    common::Status beforeExecution(const ExecutionView &view) override {
         log.push_back("beforeExecution:" + view.dataSource + ":" + view.sql);
         if (rejectBefore)
             return common::Status::error(
@@ -64,55 +56,45 @@ struct RecordingInterceptor : public ISqlInterceptor
         return common::Status::OK();
     }
 
-    void afterExecution(const ExecutionView& view) override
-    {
+    void afterExecution(const ExecutionView &view) override {
         log.push_back("afterExecution:" + view.dataSource + ":" + view.sql);
     }
 
-    void onCompletion(const ExecutionView& view) override
-    {
+    void onCompletion(const ExecutionView &view) override {
         log.push_back("onCompletion:" + view.dataSource + ":" + view.sql);
     }
 };
 
-struct ThrowingInterceptor : public ISqlInterceptor
-{
-    void onRoute(const std::string&, const std::string&,
-                 common::OperationType, common::SqlContext&) override
-    {
+struct ThrowingInterceptor : public ISqlInterceptor {
+    void onRoute(const std::string &, const std::string &,
+                 common::OperationType, common::SqlContext &) override {
         throw std::runtime_error("onRoute boom");
     }
 
-    common::Status beforeExecution(const ExecutionView&) override
-    {
+    common::Status beforeExecution(const ExecutionView &) override {
         throw std::runtime_error("beforeExecution boom");
     }
 
-    void afterExecution(const ExecutionView&) override
-    {
+    void afterExecution(const ExecutionView &) override {
         throw std::runtime_error("afterExecution boom");
     }
 
-    void onCompletion(const ExecutionView&) override
-    {
+    void onCompletion(const ExecutionView &) override {
         throw std::runtime_error("onCompletion boom");
     }
 };
 
-struct ConcurrentInterceptor : public ISqlInterceptor
-{
+struct ConcurrentInterceptor : public ISqlInterceptor {
     std::atomic<int> beforeCount{0};
     std::atomic<int> completionCount{0};
     std::mutex mutex;
     std::condition_variable cv;
 
-    void onRoute(const std::string&, const std::string&,
-                 common::OperationType, common::SqlContext&) override
-    {
+    void onRoute(const std::string &, const std::string &,
+                 common::OperationType, common::SqlContext &) override {
     }
 
-    common::Status beforeExecution(const ExecutionView&) override
-    {
+    common::Status beforeExecution(const ExecutionView &) override {
         ++beforeCount;
         cv.notify_all();
         std::unique_lock<std::mutex> lock(mutex);
@@ -120,39 +102,32 @@ struct ConcurrentInterceptor : public ISqlInterceptor
         return common::Status::OK();
     }
 
-    void afterExecution(const ExecutionView&) override
-    {
+    void afterExecution(const ExecutionView &) override {
     }
 
-    void onCompletion(const ExecutionView&) override { ++completionCount; }
+    void onCompletion(const ExecutionView &) override { ++completionCount; }
 };
 
-struct ReentrantRouteInterceptor : public ISqlInterceptor
-{
+struct ReentrantRouteInterceptor : public ISqlInterceptor {
     std::atomic<int> routeCount{0};
 
-    void onRoute(const std::string& ds, const std::string& sql,
-                 common::OperationType type, common::SqlContext& ctx) override
-    {
-        if (++routeCount == 1) detail::runOnRoute(ds, sql, type, ctx);
+    void onRoute(const std::string &ds, const std::string &sql,
+                 common::OperationType type, common::SqlContext &ctx) override {
+        if (++routeCount == 1) sqlconduit::core::detail::runOnRoute(ds, sql, type, ctx);
     }
 
-    common::Status beforeExecution(const ExecutionView&) override
-    {
+    common::Status beforeExecution(const ExecutionView &) override {
         return common::Status::OK();
     }
 
-    void afterExecution(const ExecutionView&) override
-    {
+    void afterExecution(const ExecutionView &) override {
     }
 
-    void onCompletion(const ExecutionView&) override
-    {
+    void onCompletion(const ExecutionView &) override {
     }
 };
 
-int main()
-{
+int main() {
     InterceptorRegistry::clear();
     InterceptorRegistry::setEnabled(false);
 
@@ -193,7 +168,7 @@ int main()
         ctx.traceId = "pre";
         const std::string ds = "ds-zero";
         const std::string sql = "SELECT 1";
-        detail::runOnRoute(ds, sql, common::OperationType::Query, ctx);
+        sqlconduit::core::detail::runOnRoute(ds, sql, common::OperationType::Query, ctx);
 
         SqlContext emptyCtx;
         ExecutionView empty{
@@ -201,8 +176,8 @@ int main()
             nullptr, nullptr, 0, std::chrono::microseconds{0},
             common::Status::OK(), false, 0, emptyCtx
         };
-        const auto beforeSt = detail::runBeforeExecution(empty);
-        detail::runAfterExecution(empty);
+        const auto beforeSt = sqlconduit::core::detail::runBeforeExecution(empty);
+        sqlconduit::core::detail::runAfterExecution(empty);
 
         check(rec->log.empty(),
               "开关 false 时 onRoute/beforeExecution/afterExecution 都不被调用");
@@ -224,7 +199,8 @@ int main()
         InterceptorRegistry::setEnabled(true);
 
         SqlContext ctx;
-        detail::runOnRoute("ds-order", "SELECT 2", common::OperationType::Query, ctx);
+        sqlconduit::core::detail::runOnRoute(
+            "ds-order", "SELECT 2", common::OperationType::Query, ctx);
 
         check(first->log.size() == 1 && second->log.size() == 1,
               "两个拦截器都被调用一次");
@@ -243,8 +219,8 @@ int main()
             nullptr, nullptr, 7, std::chrono::microseconds{123},
             common::Status::OK(), false, 0, captured
         };
-        const auto beforeSt = detail::runBeforeExecution(view);
-        detail::runAfterExecution(view);
+        const auto beforeSt = sqlconduit::core::detail::runBeforeExecution(view);
+        sqlconduit::core::detail::runAfterExecution(view);
 
         check(beforeSt.ok(), "两个拦截器都没拒绝 → beforeExecution 返回 OK");
         check(first->log.size() == 3 && second->log.size() == 3,
@@ -278,7 +254,7 @@ int main()
             nullptr, nullptr, 0, std::chrono::microseconds{0},
             common::Status::OK(), false, 0, captured
         };
-        const auto st = detail::runBeforeExecution(view);
+        const auto st = sqlconduit::core::detail::runBeforeExecution(view);
         check(!st.ok() && st.code == common::ErrorCode::SqlBlocked,
               "第一个拦截器拒绝 → 整体短路，状态正确返回");
         check(passthrough->log.empty(),
@@ -301,12 +277,10 @@ int main()
 
         SqlContext ctx;
         bool threw = false;
-        try
-        {
-            detail::runOnRoute("ds-throw", "SELECT 9", common::OperationType::Query, ctx);
-        }
-        catch (...)
-        {
+        try {
+            sqlconduit::core::detail::runOnRoute(
+                "ds-throw", "SELECT 9", common::OperationType::Query, ctx);
+        } catch (...) {
             threw = true;
         }
         check(!threw, "onRoute 中拦截器抛异常不传播（I11）");
@@ -319,12 +293,9 @@ int main()
         };
         common::Status beforeSt;
         threw = false;
-        try
-        {
-            beforeSt = detail::runBeforeExecution(view);
-        }
-        catch (...)
-        {
+        try {
+            beforeSt = sqlconduit::core::detail::runBeforeExecution(view);
+        } catch (...) {
             threw = true;
         }
         check(!threw, "beforeExecution 中拦截器抛异常不传播");
@@ -336,12 +307,9 @@ int main()
               "thrower 抛异常之后，catcher 依然被调用（顺序未被打断）");
 
         threw = false;
-        try
-        {
-            detail::runAfterExecution(view);
-        }
-        catch (...)
-        {
+        try {
+            sqlconduit::core::detail::runAfterExecution(view);
+        } catch (...) {
             threw = true;
         }
         check(!threw, "afterExecution 中拦截器抛异常不传播");
@@ -354,15 +322,15 @@ int main()
     {
         InterceptorRegistry::clear();
         InterceptorRegistry::setEnabled(true);
-        const auto beforeLevel = detail::currentInterceptorDepth();
+        const auto beforeLevel = sqlconduit::core::detail::currentInterceptorDepth();
         SqlContext captured;
         ExecutionView view{
             "ds-depth", "SELECT depth", common::OperationType::Query,
             nullptr, nullptr, 0, std::chrono::microseconds{0},
             common::Status::OK(), false, 0, captured
         };
-        detail::runBeforeExecution(view);
-        const auto afterLevel = detail::currentInterceptorDepth();
+        sqlconduit::core::detail::runBeforeExecution(view);
+        const auto afterLevel = sqlconduit::core::detail::currentInterceptorDepth();
         check(beforeLevel == 0 && afterLevel == 0,
               "进 runBeforeExecution 前后 depth 均为 0（DepthGuard 退出时已归零）");
         InterceptorRegistry::setEnabled(false);
@@ -376,24 +344,23 @@ int main()
         auto reentrant = std::make_shared<ReentrantRouteInterceptor>();
         InterceptorRegistry::add(reentrant);
         SqlContext routeContext;
-        detail::runOnRoute("ds-route", "SELECT recursive", OperationType::Query,
-                           routeContext);
+        sqlconduit::core::detail::runOnRoute(
+            "ds-route", "SELECT recursive", OperationType::Query, routeContext);
         check(reentrant->routeCount.load() == 1,
               "onRoute 内再次触发路由时被递归保护拦截");
 
         InterceptorRegistry::clear();
         auto concurrent = std::make_shared<ConcurrentInterceptor>();
         InterceptorRegistry::add(concurrent);
-        auto run = [&](const std::string& sql)
-        {
+        auto run = [&](const std::string &sql) {
             SqlContext ctx;
             ExecutionView view{
                 "ds-concurrent", sql, OperationType::Query,
                 nullptr, nullptr, 0, std::chrono::microseconds{0},
                 Status::OK(), false, 0, ctx
             };
-            auto guard = detail::makeInterceptorGuard(view);
-            detail::runBeforeExecution(view);
+            auto guard = sqlconduit::core::detail::makeInterceptorGuard(view);
+            sqlconduit::core::detail::runBeforeExecution(view);
         };
         std::thread first(run, "SELECT first");
         std::thread second(run, "SELECT second");

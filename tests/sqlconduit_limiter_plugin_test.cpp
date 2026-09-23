@@ -17,22 +17,17 @@ using common::Status;
 static int g_failed = 0;
 static int g_passed = 0;
 
-static void check(bool cond, const std::string& name)
-{
-    if (cond)
-    {
+static void check(bool cond, const std::string &name) {
+    if (cond) {
         ++g_passed;
         std::cout << "  [PASS] " << name << "\n";
-    }
-    else
-    {
+    } else {
         ++g_failed;
         std::cout << "  [FAIL] " << name << "\n";
     }
 }
 
-class MockConnection : public core::IDatabaseConnection
-{
+class MockConnection : public core::IDatabaseConnection {
 public:
     static std::atomic<int> alive;
     static std::atomic<bool> connectFails;
@@ -49,9 +44,8 @@ public:
 
     static void resetLog() { log.clear(); }
 
-    common::Status connect(const config::DataSourceConfig& cfg) override
-    {
-        (void)cfg;
+    common::Status connect(const config::DataSourceConfig &cfg) override {
+        (void) cfg;
         if (connectFails.load()) return Status::error(common::ErrorCode::ConnectionFailed, "mock connect failed");
         open_ = true;
         ++alive;
@@ -59,14 +53,12 @@ public:
         return Status::OK();
     }
 
-    common::Status ping() override
-    {
+    common::Status ping() override {
         if (!open_ || pingFails.load()) return Status::error(common::ErrorCode::PingFailed, "mock ping failed");
         return Status::OK();
     }
 
-    common::Status query(const std::string& sql, common::ResultSet& out) override
-    {
+    common::Status query(const std::string &sql, common::ResultSet &out) override {
         if (!open_) return Status::error(common::ErrorCode::NotConnected, "closed");
         ++queryCalls;
         if (queryBreaks.load() || queryFailuresRemaining.fetch_sub(1) > 0)
@@ -79,8 +71,7 @@ public:
         return Status::OK();
     }
 
-    common::Status execute(const std::string& sql, std::int64_t& affected) override
-    {
+    common::Status execute(const std::string &sql, std::int64_t &affected) override {
         if (!open_) return Status::error(common::ErrorCode::NotConnected, "closed");
         ++executeCalls;
         if (executeFailuresRemaining.fetch_sub(1) > 0)
@@ -94,74 +85,63 @@ public:
         return Status::OK();
     }
 
-    common::Status begin() override
-    {
+    common::Status begin() override {
         if (tx_) return Status::error(common::ErrorCode::TxError, "already in tx");
         tx_ = true;
         log.push_back("begin");
         return Status::OK();
     }
 
-    common::Status begin(const common::TransactionOptions& options) override
-    {
-        if (options.readOnly || options.isolation != common::IsolationLevel::Default)
-        {
+    common::Status begin(const common::TransactionOptions &options) override {
+        if (options.readOnly || options.isolation != common::IsolationLevel::Default) {
             log.push_back(std::string("options:")
-                + (options.readOnly ? "readonly" : "readwrite") + ":"
-                + std::to_string(static_cast<int>(options.isolation)));
+                          + (options.readOnly ? "readonly" : "readwrite") + ":"
+                          + std::to_string(static_cast<int>(options.isolation)));
         }
         return begin();
     }
 
-    common::Status commit() override
-    {
+    common::Status commit() override {
         if (!tx_) return Status::error(common::ErrorCode::TxError, "no tx");
         tx_ = false;
         log.push_back("commit");
         return Status::OK();
     }
 
-    common::Status rollback() override
-    {
+    common::Status rollback() override {
         if (!tx_) return Status::error(common::ErrorCode::TxError, "no tx");
         tx_ = false;
         log.push_back("rollback");
         return Status::OK();
     }
 
-    common::Status savepoint(const std::string& name) override
-    {
+    common::Status savepoint(const std::string &name) override {
         if (!tx_) return Status::error(common::ErrorCode::TxError, "no tx");
         log.push_back("savepoint:" + name);
         return Status::OK();
     }
 
-    common::Status releaseSavepoint(const std::string& name) override
-    {
+    common::Status releaseSavepoint(const std::string &name) override {
         if (!tx_) return Status::error(common::ErrorCode::TxError, "no tx");
         log.push_back("release:" + name);
         return Status::OK();
     }
 
-    common::Status rollbackToSavepoint(const std::string& name) override
-    {
+    common::Status rollbackToSavepoint(const std::string &name) override {
         if (!tx_) return Status::error(common::ErrorCode::TxError, "no tx");
         log.push_back("rollback_to:" + name);
         return Status::OK();
     }
 
-    common::Status cancel() override
-    {
+    common::Status cancel() override {
         if (cancelUnsupported.load()) return IDatabaseConnection::cancel();
         log.push_back("cancel");
         if (cancelThrows.load()) throw std::runtime_error("mock cancel blew up");
         return Status::OK();
     }
 
-    void close() override
-    {
-        if (open_)
-        {
+    void close() override {
+        if (open_) {
             open_ = false;
             --alive;
             log.push_back("close");
@@ -192,37 +172,31 @@ std::atomic<bool> MockConnection::cancelThrows{false};
 std::atomic<bool> MockConnection::cancelUnsupported{true};
 std::vector<std::string> MockConnection::log;
 
-class MockDriver : public driver::IDriver
-{
+class MockDriver : public driver::IDriver {
 public:
-    const char* name() const override { return "mock"; }
+    const char *name() const override { return "mock"; }
 
-    std::unique_ptr<core::IDatabaseConnection> createConnection() override
-    {
+    std::unique_ptr<core::IDatabaseConnection> createConnection() override {
         return std::make_unique<MockConnection>();
     }
 };
 
-class CountingLimiter : public core::IRateLimiter
-{
+class CountingLimiter : public core::IRateLimiter {
 public:
     std::atomic<int> acquires{0};
 
-    bool acquire(std::uint64_t) override
-    {
+    bool acquire(std::uint64_t) override {
         acquires.fetch_add(1);
         return true;
     }
 };
 
-class DenyLimiter : public core::IRateLimiter
-{
+class DenyLimiter : public core::IRateLimiter {
 public:
     bool acquire(std::uint64_t) override { return false; }
 };
 
-static config::DataSourceConfig mockLeafCfg(const std::string& name)
-{
+static config::DataSourceConfig mockLeafCfg(const std::string &name) {
     config::DataSourceConfig c;
     c.name = name;
     c.type = "mock";
@@ -231,8 +205,7 @@ static config::DataSourceConfig mockLeafCfg(const std::string& name)
     return c;
 }
 
-int main()
-{
+int main() {
     driver::DriverRegistry::instance().registerDriver(
         "mock", [] { return std::make_unique<MockDriver>(); });
 

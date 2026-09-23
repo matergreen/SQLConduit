@@ -30,7 +30,7 @@
 - **多数据库类型**：内置 **MySQL / PostgreSQL / Oracle（OCI）/ ODBC（SQL Server）** 驱动，
   并预留**驱动扩展接口**，新增数据库只需实现 `IDriver` 并注册。
 
-> 状态：核心层（配置/连接池/心跳/事务/参数绑定/门面）已完整实现，
+> 状态：核心层（配置/连接池/心跳/事务/参数绑定/Client API）已完整实现，
 > 并通过 `tests/sqlconduit_core_test.cpp` 的 146 项行为验证（mock 驱动，无需真实数据库）。
 >
 > 驱动实现进度：
@@ -64,12 +64,12 @@ include/sqlconduit/
              connection_pool.h     heartbeat_manager.h  database_manager.h
   driver/    idriver.h  driver_registry.h  driver_factory.h
              mysql_driver.h  postgres_driver.h  odbc_driver.h
-  async/     async_types.h(结果体/Handle)  executor.h(IExecutor/线程池)
-             sqlconduit_async.h(异步门面)  task.h(协程层，可选 C++20)
+  async/     async_types.h(Client 异步结果与执行器统计)
   mapping.h  (实体映射层 v0.5.0：header-only，Row ↔ 业务实体，读写双向)
-  sqlconduit.h     (对外门面)
+  client.h         (唯一高层运行时入口)
+  sqlconduit.h     (聚合公共头)
 src/         对应实现
-tests/       sqlconduit_core_test.cpp  sqlconduit_async_test.cpp  sqlconduit_coro_test.cpp(coro=ON)
+tests/       sqlconduit_core_test.cpp  sqlconduit_client_test.cpp
              sqlconduit_mapping_test.cpp(实体映射)
 config/      datasources.json.example  datasource.yaml.example
 third_party/nlohmann/json.hpp  (vendored 单头，离线可用)
@@ -92,8 +92,6 @@ mkdir -p build && cd build
 cmake ..                                   # 仅核心层
 # 启用驱动示例：
 # cmake .. -DSQLCONDUIT_ENABLE_MYSQL=ON -DSQLCONDUIT_ENABLE_POSTGRES=ON -DSQLCONDUIT_ENABLE_ODBC=ON
-# 启用协程层（可选，仅 task.cpp 提标 C++20）：
-# cmake .. -DSQLCONDUIT_ENABLE_ASYNC_CORO=ON
 cmake --build .
 
 ```
@@ -147,26 +145,27 @@ cmake .. -DSQLCONDUIT_BUILD_TESTS=ON && cmake --build . -j"$(sysctl -n hw.ncpu)"
 ```cpp
 #include "sqlconduit/sqlconduit.h"
 
-sqlconduit::SQLConduit::init("config/datasources.json");   // 加载多数据源 + 启动心跳
+sqlconduit::Client client;
+client.init("config/datasources.json");   // 加载多数据源 + 启动心跳
 
 sqlconduit::common::ResultSet rs;
-auto st = sqlconduit::SQLConduit::query("SELECT 1", rs);    // 默认数据源
+auto st = client.query("SELECT 1", rs);    // 默认数据源
 if (st.ok()) { /* 处理 rs */ }
 
 int64_t n = 0;
-sqlconduit::SQLConduit::execute("UPDATE t SET c = 1 WHERE id = 2", n); // 默认数据源
+client.execute("UPDATE t SET c = 1 WHERE id = 2", n); // 默认数据源
 
-sqlconduit::SQLConduit::shutdown();
+client.shutdown();
 ```
 
-指定数据源：`sqlconduit::SQLConduit::query("pg", "SELECT now()", rs);`
+指定数据源：`client.query("pg", "SELECT now()", rs);`
 
 ## 事务与会话
 
 `query()` / `execute()` 每次都会**重新借一条连接**，因此跨多条语句的事务必须先把连接固定下来：
 
 ```cpp
-auto st = sqlconduit::SQLConduit::transaction([](sqlconduit::core::Session& s) {
+auto st = client.transaction([](sqlconduit::core::Session& s) {
     int64_t n = 0;
     if (auto r = s.execute("UPDATE accounts SET bal = bal - 100 WHERE id = 1", n); !r.ok())
         return r;                       // 返回失败 -> 自动 rollback
@@ -185,7 +184,7 @@ SQL 中用 `?` 作占位符，参数值通过 `common::Params` 传入，**不参
 ```cpp
 sqlconduit::common::ResultSet rs;
 sqlconduit::common::Params p{ std::string("O'Brien"), std::int64_t(42) };
-auto st = sqlconduit::SQLConduit::query("SELECT * FROM t WHERE name = ? AND age > ?", p, rs);
+auto st = client.query("SELECT * FROM t WHERE name = ? AND age > ?", p, rs);
 ```
 
 - PostgreSQL / MySQL / Oracle / ODBC 均走**原生参数绑定**。
@@ -213,12 +212,12 @@ auto st = sqlconduit::SQLConduit::query("SELECT * FROM t WHERE name = ? AND age 
 三个官方驱动都具备、此前 `IDatabaseConnection` 尚未封装的高频能力，现已统一接入。三者都**不破坏现有架构不变量**
 （闸门只在 `DataSource` 入口过一次、结果缓存键不变、故障转移/写缓冲不用于事务）。
 
-> 注意：`prepare` / `executePrepared` 显式句柄 API 只存在于 `Session`（句柄绑定具体连接，无状态门面持有不了跨调用的句柄）；
-> 生成键与大参数流式在 `DataSource`（`SQLConduit::dataSource()` 取得）与 `Session` 上都有。
+> 注意：`prepare` / `executePrepared` 显式句柄 API 只存在于 `Session`（句柄绑定具体连接，`Client` 无法跨池借用持有该句柄）；
+> 生成键与大参数流式在 `DataSource`（`client.dataSource()` 取得）与 `Session` 上都有。
 
 ### 预编译语句复用（连接级句柄缓存）
 
-`SQLConduit::query(sql, params)` / `execute(sql, params)` 在驱动支持且 `prepared_cache.enabled` 开启时，
+`client.query(sql, params)` / `execute(sql, params)` 在驱动支持且 `prepared_cache.enabled` 开启时，
 内部按 `(归一化 SQL + 参数类型签名)` 在本连接的缓存里查已编译句柄，没有就 `prepare` 并存入，再用
 `executePrepared` 执行。**对调用方完全透明、签名不变**——热点 SQL 自动只 prepare 一次。
 
@@ -226,13 +225,13 @@ auto st = sqlconduit::SQLConduit::query("SELECT * FROM t WHERE name = ? AND age 
 // 透明自动缓存：用法与原来完全一致，无需任何改动
 sqlconduit::common::ResultSet rs;
 sqlconduit::common::Params p{ std::int64_t(1) };
-auto st = sqlconduit::SQLConduit::query("SELECT * FROM t WHERE id = ?", p, rs);
+auto st = client.query("SELECT * FROM t WHERE id = ?", p, rs);
 ```
 
 需要在稳定连接上精细控制、或批量复用同一句柄时，用 `Session` 的显式句柄 API：
 
 ```cpp
-auto st = sqlconduit::SQLConduit::transaction([](sqlconduit::core::Session& s) {
+auto st = client.transaction([](sqlconduit::core::Session& s) {
     sqlconduit::core::PreparedStatementHandle h;
     // typesSample 仅用于推导参数类型签名（占位值即可，不需要真实数据）
     if (auto r = s.prepare("INSERT INTO t(a,b) VALUES(?,?)",
@@ -257,7 +256,7 @@ auto st = sqlconduit::SQLConduit::transaction([](sqlconduit::core::Session& s) {
 `execute` 新增带生成键的重载，回吐刚插入生成的列：
 
 ```cpp
-auto ds = sqlconduit::SQLConduit::dataSource();          // 默认数据源（也可传名字取指定源）
+auto ds = client.dataSource();          // 默认数据源（也可传名字取指定源）
 int64_t n = 0;
 sqlconduit::common::GeneratedKeys keys;
 
@@ -287,7 +286,7 @@ PG/Oracle/ODBC 用 `RETURNING`/`OUTPUT` 直出。**SQLConduit 不会给你自己
 执行期间由驱动按块拉取。这是**输入方向**的流式，与结果集的流式消费（`queryEach`/游标）方向相反，不要混用。
 
 ```cpp
-auto ds = sqlconduit::SQLConduit::dataSource();
+auto ds = client.dataSource();
 std::ifstream f("big.bin", std::ios::binary);
 sqlconduit::common::StreamParams sp{ std::int64_t(1), sqlconduit::common::StreamSource(f) };
 int64_t n = 0;
@@ -329,7 +328,7 @@ options.isolation = sqlconduit::common::IsolationLevel::Serializable;
 options.readOnly = false;
 options.timeout = std::chrono::seconds(5);
 
-auto st = sqlconduit::SQLConduit::transaction(options, [](sqlconduit::core::Session& s) {
+auto st = client.transaction(options, [](sqlconduit::core::Session& s) {
     s.savepoint("before_optional_step");
     // ...
     return sqlconduit::common::Status::OK();
@@ -352,7 +351,7 @@ auto st = sqlconduit::SQLConduit::transaction(options, [](sqlconduit::core::Sess
 
 ```cpp
 std::uint64_t rows = 0;
-sqlconduit::SQLConduit::queryEach("SELECT * FROM large_table", {},
+client.queryEach("SELECT * FROM large_table", {},
     [](const sqlconduit::common::Row& row) {
         // 返回 false 可提前停止。
         return consume(row);
@@ -363,7 +362,7 @@ sqlconduit::common::ParamBatch batch{
     {std::int64_t(2), std::string("b")}
 };
 sqlconduit::common::BatchResult result;
-sqlconduit::SQLConduit::executeBatch("INSERT INTO t(id, name) VALUES(?, ?)", batch, result);
+client.executeBatch("INSERT INTO t(id, name) VALUES(?, ?)", batch, result);
 ```
 
 **批量执行是原子的**，三个驱动行为一致：调用方未开事务时中间件自动包一层事务，
@@ -386,7 +385,7 @@ opts.batch_size = 1000;          // 每次 fetch 预取行数（也可用配置 
 opts.auto_transaction = true;    // PG 未开事务时由游标自建事务兜底
 
 std::unique_ptr<sqlconduit::core::Cursor> cur;
-auto st = sqlconduit::SQLConduit::openCursor("SELECT * FROM large_table WHERE k > ?",
+auto st = client.openCursor("SELECT * FROM large_table WHERE k > ?",
                                  sqlconduit::common::Params{std::int64_t(0)}, opts, cur);
 if (!st.ok()) { /* 处理错误 */ }
 
@@ -398,7 +397,7 @@ while (cur->fetch(0, batch).ok() && cur->hasNext()) {  // fetch(0) = 按 batch_s
 cur->close();   // 显式归还连接；不调也会在析构时关 + 还
 ```
 
-门面 `SQLConduit::openCursor` 有两个重载：默认数据源，或指定数据源名。事务/会话内另可用
+`client.openCursor` 有两个重载：默认数据源，或指定数据源名。事务/会话内另可用
 `Session::openCursor(...)`（连接不额外占用，随会话结束归还）。`fetch(n, out)` 把至多 n 行**追加**
 写入 `out`（不清空，多次 fetch 可累积同一结果集）；`n == 0` 由驱动按 batch_size 决定。`fetchRow`
 取单行、`close` 显式关闭（幂等）、`isOpen` / `hasNext` / `rowsFetched` 暴露状态。
@@ -477,7 +476,7 @@ cur->close();   // 显式归还连接；不调也会在析构时关 + 还
 }
 ```
 
-调用 `SQLConduit::reload(path, grace)` 可原子加载新配置，并等待旧连接池中的在途操作归还。
+调用 `client.reload(path, grace)` 可原子加载新配置，并等待旧连接池中的在途操作归还。
 
 ## 限流、审计、缓存与主库故障转移
 
@@ -563,17 +562,17 @@ public:
 
 两种挂载方式：
 
-- **全局默认**：`SQLConduit::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());`
+- **全局默认**：`client.setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());`
   之后任意未显式指定限流器的数据源，在配置未启用 `rate_limit` 时回退到这个默认实现。
-  可在 `SQLConduit::init()` 之前或之后调用；后调用时会立即更新所有继承默认值的已有数据源和组。
+  可在 `client.init()` 之前或之后调用；后调用时会立即更新所有继承默认值的已有数据源和组。
 - **逐数据源覆盖**：`DataSourceOptions::rate_limiter`（或 `GroupOptions::rate_limiter`）传入
   `shared_ptr<IRateLimiter>`，该数据源优先用你给的实现，**优先于全局默认**。
 
 ```cpp
-sqlconduit::SQLConduit::init("datasources.json");
+client.init("datasources.json");
 
 // 全局默认：未显式指定的数据源都走滑动窗口
-sqlconduit::SQLConduit::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());
+client.setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());
 
 // 某数据源单独挂一个高吞吐放行实现（测试 / 白名单）
 sqlconduit::core::DataSourceOptions opts;
@@ -581,7 +580,7 @@ opts.rate_limiter = std::make_shared<sqlconduit::core::RateLimiter>(100000.0, 0.
 mgr.addDataSource(cfg, opts);
 ```
 
-优先级（高 → 低）：`opts.rate_limiter`（逐源） > 配置 `rate_limit`（`global_qps` 或 `per_fingerprint_qps` 任一启用即构造 `RateLimiter`） > `SQLConduit::setDefaultRateLimiter`（全局默认）。
+优先级（高 → 低）：`opts.rate_limiter`（逐源） > 配置 `rate_limit`（`global_qps` 或 `per_fingerprint_qps` 任一启用即构造 `RateLimiter`） > `client.setDefaultRateLimiter`（全局默认）。
 调用点 `preGate` / `gateSession` 只调 `acquire`，因此替换算法对上层完全透明、零侵入。
 
 ### SQL 审计与拦截（sql_audit）
@@ -642,11 +641,11 @@ public:
     void onCompletion(const sqlconduit::core::ExecutionView &view) override { /* 收尾 */ }
 };
 
-sqlconduit::SQLConduit::addInterceptor(std::make_shared<TenantQuotaInterceptor>());
+client.addInterceptor(std::make_shared<TenantQuotaInterceptor>());
 ```
 
 - 全局注册表：`core::InterceptorRegistry::add / clear / snapshot / enabled / setEnabled`。
-  不想经门面时可直接操作注册表；`setEnabled(false)` 可整体关闭拦截链而不删除实例。
+  需要低层控制时可直接操作注册表；`setEnabled(false)` 可整体关闭拦截链而不删除实例。
 - 健壮性：拦截器内部抛异常会被中间件吞没（不让 SPI 错误拖垮业务）；同一线程内拦截链有递归深度守卫（上限 64 层），避免 `beforeExecution` 里再触发 SQL 造成无限递归。
 - 闸门分离不变量（I1）：拦截只在 `DataSource` 入口（`preGate`）与 `Session` 逐条语句处执行；
   组转发叶子走 `*Ungated` 内部路径**不重复触发**拦截与限流，逐源挂载的限流器不会被重复扣令牌。
@@ -679,11 +678,11 @@ sqlconduit::SQLConduit::addInterceptor(std::make_shared<TenantQuotaInterceptor>(
 - `query_cache` 缓存的是**结果数据**，键是 `(SQL + 参数值)`；
 - `prepared_cache` 缓存的是**语句句柄**，键是 `(SQL + 参数类型签名)`。
 
-### 1. 查询结果缓存（QueryCache，全局单例）
+### 1. 查询结果缓存（QueryCache，Client 运行时级）
 
 仅作用于 `DataSource::query` 的叶子读路径（非事务、非会话读）。组转发叶子用数据源自身名字作为 key 前缀，使主库与副本的同一条 SQL 成为两条独立缓存项，写后失效才能按节点精确清除。
 
-实现（`src/core/query_cache.cpp`）：全局单例，`std::unordered_map<std::string, Entry> store_` + `std::list<std::string> lru_`（最近使用在表头），一把 `std::mutex mtx_`。开关 `enabled_` / `replicaOnly_` 用 `std::atomic` 镜像——**热路径先无锁读原子标志，缓存关着时连 mtx_ 都不抢**。命中率/淘汰/失效计数均为原子量，`QueryCache::stats()` 暴露，热加载清空缓存不清计数（进程累计量）。
+实现（`src/core/query_cache.cpp`）：每个 `Client` 的运行时持有独立状态，其中包含 `std::unordered_map<std::string, Entry> store_` + `std::list<std::string> lru_`（最近使用在表头），并由一把 `std::mutex mtx_` 保护。开关 `enabled_` / `replicaOnly_` 用 `std::atomic` 镜像——**热路径先无锁读原子标志，缓存关着时连 mtx_ 都不抢**。命中率/淘汰/失效计数同样属于该实例；热加载清空缓存不清计数。
 
 **KV 内容：**
 - **key** = `数据源名 + '\0' + cacheKey(sql, params)`，其中 `cacheKey` = 原始 SQL + `\x1e` + 参数个数 + 每参数（`\x1f` + 类型标记 + 长度前缀值）。NULL、bool、int64、uint64、double、Decimal、string、Date、Time、Timestamp、UUID、JSON、Blob 都有独立标记；double 按位序列化，所有文本/二进制值加长度前缀，**确保不同类型或参数值得到不同 key**。
@@ -698,7 +697,7 @@ sqlconduit::SQLConduit::addInterceptor(std::make_shared<TenantQuotaInterceptor>(
 
 ### 2. 预编译语句缓存（PreparedCache，连接级句柄缓存）
 
-四驱动（`MySQLConnection` / `PostgresConnection` / `OracleConnection` / `OdbcConnection`）各自在 `prepare()` 内维护一份本连接的句柄缓存。门面 `Session::runPreparedQuery` / `runPreparedExec` 在 `preparedPathUsable()` 时调 `conn->prepare`，由驱动内部查"本连接"的缓存——这就是 `DataSource::query/execute(params)` 的**透明自动缓存**（用法见上文「预编译语句复用」）。要生成键时不走这条路径（见下文注意事项）。
+四驱动（`MySQLConnection` / `PostgresConnection` / `OracleConnection` / `OdbcConnection`）各自在 `prepare()` 内维护一份本连接的句柄缓存。`Session::runPreparedQuery` / `runPreparedExec` 在 `preparedPathUsable()` 时调 `conn->prepare`，由驱动内部查"本连接"的缓存——这就是 `DataSource::query/execute(params)` 的**透明自动缓存**（用法见上文「预编译语句复用」）。要生成键时不走这条路径（见下文注意事项）。
 
 实现：每个连接对象持有 SQL→句柄缓存、LRU 链表和句柄 ID→缓存键索引。后者用于 O(1) 验证显式句柄仍属于当前连接且未被淘汰。连接归还池后缓存保留、下次借到同一连接直接复用；连接关闭 `close()` → `closeAllPrepared()` 释放全部原生句柄并清空索引。
 
@@ -727,14 +726,14 @@ sqlconduit::SQLConduit::addInterceptor(std::make_shared<TenantQuotaInterceptor>(
 
 ## 动态数据源（v0.4.0 M4：运行时增删）
 
-`SQLConduit::init` 启动后，你仍然可以在运行时增删数据源与组——配置不再是一次性快照：
+`client.init` 启动后，你仍然可以在运行时增删数据源与组——配置不再是一次性快照：
 
 | 方法 | 用途 |
 | --- | --- |
-| `SQLConduit::addDataSource(cfg, opts)` | 注册一个新的叶子数据源（建池 + 启动心跳 + 插入 DataSource） |
-| `SQLConduit::removeDataSource(name, grace=5s)` | 注销一个叶子数据源；被组引用时拒绝 |
-| `SQLConduit::addGroup(cfg, opts)` | 注册一个读写组（主 + 副本 + 故障转移 + 可选写缓冲） |
-| `SQLConduit::removeGroup(name, grace=5s)` | 注销一个组；停止其写缓冲线程 |
+| `client.addDataSource(cfg, opts)` | 注册一个新的叶子数据源（建池 + 启动心跳 + 插入 DataSource） |
+| `client.removeDataSource(name, grace=5s)` | 注销一个叶子数据源；被组引用时拒绝 |
+| `client.addGroup(cfg, opts)` | 注册一个读写组（主 + 副本 + 故障转移 + 可选写缓冲） |
+| `client.removeGroup(name, grace=5s)` | 注销一个组；停止其写缓冲线程 |
 
 `opts` 走 `core::DataSourceOptions` / `core::GroupOptions`，分别控制 `retry` / `circuit_breaker` / `rate_limiter` / `cursor` / `attach_heartbeat` 与 `acknowledge_external_fencing` / `acknowledge_data_loss_and_duplicates`。后者两个 ack 标志与 `init()` 一致——`addGroup` 不允许隐式启用自动写切换或写缓冲，调用方必须显式表态。
 
@@ -747,17 +746,17 @@ sqlconduit::SQLConduit::addInterceptor(std::make_shared<TenantQuotaInterceptor>(
 - **grace 宽限期**：removeDataSource / removeGroup 的 grace 语义与 shutdown 一致——等待在途连接归还，超期强制关闭。grace=0 立即返回（池被标记 closed），适合"想下线但不想等"。
 
 ```cpp
-sqlconduit::SQLConduit::init("datasources.json");                  // 启动期基线
+client.init("datasources.json");                  // 启动期基线
 
 sqlconduit::core::DataSourceOptions leafOpts;
-sqlconduit::SQLConduit::addDataSource(cfg, leafOpts);              // 运行时加一个池
+client.addDataSource(cfg, leafOpts);              // 运行时加一个池
 
 sqlconduit::core::GroupOptions grpOpts;
 grpOpts.acknowledge_external_fencing = true;          // 必填：自动写切换需明确同意
-sqlconduit::SQLConduit::addGroup(grp, grpOpts);                    // 运行时组一个读写组
+client.addGroup(grp, grpOpts);                    // 运行时组一个读写组
 
-sqlconduit::SQLConduit::removeGroup("legacy_grp");                 // 先卸组
-sqlconduit::SQLConduit::removeDataSource("legacy_leaf");           // 再卸叶子
+client.removeGroup("legacy_grp");                 // 先卸组
+client.removeDataSource("legacy_leaf");           // 再卸叶子
 ```
 
 并发安全由 `mtx_` 保证——多线程同时 addDataSource 不同名互不干扰；同名并发里后到者以 `ConfigError` 优雅失败，**不会**让两个调用者都以为自己成功。详细并发行为见 `tests/sqlconduit_dynamic_test.cpp`（79 项断言，16 个场景覆盖 add/remove/group/ack/并发/grace）。
@@ -793,7 +792,7 @@ sqlconduit::SQLConduit::removeDataSource("legacy_leaf");           // 再卸叶�
 - **事务内不重试**这条不变量（I4）——事务内语句根本不进重试循环；
 - **非可重试错误**（业务/约束冲突）照旧不重试——声明只覆盖"连接类可重试错误"这一档。
 
-异步路径同源：`async::execute` 的 `maxAttempts` 读取 submit 时刻栈顶 `ContextScope` 的快照（`entryCtx.idempotency`），与同步 `resolveWriteAttempts` 用同一张优先级表。详细行为见 `tests/sqlconduit_idempotency_test.cpp`（19 项断言，9 个场景覆盖三态 × 同步/异步 × 读路径不受影响）。
+`Client::*Async` 在提交时捕获栈顶 `ContextScope`，worker 使用其中的 `idempotency`，并与同步路径采用同一张重试优先级表。详细行为见 `tests/sqlconduit_idempotency_test.cpp`。
 
 ## 影子库路由（v0.4.0 M6：把整组流量切到影子数据源）
 
@@ -820,7 +819,7 @@ sqlconduit::SQLConduit::removeDataSource("legacy_leaf");           // 再卸叶�
 **触发**：通过 SPI（最常用——按租户 / 灰度比例灵活切换）：
 
 ```cpp
-sqlconduit::SQLConduit::addInterceptor({
+client.addInterceptor({
     .onRoute = [](const std::string&, const std::string&,
                   sqlconduit::common::OperationType,
                   sqlconduit::common::SqlContext &ctx) {
@@ -830,7 +829,7 @@ sqlconduit::SQLConduit::addInterceptor({
 });
 ```
 
-或者直接用线程本地 `ContextScope`（同一线程 / 协程全程生效）：
+或者直接用线程本地 `ContextScope`（同一调用链内生效）：
 
 ```cpp
 sqlconduit::common::ContextScope scope({.shadow = true});
@@ -936,8 +935,8 @@ public:
     void onCompletion(const sqlconduit::core::ExecutionView&) override {}
 };
 
-// 在 SQLConduit::init 之前注册：
-sqlconduit::SQLConduit::addInterceptor(std::make_shared<MaskingInterceptor>());
+// 在 client.init 之前注册：
+client.addInterceptor(std::make_shared<MaskingInterceptor>());
 sqlconduit::core::InterceptorRegistry::setEnabled(true);
 ```
 
@@ -947,7 +946,7 @@ sqlconduit::core::InterceptorRegistry::setEnabled(true);
 |---|---|
 | `DataSource::queryUngated`（同步） | 在顶层 `afterExecution` 之前保存原始结果 |
 | `DataSource::cacheStore`（同步） | `if (rows.transformed) return;` |
-| `async::query` 的 `step2Statement`（异步） | `if (policy.cacheable && !ctx->entryCtx.shadow) target->cacheStore(...)` ——`cacheStore` 内部守卫命中 |
+| `Client::queryAsync`（异步） | worker 只缓存拦截器处理前的原始结果，`cacheStore` 内部仍执行 transformed 守卫 |
 
 **为什么脱敏结果不能进缓存**：缓存存的是原始结果，脱敏是角色 / 租户相关的视图。把脱敏结果写进缓存，下一个不同权限的用户会读到上一个用户的视图——**跨用户数据泄漏**。
 
@@ -957,71 +956,32 @@ sqlconduit::core::InterceptorRegistry::setEnabled(true);
 
 不变量保留：**数据进入拦截器 → 数据出拦截器 → 缓存守卫**全程只看 `transformed` 标记位。详细行为与代码片段见 `tests/sqlconduit_redaction_test.cpp`（38 项断言，5 个场景覆盖同步 / 异步 / 缓存命中 / I10 守卫 / 改写标记）。
 
-## 异步 API（v0.2.0：回调 / future / 协程）
+## 异步 API（Client future）
 
-三种调用形态共享同一条执行管线——治理闸门（审计/限流/熔断/缓存）、重试退避、语句超时、取消——只是结果交付方式不同。在配置中开启 `async`：
+异步操作从显式 `Client` 发起，与同步操作共享该实例的数据源拓扑、缓存、审计、拦截器和观测状态。在配置中开启异步执行器：
 
 ```json
 { "async": { "enabled": true, "threads": 4, "queue_size": 4096 } }
 ```
 
-`threads` 是 worker 数（0 = hardware_concurrency），另有 1 个 timer 线程负责重试退避与超时检查；队列满时新操作以 `Overloaded` 快速失败（显式背压，不是隐式排队）。`SQLConduit::shutdown` 会先拒绝新操作、在 `grace` 内等待在途操作，然后协作式停止执行器与连接池。C++ 无法安全强杀仍在访问连接状态的线程；如果底层驱动不支持取消，停机可能继续等到该驱动调用返回/网络超时。
-
-**回调式（热路径）**——完成回调由完成调度器投递，绝不在调用栈上执行；返回的 `Handle` 支持取消：
+`threads` 是 worker 数（0 表示 `hardware_concurrency`）；队列满时新操作以 `Overloaded` 快速失败。`shutdown()` 会拒绝新操作、排空已提交任务，再关闭本实例的执行器和连接池。
 
 ```cpp
-sqlconduit::async::Options opts;
-opts.timeout = std::chrono::milliseconds(2000);   // 语句整体期限（兜底）
-auto h = sqlconduit::async::query("SELECT id FROM users WHERE age > ?",
-                            {sqlconduit::common::Value(std::int64_t(18))},
-    [](sqlconduit::async::QueryResult &&r) {            // 跑在完成调度器线程，须短小
-        if (r.status.ok()) useRows(std::move(r.rows));
-    }, opts);
-// 需要中途放弃时：h.cancel() —— Queued 不碰池；Running 尽力转发驱动 cancel
+auto query = client.queryAsync(
+    "SELECT id FROM users WHERE age > ?",
+    {sqlconduit::common::Value(std::int64_t(18))});
+auto qr = query.get();
+if (qr.status.ok()) useRows(std::move(qr.rows));
+
+auto update = client.executeAsync(
+    "UPDATE users SET active = 1 WHERE id = ?",
+    {sqlconduit::common::Value(std::int64_t(7))});
+auto er = update.get(); // er.status / er.affected
 ```
 
-**future 式（便利形态）**——无取消能力（需要取消用回调式拿 `Handle`）；未取值即析构是合法用法：
+可用方法包括 `queryAsync()`、`queryAllAsync()`、`executeAsync()`、`executeKeysAsync()`、`queryEachAsync()`、`executeBatchAsync()` 和 `transactionAsync()`。它们返回标准 `std::future`；未取值直接析构是合法用法。
 
-```cpp
-auto fut = sqlconduit::async::execute("UPDATE users SET active = 1 WHERE id = ?",
-                                {sqlconduit::common::Value(std::int64_t(7))});
-auto r = fut.get();   // r.status / r.affected
-```
-
-**协程式（可选，C++20）**——惰性 `Task`，`co_await` 时才启动；未 `co_await` 直接析构 = 安全放弃。治理/重试/取消/超时与回调形态完全同源，协程恢复线程 = 完成调度器线程：
-
-```bash
-cmake .. -DSQLCONDUIT_ENABLE_ASYNC_CORO=ON   # 仅 task.cpp 提标 C++20，其余 TU 仍为 C++17
-```
-
-```cpp
-#include "sqlconduit/async/task.h"   // 本 TU 必须以 C++20 编译
-
-sqlconduit::async::Task<void> demo() {
-    // 参数先具名构造：co_await 实参里的花括号临时会触发 GCC 13 ICE（见下方注意事项）
-    sqlconduit::common::Params params;
-    params.push_back(sqlconduit::common::Value(std::int64_t(18)));
-
-    auto q = co_await sqlconduit::async::queryAsync("SELECT id FROM users WHERE age > ?", params);
-    if (q.status.ok()) useRows(std::move(q.rows));
-
-    auto tx = co_await sqlconduit::async::transactionAsync({}, [](sqlconduit::core::Session &s) {
-        std::int64_t n = 0;
-        return s.execute("UPDATE users SET active = 1", n);  // 非 Ok 自动回滚
-    });
-}
-
-sqlconduit::async::run(demo());   // 受控 fire-and-forget：跑完自毁，不悬垂
-```
-
-**自定义执行器（asio 接入）**：实现 `IExecutor::post(std::function<void()>)`，再通过 `sqlconduit::async::setExecutor(...)` 注入适配器；完成回调与协程恢复会发生在自定义事件循环线程上。
-
-约束与注意：
-
-- 回调与事务 fn 跑在 worker 上，须短小、线程安全；**事务 fn 内部禁止调用 `sqlconduit::async::*`**（池偏小时互相等连接造成活锁），直接用同步 `Session` 方法。
-- `run()` 启动的顶层协程内未捕获异常会 `terminate`（不静默吞掉）；异常应协程内处理，或经 `co_await` 链传给有 `try/catch` 的外层。
-- 协程体不要用捕获局部引用的 lambda——闭包临时对象先于异步完成销毁，捕获会悬垂；用具名函数返回 `Task`。
-- GCC 13 已知缺陷：`co_await` 实参中直接写非平凡花括号临时（如 `{Value(1)}`）会触发编译器 ICE（PR109227 系）；参数先具名构造再传入即可规避，GCC 14+ / Clang / MSVC 不受影响。
+当前公共异步边界有意不提供全局回调门面、取消 `Handle`、自定义执行器注入或协程包装。单次语句超时通过本实例的 `async.statement_timeout_ms` 配置；若驱动不能主动取消阻塞调用，只能在驱动返回后以 best-effort 方式报告 `QueryTimeout`。事务回调运行在 worker 上，内部应直接使用同步 `Session` 方法，避免在小连接池上嵌套异步借用。
 
 ## 实体映射（v0.5.0：Row ↔ 业务实体，读写双向）
 
@@ -1056,15 +1016,15 @@ template <> struct sqlconduit::mapping::RowMapper<User> {
 ### 读
 
 ```cpp
-auto r = sqlconduit::queryAs<User>("SELECT id,name,email,balance,created_at FROM users WHERE age > ?",
+auto r = sqlconduit::queryAs<User>(client, "SELECT id,name,email,balance,created_at FROM users WHERE age > ?",
                              {sqlconduit::common::Value(std::int64_t(18))});
 if (r.status.ok()) for (auto &u : r.items) use(u);      // r.items：std::vector<User>
 
-auto one = sqlconduit::queryOneAs<User>("SELECT * FROM users WHERE id = ?",
+auto one = sqlconduit::queryOneAs<User>(client, "SELECT * FROM users WHERE id = ?",
                                   {sqlconduit::common::Value(std::int64_t(1))});
 // one.value：std::optional<User>；**多于一行是错误**，不静默取第一行
 
-sqlconduit::queryEachAs<User>("SELECT * FROM users", [](User &&u) { use(u); return true; });
+sqlconduit::queryEachAs<User>(client, "SELECT * FROM users", [](User &&u) { use(u); return true; });
 ```
 
 游标与事务内同样可用：`sqlconduit::fetchAs<T>(cursor)`、`sqlconduit::queryAs<T>(session, sql)`。
@@ -1081,9 +1041,9 @@ auto insM = sqlconduit::insertSql<User>("users",
                                                  // "INSERT INTO `users` (...) VALUES (?, ...)"
 auto upd = sqlconduit::updateSql<User>("users");        // "UPDATE \"users\" SET ... WHERE \"id\" = ?"
 
-auto k = sqlconduit::insertAs("users", u);              // 执行 + 生成键回填到主键字段
-auto n = sqlconduit::updateAs("users", u);              // 按 PrimaryKey 定位
-auto b = sqlconduit::insertBatchAs("users", std::vector<User>{...});
+auto k = sqlconduit::insertAs(client, "users", u);              // 执行 + 生成键回填到主键字段
+auto n = sqlconduit::updateAs(client, "users", u);              // 按 PrimaryKey 定位
+auto b = sqlconduit::insertBatchAs(client, "users", std::vector<User>{...});
 ```
 
 **标识符引号按方言生成**：`insertSql<T>(table)` / `updateSql<T>(table)` 不传 `Dialect` 时是**方言中立**的
@@ -1130,7 +1090,7 @@ MySQL 走基类批量循环里的 `mysql_insert_id`。
 
 - **查询缓存**：只缓存原始 `ResultSet`，命中后再映射——实体从不进缓存。
 - **脱敏**：映射发生在 `afterExecution` 之后，业务实体拿到的是脱敏后的值。
-- **异步**：`sqlconduit::async::queryAs<T>` 提供回调 / future / 协程三形态，映射跑在**完成投递线程**（默认 worker；注入 asio 时是 `io_context` 线程），因此映射逻辑必须轻量——大结果集走 `queryEachAs` 流式分流。
+- **异步**：先调用 `client.queryAsync()`，再对返回的 `ResultSet` 使用 `mapping::fromRows<T>()`；大结果集使用同步的 `queryEachAs(client, ...)` 流式消费。
 
 ## PostgreSQL 数组 / 复合 / 几何类型
 
@@ -1175,7 +1135,7 @@ struct Value : ValueBase { using ValueBase::ValueBase; };
 common::Array tags;  tags.items = {Value{"red"}, Value{"blue"}};
 common::Composite addr; addr.fields = {{"city", Value{"Shanghai"}}, {"zip", Value{"200000"}}};
 
-SQLConduit::execute("INSERT INTO t (tags, addr, pt) VALUES (?, ?, ?)",
+client.execute("INSERT INTO t (tags, addr, pt) VALUES (?, ?, ?)",
               Params{ Value{tags}, Value{addr},
                       Value{common::Json{common::pgFormatPoint(common::PgPoint{1, 2})}} }, n);
 ```
@@ -1363,7 +1323,7 @@ CallParams params{
     CallParam::refCursor()
 };
 CallOutput result;
-auto status = sqlconduit::SQLConduit::call("BEGIN report_pkg.run(?, ?, ?); END;", params, result);
+auto status = client.call("BEGIN report_pkg.run(?, ?, ?); END;", params, result);
 // result.outParams[0] 是标量 OUT；result.sets[0] 是 REF CURSOR
 ```
 
@@ -1437,12 +1397,12 @@ ORA-04043，其他数据库错误照常返回。
 util::CreateRoutineOptions o;
 o.dataSource = "main";
 o.stripDelimiter = true;          // 默认：剥离脚本里的 DELIMITER 指令并留痕
-util::createRoutine("CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END", o);
+util::createRoutine(client, "CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END", o);
 
 util::RoutineRef ref{"public.p", util::RoutineKind::Procedure, "pg"};
 util::DropRoutineOptions d;
 d.cascade = true;                 // 仅 PG；其余方言 → NotSupported
-util::dropRoutine(ref, d);
+util::dropRoutine(client, ref, d);
 ```
 
 `replace`（`CREATE OR REPLACE`）仅 PG 支持，创建时的 `ifNotExists` 各方言都不支持 → 一律
@@ -1454,8 +1414,8 @@ util::dropRoutine(ref, d);
 util::IndexSpec spec{"t", "idx_t_a", {"a", "b"}};
 spec.unique = true;
 spec.usingMethod = "BTREE";       // MySQL 放列清单之后，PG 放 ON 之后，SQL Server 不支持
-util::createIndex(spec);
-util::dropIndex("t", "idx_t_a");
+util::createIndex(client, spec);
+util::dropIndex(client, "t", "idx_t_a");
 ```
 
 `ifNotExists` / `concurrent` 仅 PG；`CONCURRENTLY` 在事务块内会返回 `TxError`（PG 语义）。
@@ -1470,18 +1430,18 @@ util::RoutineRef proc{"p", util::RoutineKind::Procedure, "my"};
 util::CallParams params;
 params.emplace_back(common::Value(std::int64_t(7)));
 util::CallResult r;
-util::call(proc, params, r);
+util::call(client, proc, params, r);
 // r.sets：本次调用产生的每个结果集；r.rowCount()：行数合计
 
 // OUT / INOUT —— 必须走 Session 重载
 params.emplace_back(util::CallParam{util::ParamDirection::Out, common::Value(std::int64_t(0))});
-SQLConduit::transaction("my", [&](core::Session &s) { return util::call(s, proc, params, r); });
+client.transaction("my", [&](core::Session &s) { return util::call(client, s, proc, params, r); });
 // r.outParams[0] 即 OUT 值
 
 // 只要 affected：returnsRows = false
 util::CallOptions o;
 o.returnsRows = false;
-util::call(proc, params, r, o);
+util::call(client, proc, params, r, o);
 ```
 
 | 方言 | OUT | INOUT | 机制与限制 |
@@ -1491,8 +1451,8 @@ util::call(proc, params, r, o);
 | PostgreSQL（存储过程） | ❌ | ❌ | PG 的 `CALL` 不把 OUT 回传客户端 → `NotSupported` |
 | SQL Server | ❌ | ❌ | 需先 `DECLARE @var <type>`，SQLConduit 无法推断类型 → `NotSupported` |
 
-异步路径没有连接亲和，`SELECT @var` 可能落到另一条连接上，因此**异步不支持 OUT / INOUT**；
-需要多结果集时用 `async::util::callAll()`（回调 / future / 协程三形态）。
+异步 util 包装已移除；需要多结果集时使用同步 `util::call(client, ...)`，需要 OUT / INOUT
+时使用带 `Session` 的重载以保持连接亲和。
 
 多结果集依赖驱动能力：MySQL 实现了真正的 `mysql_next_result` 收集；其余驱动退化为"单结果集"。
 MySQL 的 `query` / `execute` 现在会消费完剩余结果集（否则连接会停在 `Commands out of sync`），
@@ -1507,7 +1467,6 @@ MySQL 的 `query` / `execute` 现在会消费完剩余结果集（否则连接�
 
 - 治理：每条语句走 `detail::runDdl`，与 `createRoutine` / `createIndex` 同源（强制主库、清除 shadow、默认 `NonIdempotent`、失效缓存）。
 - 错误：`readSqlFile` 失败或目录不存在 → `ErrorCode::IoError`；`stopOnError=true`（默认）首错即停，`false` 跑完全部、最后一条错误胜出；逐文件 `ScriptResult`（`path` / `status` / `statements` / `executed`）。
-- 异步：`async::util` 同样提供回调 / future / 协程三形态；语句严格串行，前一条完成后才调度下一条。回调形态返回聚合 `Handle`，`state()` 跟踪当前语句，`cancel()` 会取消当前操作并阻止后续语句调度；即使 `stopOnError=false`，最终状态仍保留最后一次错误。每条语句用 `ExecScope` 包治理走 `async::execute`。
 
 ### 治理行为（不变量）
 
@@ -1518,7 +1477,7 @@ MySQL 的 `query` / `execute` 现在会消费完剩余结果集（否则连接�
 | I3 | 结构变更后失效该数据源的查询缓存（由核心 `markWrite()` 保证） |
 | I4 | 审计仍生效：黑白名单 / read-only / `require_limit_select` 全部保留，只豁免"例程体里的分号" |
 | I5 | 不支持的方言组合显式 `NotSupported`，不静默降级 |
-| I7 | 异步三形态（回调 / future / 协程）与同步同源，治理链路与错误码一致 |
+| I7 | 所有 util 操作通过显式 `Client&` 共享同一治理状态与错误码 |
 
 ### 审计与例程体（v0.5.1 修的核心 bug）
 
@@ -1533,7 +1492,7 @@ PG 的 `$$ ... $$` 体本来就被字面量 mask，所以这个 bug 只在 MySQL
 ### 已知限制
 
 1. **多结果集**：MySQL / SQL Server 的 `CALL` 已支持多结果集收集；其余驱动退化为单结果集。
-2. **OUT / INOUT 参数**：MySQL（需 `Session`）、postgres 函数已支持；postgres 存储过程 / SQL Server / 异步路径返回 `NotSupported`。
+2. **OUT / INOUT 参数**：MySQL（需 `Session`）、postgres 函数已支持；postgres 存储过程与 SQL Server 返回 `NotSupported`。
 3. **事务内 DDL**：MySQL 隐式提交、不可回滚；util 无法改变，DDL 默认不带事务执行。
 4. **例程体不做翻译**：跨库部署请维护 N 份方言脚本，由 util 统一管理与执行。
 
@@ -1588,21 +1547,21 @@ PG 的 `$$ ... $$` 体本来就被字面量 mask，所以这个 bug 只在 MySQL
 `include_*_values` 后才会进入日志；SQL 和单参数都有长度上限。
 
 ```cpp
-sqlconduit::SQLConduit::setObserver([](const sqlconduit::common::OperationEvent& event) {
+client.setObserver([](const sqlconduit::common::OperationEvent& event) {
     // event: 数据源、操作类型、耗时、结构化状态、行数和 SQL 指纹。
     // SQL 日志与慢 SQL 均未开启时，默认仍不包含 SQL 或参数。
 });
 
-auto topSlow = sqlconduit::SQLConduit::slowSqlStats(20, "main");       // 平均耗时倒序
-auto recent = sqlconduit::SQLConduit::recentSlowSql(50, "main");      // 最近发生倒序
-sqlconduit::SQLConduit::clearSlowSqlStats();
+auto topSlow = client.slowSqlStats(20, "main");       // 平均耗时倒序
+auto recent = client.recentSlowSql(50, "main");      // 最近发生倒序
+client.clearSlowSqlStats();
 
 sqlconduit::core::ConnectionPool::Stats stats;
-if (sqlconduit::SQLConduit::poolStats(stats, "app")) {
+if (client.poolStats(stats, "app")) {
     // min/max、utilization()、idle/borrowed/waiting、高水位、借出等待耗时、淘汰计数等。
 }
 
-auto physicalPools = sqlconduit::SQLConduit::allPoolStats();
+auto physicalPools = client.allPoolStats();
 ```
 
 慢 SQL 使用参数化模板指纹聚合，并通过固定容量与耗时直方图控制内存。观察器异常会被隔离，
@@ -1635,8 +1594,8 @@ ds.execute("UPDATE t SET v = ? WHERE id = ?", ...);
   的操作保留空 trace，避免给不存在的链路伪造一条 trace 误导聚合。
 - **日志格式**：`sql_log.mode == "full"` 且 trace 非空时，行尾追加 `trace=... span=...`
   便于按 trace 拉一段窗口，不污染无 trace 传统链路。
-- **异步自动传递**：M1 已为 `StatementOp` / `SessionOp` 拍 `entryCtx` 快照，worker
-  线程执行前会自动 `ContextScope(entryCtx)` 装回，调用方无需手工跨线程。
+- **异步自动传递**：`Client::*Async` 在提交时拍上下文快照，worker 线程执行前会用
+  `ContextScope` 恢复，调用方无需手工跨线程。
 
 **W3C `traceparent` 解析与格式化**：
 
@@ -1671,7 +1630,7 @@ ctx.shadow   = true;            // 这个租户分流到影子库
 sqlconduit::common::ContextScope scope(ctx);
 
 // SPI afterExecution 已置 view.result->transformed=true
-sqlconduit::SQLConduit::setObserver([](const sqlconduit::common::OperationEvent &event) {
+client.setObserver([](const sqlconduit::common::OperationEvent &event) {
     if (event.shadow && event.status.ok()) {
         shadowQps[event.dataSource]++;
     }
@@ -1687,8 +1646,8 @@ sqlconduit::SQLConduit::setObserver([](const sqlconduit::common::OperationEvent 
 - **影子标记的同步路径**：`runWithInterceptors` 把 `onRoute` 决策后的 `routeCtx`
   作为 `ContextScope` 压入线程栈顶，`emitSql` 在最早期读栈顶 → 影子标记与
   `readTarget` / `writeTargets` 用的是同一份决策，不会出现"标记为影子但路由到主"。
-- **影子标记的异步路径**：`StatementOp::entryCtx` 在 submit 时拍快照，worker
-  执行前 `ContextScope(entryCtx)` 装回，影子标记随 op 跨线程传递且不污染下一次提交。
+- **影子标记的异步路径**：`Client::*Async` 在 submit 时拍上下文快照，worker
+  执行前用 `ContextScope` 恢复，影子标记跨线程传递且不污染下一次提交。
 - **`transformed` 只来自查询**：write / batch / stream / executePrepared 不带
   `ResultSet`，`observeSql` 传 `nullptr`，`event.transformed` 默认 false——失败的
   写不该被算成脱敏失败，标记语义对调用方清晰。
@@ -1813,7 +1772,7 @@ target_link_libraries(my_app PRIVATE sqlconduit::sqlconduit)
 
 `sqlconduit::sqlconduit` 只导出自身头文件路径与必需的编译定义；驱动客户端库的链接参数在
 `find_package` 时按本机环境解析（见下节）。nlohmann/json 是纯构建期私有依赖，不随包安装也不导出，
-因此不会与系统或其它依赖的同名头文件冲突。`SQLConduit::shutdown()` 退出前务必调用，回收连接池与
+因此不会与系统或其它依赖的同名头文件冲突。`client.shutdown()` 退出前务必调用，回收连接池与
 心跳线程。把 SQLConduit 当子项目用时传 `-DSQLCONDUIT_INSTALL=OFF`，上层工程不会多出安装规则。
 
 ### 非 CMake 工程（pkg-config）
@@ -1849,7 +1808,7 @@ g++ main.cpp $(pkg-config --cflags sqlconduit) \
 
 > **预期行为（开箱提示）**
 > - 默认 `SQLCONDUIT_ENABLE_*` 全 OFF；未编译期启用的驱动，调用返回 `DriverDisabled`。
-> - 程序退出前务必调用 `SQLConduit::shutdown()` 回收连接池与心跳线程。
+> - 程序退出前务必调用 `client.shutdown()` 回收连接池与心跳线程。
 
 ## 扩展新数据库类型
 

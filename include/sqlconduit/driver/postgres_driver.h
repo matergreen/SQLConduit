@@ -18,33 +18,30 @@
 #include <pqxx/pqxx>
 #endif
 
-namespace sqlconduit::driver
-{
+namespace sqlconduit::driver {
 #ifdef SQLCONDUIT_ENABLE_POSTGRES
     using PgTx = pqxx::transaction<>;
 
-    struct PgTypeInfo
-    {
+    struct PgTypeInfo {
         std::string name;
         char kind = 0;
         pqxx::oid elem = 0;
         pqxx::oid base = 0;
     };
 
-    class PgTypeCache
-    {
+    class PgTypeCache {
     public:
-        bool load(pqxx::transaction_base& tx);
+        bool load(pqxx::transaction_base &tx);
 
-        void ensureLoaded(pqxx::transaction_base* tx);
+        void ensureLoaded(pqxx::transaction_base *tx);
 
         void markStale();
 
         [[nodiscard]] bool loaded() const { return loaded_; }
 
-        [[nodiscard]] const PgTypeInfo* find(pqxx::oid oid) const;
+        [[nodiscard]] const PgTypeInfo *find(pqxx::oid oid) const;
 
-        [[nodiscard]] const std::vector<std::pair<std::string, pqxx::oid>>* attributes(
+        [[nodiscard]] const std::vector<std::pair<std::string, pqxx::oid> > *attributes(
             pqxx::oid oid) const;
 
         [[nodiscard]] pqxx::oid resolveBase(pqxx::oid oid) const;
@@ -53,72 +50,70 @@ namespace sqlconduit::driver
 
     private:
         std::unordered_map<pqxx::oid, PgTypeInfo> types_;
-        std::unordered_map<pqxx::oid, std::vector<std::pair<std::string, pqxx::oid>>> attrs_;
+        std::unordered_map<pqxx::oid, std::vector<std::pair<std::string, pqxx::oid> > > attrs_;
         bool loaded_ = false;
         bool stale_ = false;
     };
 #endif
 
-    class PostgresConnection : public core::IDatabaseConnection
-    {
+    class PostgresConnection : public core::IDatabaseConnection {
     public:
         PostgresConnection() = default;
 
         ~PostgresConnection() override { PostgresConnection::close(); }
 
-        common::Status connect(const config::DataSourceConfig& cfg) override;
+        common::Status connect(const config::DataSourceConfig &cfg) override;
 
         common::Status ping() override;
 
-        common::Status query(const std::string& sql, common::ResultSet& out) override;
+        common::Status query(const std::string &sql, common::ResultSet &out) override;
 
-        common::Status execute(const std::string& sql, std::int64_t& affected) override;
+        common::Status execute(const std::string &sql, std::int64_t &affected) override;
 
-        common::Status query(const std::string& sql, const common::Params& params,
-                             common::ResultSet& out) override;
+        common::Status query(const std::string &sql, const common::Params &params,
+                             common::ResultSet &out) override;
 
-        common::Status execute(const std::string& sql, const common::Params& params,
-                               std::int64_t& affected) override;
+        common::Status execute(const std::string &sql, const common::Params &params,
+                               std::int64_t &affected) override;
 
-        common::Status execute(const std::string& sql, std::int64_t& affected,
-                               common::GeneratedKeys& out) override;
+        common::Status execute(const std::string &sql, std::int64_t &affected,
+                               common::GeneratedKeys &out) override;
 
-        common::Status execute(const std::string& sql, const common::Params& params,
-                               std::int64_t& affected, common::GeneratedKeys& out) override;
+        common::Status execute(const std::string &sql, const common::Params &params,
+                               std::int64_t &affected, common::GeneratedKeys &out) override;
 
         [[nodiscard]] bool supportsPrepared() const override;
 
-        common::Status prepare(const std::string& sql, const common::Params& typesSample,
-                               core::PreparedStatementHandle& out) override;
+        common::Status prepare(const std::string &sql, const common::Params &typesSample,
+                               core::PreparedStatementHandle &out) override;
 
-        common::Status executePrepared(const core::PreparedStatementHandle& h,
-                                       const common::Params& params,
-                                       common::ResultSet& out) override;
+        common::Status executePrepared(const core::PreparedStatementHandle &h,
+                                       const common::Params &params,
+                                       common::ResultSet &out) override;
 
-        common::Status executePrepared(const core::PreparedStatementHandle& h,
-                                       const common::Params& params,
-                                       std::int64_t& affected) override;
+        common::Status executePrepared(const core::PreparedStatementHandle &h,
+                                       const common::Params &params,
+                                       std::int64_t &affected) override;
 
         void closeAllPrepared() override;
 
         void setPreparedCacheLimit(int maxPerConnection) override;
 
-        common::Status queryEach(const std::string& sql, const common::Params& params,
-                                 const common::RowCallback& callback,
-                                 std::uint64_t& rows) override;
+        common::Status queryEach(const std::string &sql, const common::Params &params,
+                                 const common::RowCallback &callback,
+                                 std::uint64_t &rows) override;
 
-        common::Status executeBatch(const std::string& sql,
-                                    const common::ParamBatch& batch,
-                                    common::BatchResult& out) override;
+        common::Status executeBatch(const std::string &sql,
+                                    const common::ParamBatch &batch,
+                                    common::BatchResult &out) override;
 
-        common::Status openCursor(const std::string& sql, const common::Params& params,
-                                  const core::CursorOptions& opts,
-                                  std::unique_ptr<core::ICursor>& out) override;
+        common::Status openCursor(const std::string &sql, const common::Params &params,
+                                  const core::CursorOptions &opts,
+                                  std::unique_ptr<core::ICursor> &out) override;
 
-        std::string escapeLiteral(const common::Value& v) const override;
+        std::string escapeLiteral(const common::Value &v) const override;
 
-        bool supportsParams() const override
-        {
+        bool supportsParams() const override {
 #ifdef SQLCONDUIT_ENABLE_POSTGRES
             return true;
 #else
@@ -128,24 +123,23 @@ namespace sqlconduit::driver
 
         common::Status begin() override;
 
-        common::Status begin(const common::TransactionOptions& options) override;
+        common::Status begin(const common::TransactionOptions &options) override;
 
         common::Status commit() override;
 
         common::Status rollback() override;
 
-        common::Status savepoint(const std::string& name) override;
+        common::Status savepoint(const std::string &name) override;
 
-        common::Status releaseSavepoint(const std::string& name) override;
+        common::Status releaseSavepoint(const std::string &name) override;
 
-        common::Status rollbackToSavepoint(const std::string& name) override;
+        common::Status rollbackToSavepoint(const std::string &name) override;
 
         void close() override;
 
         bool isOpen() const override { return open_; }
 
-        [[nodiscard]] bool inTransaction() const override
-        {
+        [[nodiscard]] bool inTransaction() const override {
 #ifdef SQLCONDUIT_ENABLE_POSTGRES
             return tx_ != nullptr;
 #else
@@ -158,11 +152,11 @@ namespace sqlconduit::driver
         common::Status refreshTypeCache();
 
 #ifdef SQLCONDUIT_ENABLE_POSTGRES
-        [[nodiscard]] const PgTypeCache* typeCache() const { return &types_; }
+        [[nodiscard]] const PgTypeCache *typeCache() const { return &types_; }
 #endif
 
     private:
-        common::Status lastError(const char* where) const;
+        common::Status lastError(const char *where) const;
 
         friend class PgCursor;
 
@@ -183,13 +177,11 @@ namespace sqlconduit::driver
 #endif
     };
 
-    class PostgresDriver : public IDriver
-    {
+    class PostgresDriver : public IDriver {
     public:
-        const char* name() const override { return "postgres"; }
+        const char *name() const override { return "postgres"; }
 
-        std::unique_ptr<core::IDatabaseConnection> createConnection() override
-        {
+        std::unique_ptr<core::IDatabaseConnection> createConnection() override {
             return std::make_unique<PostgresConnection>();
         }
     };

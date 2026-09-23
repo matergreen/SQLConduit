@@ -12,7 +12,7 @@ SQLConduit 为 C++ 应用提供统一的数据库访问层。应用通过同一�
 - 统一配置重试、熔断、读写路由、限流、SQL 审计和查询缓存；
 - 查看完整 SQL、慢 SQL 与连接池统计数据。
 
-项目使用 C++17；可选协程接口使用 C++20。数据库驱动按需编译，默认全部关闭。
+项目统一使用 C++17。数据库驱动按需编译，默认全部关闭。
 
 ## 快速使用
 
@@ -31,8 +31,7 @@ cmake --build build -j
 - `SQLCONDUIT_ENABLE_MYSQL=ON`：MySQL，需要 libmysqlclient；
 - `SQLCONDUIT_ENABLE_POSTGRES=ON`：PostgreSQL，需要 libpqxx 和 libpq；
 - `SQLCONDUIT_ENABLE_ORACLE=ON`：Oracle，需要 OCI（Oracle Instant Client，Basic + SDK）；
-- `SQLCONDUIT_ENABLE_ODBC=ON`：SQL Server 等 ODBC 数据库，需要 unixODBC；
-- `SQLCONDUIT_ENABLE_ASYNC_CORO=ON`：启用 C++20 协程接口。
+- `SQLCONDUIT_ENABLE_ODBC=ON`：SQL Server 等 ODBC 数据库，需要 unixODBC。
 
 Linux、macOS 的依赖安装方式见[详细构建说明](docs/guide.md#构建wsl--linux)。
 
@@ -81,21 +80,22 @@ SQL 使用 `?` 占位，参数由驱动原生绑定：
 #include <string>
 
 int main() {
-    auto status = sqlconduit::SQLConduit::init("config/datasources.json");
+    sqlconduit::Client client;
+    auto status = client.init("config/datasources.json");
     if (!status.ok()) return 1;
 
     sqlconduit::common::ResultSet rows;
     sqlconduit::common::Params params{std::int64_t(42)};
-    status = sqlconduit::SQLConduit::query(
+    status = client.query(
         "SELECT id, name FROM users WHERE id = ?", params, rows);
 
     std::int64_t affected = 0;
     if (status.ok()) {
-        status = sqlconduit::SQLConduit::execute(
+        status = client.execute(
             "UPDATE users SET last_seen = now() WHERE id = ?", params, affected);
     }
 
-    sqlconduit::SQLConduit::shutdown();
+    client.shutdown();
     return status.ok() ? 0 : 1;
 }
 ```
@@ -103,15 +103,51 @@ int main() {
 指定数据源时，把名称作为第一个参数：
 
 ```cpp
-sqlconduit::SQLConduit::query("analytics", "SELECT count(*) FROM events", rows);
+client.query("analytics", "SELECT count(*) FROM events", rows);
 ```
+
+`Client` 是唯一的高层运行时入口，也是 move-only 类型；每个实例拥有独立的连接拓扑，
+析构时自动关闭自己管理的连接池。初始化成功后再次调用 `init()` 会返回
+`AlreadyInitialized`，配置更新应使用 `reload()`：
+
+```cpp
+sqlconduit::Client client;
+auto status = client.init("config/datasources.json");
+if (!status.ok()) return 1;
+
+sqlconduit::common::ResultSet rows;
+status = client.query("SELECT id, name FROM users", rows);
+
+client.shutdown();
+```
+
+每个 `Client` 独立持有查询缓存、SQL 审计、拦截器与观测状态；可通过
+`setObserver()` 注册实例级回调，并用 `slowSqlStats()` / `recentSlowSql()` 读取该实例的
+慢 SQL 数据。库不再提供隐式的进程级默认客户端。
+
+实例客户端同时提供 future 风格异步接口，任务由该实例自己的执行器和连接拓扑处理：
+
+```cpp
+auto pending = client.queryAsync("SELECT id, name FROM users WHERE id = ?",
+                                 {std::int64_t(42)});
+auto result = pending.get();
+if (!result.status.ok()) return 1;
+```
+
+`queryAsync()`、`queryAllAsync()`、`executeAsync()`、`executeKeysAsync()`、
+`queryEachAsync()`、`executeBatchAsync()` 和 `transactionAsync()` 均不会访问其他
+`Client` 的状态。`async.enabled: false` 时会返回一个已经就绪且状态为
+`ConfigError` 的 future。
+
+公共头文件的稳定性分层、0.x 兼容规则和当前异步边界见
+[公共 API 稳定性约定](docs/api_stability.md)。
 
 ### 4. 事务
 
 多条语句必须通过 `transaction()` 固定在同一连接上。回调成功时提交，返回失败或抛出异常时自动回滚：
 
 ```cpp
-auto status = sqlconduit::SQLConduit::transaction([](sqlconduit::core::Session &session) {
+auto status = client.transaction([](sqlconduit::core::Session &session) {
     std::int64_t affected = 0;
     auto result = session.execute(
         "UPDATE accounts SET balance = balance - ? WHERE id = ?",
@@ -146,12 +182,12 @@ template <> struct sqlconduit::mapping::RowMapper<User> {
     }
 };
 
-auto r = sqlconduit::queryAs<User>("SELECT id, name, email FROM users WHERE id = ?",
+auto r = sqlconduit::queryAs<User>(client, "SELECT id, name, email FROM users WHERE id = ?",
                              {std::int64_t(42)});
 if (r.status.ok() && !r.items.empty()) use(r.items[0]);
 ```
 
-类型不符、NULL 落到非 `optional` 成员返回 `MappingError`（不填默认值）；缺列默认跳过、多余列默认忽略，可分别用 `.missingColumns(...)` / `.extraColumns(...)` 收紧。写方向有 `paramsOf` / `insertSql` / `updateSql` / `insertAs` / `updateAs` / `insertBatchAs`，并支持生成键回填。异步侧 `sqlconduit::async::queryAs<T>` 提供回调 / future / 协程三形态。
+类型不符、NULL 落到非 `optional` 成员返回 `MappingError`（不填默认值）；缺列默认跳过、多余列默认忽略，可分别用 `.missingColumns(...)` / `.extraColumns(...)` 收紧。写方向有 `paramsOf` / `insertSql` / `updateSql` / `insertAs` / `updateAs` / `insertBatchAs`，并支持生成键回填。异步查询可先调用 `client.queryAsync()`，再用 `mapping::fromRows<T>()` 映射结果。
 
 ### 5.x 例程与索引（`sqlconduit/util.h`）
 
@@ -163,17 +199,17 @@ namespace util = sqlconduit::common::util;
 
 util::CreateRoutineOptions o;
 o.dataSource = "main";
-auto st = util::createRoutine(R"(CREATE PROCEDURE p(IN x INT) BEGIN UPDATE t SET a = x; END)", o);
+auto st = util::createRoutine(client, R"(CREATE PROCEDURE p(IN x INT) BEGIN UPDATE t SET a = x; END)", o);
 
 util::RoutineRef fn{"public.f", util::RoutineKind::Function, "pg"};
 std::string sql;
 util::makeCallSql(fn, 2, util::Dialect::Postgres, true, sql);   // SELECT * FROM "public"."f"(?, ?)
 
 common::ResultSet rs;
-util::callQuery(sql, {common::Value(std::int64_t(1))}, rs);
+util::callQuery(client, sql, {common::Value(std::int64_t(1))}, rs);
 
 util::IndexSpec idx{"t", "idx_t_a", {"a"}, false, false, false, "BTREE"};
-util::createIndex(idx);
+util::createIndex(client, idx);
 ```
 
 结构化调用可以一次拿回**全部结果集**，并支持 OUT / INOUT 参数：
@@ -185,18 +221,17 @@ util::RoutineRef proc{"p", util::RoutineKind::Procedure, "my"};
 util::CallParams params;
 params.emplace_back(common::Value(std::int64_t(7)));
 util::CallResult r;
-util::call(proc, params, r);   // r.sets / r.rowCount() / r.affected
+util::call(client, proc, params, r);   // r.sets / r.rowCount() / r.affected
 
 // OUT / INOUT：必须用 Session 重载（需要在同一条连接上回读会话变量）
 params.emplace_back(util::CallParam{util::ParamDirection::Out, common::Value(std::int64_t(0))});
-SQLConduit::transaction("my", [&](core::Session &s) { return util::call(s, proc, params, r); });
+client.transaction("my", [&](core::Session &s) { return util::call(client, s, proc, params, r); });
 // r.outParams[0] 即 OUT 值
 ```
 
 OUT / INOUT 的方言支持范围：MySQL（需 `Session`）、postgres 函数（池路径即可，值来自结果行前 N 列）；
 Oracle 可用 `CallParam::out(common::ValueType::String)` 和 `CallParam::refCursor()` 直接走池路径；
-postgres 存储过程与 SQL Server 返回 `NotSupported`，异步路径同样不支持（无连接亲和）。
-异步侧用 `async::util::callAll()` 收集多结果集。
+postgres 存储过程与 SQL Server 返回 `NotSupported`。
 
 治理行为：DDL 强制走主库（清除 shadow 标记）、默认 `NonIdempotent`（不重试）、
 结构变更后失效该数据源查询缓存；方言不支持的组合（`CREATE OR REPLACE`、
@@ -211,15 +246,13 @@ postgres 存储过程与 SQL Server 返回 `NotSupported`，异步路径同样�
 util::ScriptOptions o;
 o.dataSource = "main";
 
-util::runScriptsInDir("./migrations", o);                                  // 递归执行目录下所有 .sql
-util::runScripts({"./a.sql", "./b.sql"}, o);                               // 显式文件列表
-util::runScriptText("CREATE TABLE t(id INT); INSERT INTO t VALUES (1);", o); // 内存脚本
+util::runScriptsInDir(client, "./migrations", o);                                  // 递归执行目录下所有 .sql
+util::runScripts(client, {"./a.sql", "./b.sql"}, o);                               // 显式文件列表
+util::runScriptText(client, "CREATE TABLE t(id INT); INSERT INTO t VALUES (1);", o); // 内存脚本
 ```
 
 失败时：文件 / 目录问题返回 `IoError`；语句错误按 `stopOnError`（默认 `true`）首错即停，
 `stopOnError=false` 跑完全部、最后一条错误胜出。逐文件结果落在 `perFile`。
-异步见 `async::util::runScriptText` / `runScripts` / `runScriptsInDir`（回调 / future / 协程）；
-语句严格串行调度，回调形态返回的 `Handle` 可查询状态或取消剩余脚本。
 
 ### 6. 运行测试
 
@@ -291,7 +324,7 @@ g++ -std=c++17 app.cpp $(pkg-config --cflags sqlconduit) \
 include(FetchContent)
 FetchContent_Declare(sqlconduit
     GIT_REPOSITORY https://github.com/matergreen/SQLConduit.git
-    GIT_TAG        v0.6.0)
+    GIT_TAG        v0.7.0)
 FetchContent_MakeAvailable(sqlconduit)
 
 target_link_libraries(your_target PRIVATE sqlconduit::sqlconduit)

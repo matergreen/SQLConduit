@@ -17,62 +17,59 @@
 #include <oci.h>
 #endif
 
-namespace sqlconduit::driver
-{
-    class OracleConnection : public core::IDatabaseConnection
-    {
+namespace sqlconduit::driver {
+    class OracleConnection : public core::IDatabaseConnection {
     public:
         OracleConnection() = default;
 
         ~OracleConnection() override { OracleConnection::close(); }
 
-        common::Status connect(const config::DataSourceConfig& cfg) override;
+        common::Status connect(const config::DataSourceConfig &cfg) override;
 
         common::Status ping() override;
 
-        common::Status query(const std::string& sql, common::ResultSet& out) override;
+        common::Status query(const std::string &sql, common::ResultSet &out) override;
 
-        common::Status execute(const std::string& sql, std::int64_t& affected) override;
+        common::Status execute(const std::string &sql, std::int64_t &affected) override;
 
-        common::Status query(const std::string& sql, const common::Params& params,
-                             common::ResultSet& out) override;
+        common::Status query(const std::string &sql, const common::Params &params,
+                             common::ResultSet &out) override;
 
-        common::Status execute(const std::string& sql, const common::Params& params,
-                               std::int64_t& affected) override;
+        common::Status execute(const std::string &sql, const common::Params &params,
+                               std::int64_t &affected) override;
 
-        common::Status execute(const std::string& sql, std::int64_t& affected,
-                               common::GeneratedKeys& out) override;
+        common::Status execute(const std::string &sql, std::int64_t &affected,
+                               common::GeneratedKeys &out) override;
 
-        common::Status execute(const std::string& sql, const common::Params& params,
-                               std::int64_t& affected, common::GeneratedKeys& out) override;
+        common::Status execute(const std::string &sql, const common::Params &params,
+                               std::int64_t &affected, common::GeneratedKeys &out) override;
 
         [[nodiscard]] bool supportsPrepared() const override;
 
-        common::Status prepare(const std::string& sql, const common::Params& typesSample,
-                               core::PreparedStatementHandle& out) override;
+        common::Status prepare(const std::string &sql, const common::Params &typesSample,
+                               core::PreparedStatementHandle &out) override;
 
-        common::Status executePrepared(const core::PreparedStatementHandle& h,
-                                       const common::Params& params,
-                                       common::ResultSet& out) override;
+        common::Status executePrepared(const core::PreparedStatementHandle &h,
+                                       const common::Params &params,
+                                       common::ResultSet &out) override;
 
-        common::Status executePrepared(const core::PreparedStatementHandle& h,
-                                       const common::Params& params,
-                                       std::int64_t& affected) override;
+        common::Status executePrepared(const core::PreparedStatementHandle &h,
+                                       const common::Params &params,
+                                       std::int64_t &affected) override;
 
         void closeAllPrepared() override;
 
         void setPreparedCacheLimit(int maxPerConnection) override;
 
-        common::Status queryEach(const std::string& sql, const common::Params& params,
-                                 const common::RowCallback& callback,
-                                 std::uint64_t& rows) override;
+        common::Status queryEach(const std::string &sql, const common::Params &params,
+                                 const common::RowCallback &callback,
+                                 std::uint64_t &rows) override;
 
-        common::Status executeBatch(const std::string& sql,
-                                    const common::ParamBatch& batch,
-                                    common::BatchResult& out) override;
+        common::Status executeBatch(const std::string &sql,
+                                    const common::ParamBatch &batch,
+                                    common::BatchResult &out) override;
 
-        [[nodiscard]] bool supportsMultipleResultSets() const override
-        {
+        [[nodiscard]] bool supportsMultipleResultSets() const override {
 #if defined(SQLCONDUIT_ENABLE_ORACLE) && defined(OCI_RESULT_TYPE_SELECT)
             return true;
 #else
@@ -80,23 +77,22 @@ namespace sqlconduit::driver
 #endif
         }
 
-        common::Status queryAll(const std::string& sql,
-                                std::vector<common::ResultSet>& out) override;
+        common::Status queryAll(const std::string &sql,
+                                std::vector<common::ResultSet> &out) override;
 
-        common::Status queryAll(const std::string& sql, const common::Params& params,
-                                std::vector<common::ResultSet>& out) override;
+        common::Status queryAll(const std::string &sql, const common::Params &params,
+                                std::vector<common::ResultSet> &out) override;
 
-        common::Status call(const std::string& sql, const common::CallParams& params,
-                            common::CallOutput& out) override;
+        common::Status call(const std::string &sql, const common::CallParams &params,
+                            common::CallOutput &out) override;
 
-        common::Status openCursor(const std::string& sql, const common::Params& params,
-                                  const core::CursorOptions& opts,
-                                  std::unique_ptr<core::ICursor>& out) override;
+        common::Status openCursor(const std::string &sql, const common::Params &params,
+                                  const core::CursorOptions &opts,
+                                  std::unique_ptr<core::ICursor> &out) override;
 
-        std::string escapeLiteral(const common::Value& v) const override;
+        std::string escapeLiteral(const common::Value &v) const override;
 
-        bool supportsParams() const override
-        {
+        bool supportsParams() const override {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
             return true;
 #else
@@ -106,17 +102,17 @@ namespace sqlconduit::driver
 
         common::Status begin() override;
 
-        common::Status begin(const common::TransactionOptions& options) override;
+        common::Status begin(const common::TransactionOptions &options) override;
 
         common::Status commit() override;
 
         common::Status rollback() override;
 
-        common::Status savepoint(const std::string& name) override;
+        common::Status savepoint(const std::string &name) override;
 
-        common::Status releaseSavepoint(const std::string& name) override;
+        common::Status releaseSavepoint(const std::string &name) override;
 
-        common::Status rollbackToSavepoint(const std::string& name) override;
+        common::Status rollbackToSavepoint(const std::string &name) override;
 
         void close() override;
 
@@ -127,19 +123,19 @@ namespace sqlconduit::driver
         common::Status cancel() override;
 
     private:
-        common::Status runStatement(const std::string& sql, const common::Params& params,
-                                    bool isQuery, std::int64_t& affected,
-                                    common::ResultSet& out, bool collectKeys,
-                                    std::vector<std::string>& keyColumns,
-                                    const common::RowCallback& callback,
-                                    std::int64_t& streamedRows,
-                                    const std::string& cacheKey = std::string());
+        common::Status runStatement(const std::string &sql, const common::Params &params,
+                                    bool isQuery, std::int64_t &affected,
+                                    common::ResultSet &out, bool collectKeys,
+                                    std::vector<std::string> &keyColumns,
+                                    const common::RowCallback &callback,
+                                    std::int64_t &streamedRows,
+                                    const std::string &cacheKey = std::string());
 
-        common::Status lastError(const common::ErrorCode fallback, const char* where) const;
+        common::Status lastError(const common::ErrorCode fallback, const char *where) const;
 
         void dropCachedStatement(std::uint64_t id);
 
-        common::Status connectString(const config::DataSourceConfig& cfg, std::string& out) const;
+        common::Status connectString(const config::DataSourceConfig &cfg, std::string &out) const;
 
         bool open_ = false;
         bool txOpen_ = false;
@@ -154,19 +150,17 @@ namespace sqlconduit::driver
         mutable std::mutex operationMtx_;
         bool operationActive_ = false;
 #ifdef SQLCONDUIT_ENABLE_ORACLE
-        OCIEnv* env_ = nullptr;
-        OCIError* err_ = nullptr;
-        OCISvcCtx* svc_ = nullptr;
+        OCIEnv *env_ = nullptr;
+        OCIError *err_ = nullptr;
+        OCISvcCtx *svc_ = nullptr;
 #endif
     };
 
-    class OracleDriver : public IDriver
-    {
+    class OracleDriver : public IDriver {
     public:
-        const char* name() const override { return "oracle"; }
+        const char *name() const override { return "oracle"; }
 
-        std::unique_ptr<core::IDatabaseConnection> createConnection() override
-        {
+        std::unique_ptr<core::IDatabaseConnection> createConnection() override {
             return std::make_unique<OracleConnection>();
         }
     };

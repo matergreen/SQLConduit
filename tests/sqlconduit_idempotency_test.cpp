@@ -1,5 +1,4 @@
 #include "sqlconduit/sqlconduit.h"
-#include "sqlconduit/async/sqlconduit_async.h"
 #include "sqlconduit/core/database_manager.h"
 #include "sqlconduit/core/idatabase_connection.h"
 #include "sqlconduit/config/datasource_config.h"
@@ -19,26 +18,22 @@
 using namespace sqlconduit;
 using common::Status;
 using common::ErrorCode;
+static Client g_client;
 
 static int g_failed = 0;
 static int g_passed = 0;
 
-static void check(bool cond, const std::string& name)
-{
-    if (cond)
-    {
+static void check(bool cond, const std::string &name) {
+    if (cond) {
         ++g_passed;
         std::cout << "  [PASS] " << name << "\n";
-    }
-    else
-    {
+    } else {
         ++g_failed;
         std::cout << "  [FAIL] " << name << "\n";
     }
 }
 
-class MockConnection : public core::IDatabaseConnection
-{
+class MockConnection : public core::IDatabaseConnection {
 public:
     static std::atomic<int> alive;
     static std::atomic<int> execCount;
@@ -47,25 +42,21 @@ public:
     static std::atomic<int> queryFailRemaining;
     static std::atomic<bool> execFailNonRetryable;
 
-    common::Status connect(const config::DataSourceConfig&) override
-    {
+    common::Status connect(const config::DataSourceConfig &) override {
         open_ = true;
         ++alive;
         return Status::OK();
     }
 
-    common::Status ping() override
-    {
+    common::Status ping() override {
         return open_
                    ? Status::OK()
                    : Status::error(common::ErrorCode::NotConnected, "closed");
     }
 
-    common::Status query(const std::string& sql, common::ResultSet& out) override
-    {
+    common::Status query(const std::string &sql, common::ResultSet &out) override {
         ++queryCount;
-        if (queryFailRemaining > 0)
-        {
+        if (queryFailRemaining > 0) {
             --queryFailRemaining;
             return makeRetryable(ErrorCode::NotConnected, "mock query broke");
         }
@@ -75,14 +66,11 @@ public:
         return Status::OK();
     }
 
-    common::Status execute(const std::string&, std::int64_t& affected) override
-    {
+    common::Status execute(const std::string &, std::int64_t &affected) override {
         ++execCount;
-        if (execFailRemaining > 0)
-        {
+        if (execFailRemaining > 0) {
             --execFailRemaining;
-            if (execFailNonRetryable.load())
-            {
+            if (execFailNonRetryable.load()) {
                 affected = 0;
                 return Status::error(ErrorCode::Unknown, "mock non-retryable fail");
             }
@@ -92,23 +80,19 @@ public:
         return Status::OK();
     }
 
-    common::Status begin() override
-    {
+    common::Status begin() override {
         return open_ ? Status::OK() : Status::error(ErrorCode::NotConnected, "closed");
     }
 
-    common::Status commit() override
-    {
+    common::Status commit() override {
         return open_ ? Status::OK() : Status::error(ErrorCode::NotConnected, "closed");
     }
 
-    common::Status rollback() override
-    {
+    common::Status rollback() override {
         return open_ ? Status::OK() : Status::error(ErrorCode::NotConnected, "closed");
     }
 
-    void close() override
-    {
+    void close() override {
         open_ = false;
         --alive;
     }
@@ -116,8 +100,7 @@ public:
     bool isOpen() const override { return open_; }
 
 private:
-    static Status makeRetryable(ErrorCode c, const char* msg)
-    {
+    static Status makeRetryable(ErrorCode c, const char *msg) {
         auto st = Status::error(c, msg);
         st.retryable = true;
         st.connectionBroken = true;
@@ -134,19 +117,16 @@ std::atomic<int> MockConnection::execFailRemaining{0};
 std::atomic<int> MockConnection::queryFailRemaining{0};
 std::atomic<bool> MockConnection::execFailNonRetryable{false};
 
-class MockDriver : public driver::IDriver
-{
+class MockDriver : public driver::IDriver {
 public:
-    const char* name() const override { return "mock"; }
+    const char *name() const override { return "mock"; }
 
-    std::unique_ptr<core::IDatabaseConnection> createConnection() override
-    {
+    std::unique_ptr<core::IDatabaseConnection> createConnection() override {
         return std::make_unique<MockConnection>();
     }
 };
 
-static void resetMock(int execFails = 0, int queryFails = 0, bool nonRetry = false)
-{
+static void resetMock(int execFails = 0, int queryFails = 0, bool nonRetry = false) {
     MockConnection::alive = 0;
     MockConnection::execCount = 0;
     MockConnection::queryCount = 0;
@@ -155,8 +135,7 @@ static void resetMock(int execFails = 0, int queryFails = 0, bool nonRetry = fal
     MockConnection::execFailNonRetryable = nonRetry;
 }
 
-static config::DataSourceConfig mockLeafCfg(const std::string& name)
-{
+static config::DataSourceConfig mockLeafCfg(const std::string &name) {
     config::DataSourceConfig c;
     c.name = name;
     c.type = "mock";
@@ -166,8 +145,7 @@ static config::DataSourceConfig mockLeafCfg(const std::string& name)
 }
 
 static core::DataSourceOptions retryOpts(bool retryWrites, int maxAttempts,
-                                         int backoffMs = 0)
-{
+                                         int backoffMs = 0) {
     core::DataSourceOptions o;
     o.retry.retry_writes = retryWrites;
     o.retry.max_attempts = maxAttempts;
@@ -177,8 +155,7 @@ static core::DataSourceOptions retryOpts(bool retryWrites, int maxAttempts,
     return o;
 }
 
-int main()
-{
+int main() {
     driver::DriverRegistry::instance().registerDriver(
         "mock", [] { return std::make_unique<MockDriver>(); });
 
@@ -295,7 +272,7 @@ int main()
     std::cout << "== M5.8/9 异步路径：声明叠加到 maxAttempts ==\n";
     {
         const auto path = (std::filesystem::temp_directory_path() /
-            "sqlconduit_idem_async.json").string();
+                           "sqlconduit_idem_async.json").string();
         std::ofstream(path) << R"({
   "default_datasource": "main",
   "heartbeat_interval_ms": 5000,
@@ -309,18 +286,16 @@ int main()
   "datasources": [ { "name": "main", "type": "mock", "host": "localhost" } ],
   "groups": []
 })";
-        check(SQLConduit::init(path).ok(), "SQLConduit::init(async cfg) ok");
+        g_client = Client{};
+        check(g_client.init(path).ok(), "Client::init(async cfg) ok");
 
         resetMock(2);
         {
-            std::promise<async::ExecResult> pr;
-            auto fut = pr.get_future();
             common::SqlContext context;
             context.idempotency = common::Idempotency::Idempotent;
             common::ContextScope scope(context);
-            async::execute("main", "INSERT INTO t VALUES (1)",
-                           [&](async::ExecResult&& r) { pr.set_value(std::move(r)); });
-            const auto out = fut.get();
+            const auto out = g_client.executeAsync(
+                "main", "INSERT INTO t VALUES (1)", {}).get();
             check(out.status.ok(), "异步 Idempotent：重试后成功");
         }
         check(MockConnection::execCount.load() == 3,
@@ -328,23 +303,20 @@ int main()
 
         resetMock(5);
         {
-            std::promise<async::ExecResult> pr;
-            auto fut = pr.get_future();
             common::SqlContext context;
             context.idempotency = common::Idempotency::NonIdempotent;
             common::ContextScope scope(context);
-            async::execute("main", "INSERT INTO t VALUES (1)",
-                           [&](async::ExecResult&& r) { pr.set_value(std::move(r)); });
-            const auto out = fut.get();
+            const auto out = g_client.executeAsync(
+                "main", "INSERT INTO t VALUES (1)", {}).get();
             check(!out.status.ok(), "异步 NonIdempotent：不重试（失败）");
         }
         check(MockConnection::execCount.load() == 1,
               "异步 NonIdempotent 仅执行 1 次");
 
-        SQLConduit::shutdown(std::chrono::milliseconds(0));
+        g_client.shutdown(std::chrono::milliseconds(0));
     }
 
     std::cout << "\n========== M5 幂等声明 总计: " << g_passed << " 通过 / "
-        << g_failed << " 失败 ==========\n";
+            << g_failed << " 失败 ==========\n";
     return g_failed == 0 ? 0 : 1;
 }

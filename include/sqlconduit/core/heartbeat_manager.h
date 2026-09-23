@@ -9,22 +9,20 @@
 #include <mutex>
 #include <condition_variable>
 
-namespace sqlconduit::core
-{
+namespace sqlconduit::core {
     class ConnectionPool;
 
-    class HeartbeatManager
-    {
+    class HeartbeatManager {
     public:
         explicit HeartbeatManager(std::chrono::milliseconds interval);
 
         ~HeartbeatManager();
 
-        HeartbeatManager(const HeartbeatManager&) = delete;
+        HeartbeatManager(const HeartbeatManager &) = delete;
 
-        HeartbeatManager& operator=(const HeartbeatManager&) = delete;
+        HeartbeatManager &operator=(const HeartbeatManager &) = delete;
 
-        void addPool(const std::shared_ptr<ConnectionPool>& pool);
+        void addPool(const std::shared_ptr<ConnectionPool> &pool);
 
         void start();
 
@@ -38,7 +36,7 @@ namespace sqlconduit::core
         void sweepExpiredPools();
 
         std::chrono::milliseconds interval_;
-        std::vector<std::weak_ptr<ConnectionPool>> pools_;
+        std::vector<std::weak_ptr<ConnectionPool> > pools_;
         std::mutex poolsMtx_;
         std::thread thread_;
         std::mutex waitMtx_;

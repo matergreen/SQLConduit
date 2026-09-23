@@ -12,36 +12,29 @@ using namespace sqlconduit;
 static int g_failed = 0;
 static int g_passed = 0;
 
-static void check(const bool cond, const std::string& name)
-{
-    if (cond)
-    {
+static void check(const bool cond, const std::string &name) {
+    if (cond) {
         ++g_passed;
         std::cout << "  [PASS] " << name << "\n";
-    }
-    else
-    {
+    } else {
         ++g_failed;
         std::cout << "  [FAIL] " << name << "\n";
     }
 }
 
-static std::string joined(const std::vector<std::optional<std::string>>& parts)
-{
+static std::string joined(const std::vector<std::optional<std::string> > &parts) {
     std::string s;
-    for (std::size_t i = 0; i < parts.size(); ++i)
-    {
+    for (std::size_t i = 0; i < parts.size(); ++i) {
         if (i) s += '|';
         s += parts[i] ? *parts[i] : std::string("<NULL>");
     }
     return s;
 }
 
-int main()
-{
+int main() {
     std::cout << "== PG 数组文本：解析 ==\n";
     {
-        std::vector<std::optional<std::string>> parts;
+        std::vector<std::optional<std::string> > parts;
         check(common::pgParseArray("{1,2,3}", parts) && parts.size() == 3 &&
               joined(parts) == "1|2|3", "int4[] 文本 {1,2,3} 拆成 3 个元素");
 
@@ -82,7 +75,7 @@ int main()
               "空字符串序列化为 \"\"");
         check(common::pgFormatArray({"{1,2}"}) == R"({"{1,2}"})", "嵌套数组文本作为元素时引号包裹");
 
-        std::vector<std::optional<std::string>> round;
+        std::vector<std::optional<std::string> > round;
         const std::string text = common::pgFormatArray({"a", std::optional<std::string>{}, "b,c"});
         check(common::pgParseArray(text, round) && joined(round) == "a|<NULL>|b,c",
               "序列化后再解析可无损还原");
@@ -90,7 +83,7 @@ int main()
 
     std::cout << "\n== PG 复合类型文本 ==\n";
     {
-        std::vector<std::optional<std::string>> parts;
+        std::vector<std::optional<std::string> > parts;
         check(common::pgParseComposite("(a,b)", parts) && parts.size() == 2 &&
               joined(parts) == "a|b", "复合文本 (a,b) 拆成 2 个字段");
 
@@ -198,7 +191,7 @@ int main()
         check(!(copy == av), "元素不同的 Array 比较不等");
 
         int visited = 0;
-        common::visitValue([&visited](const auto&) { ++visited; }, av);
+        common::visitValue([&visited](const auto &) { ++visited; }, av);
         check(visited == 1, "visitValue 可访问 Value");
     }
 
@@ -213,7 +206,7 @@ int main()
         const common::Value av{arr};
 
         std::vector<int> ints;
-        const auto s1 = ValueConverter<std::vector<int>>::fromValue(av, ints, FieldFlags::None);
+        const auto s1 = ValueConverter<std::vector<int> >::fromValue(av, ints, FieldFlags::None);
         check(s1.ok() && ints.size() == 3 && ints[0] == 1 && ints[2] == 3,
               "Array -> std::vector<int>");
 
@@ -221,21 +214,21 @@ int main()
         common::Array sarr;
         sarr.items.push_back(common::Value{std::string("a")});
         sarr.items.push_back(common::Value{std::string("b")});
-        const auto s2 = ValueConverter<std::vector<std::string>>::fromValue(
+        const auto s2 = ValueConverter<std::vector<std::string> >::fromValue(
             common::Value{sarr}, strs, FieldFlags::None);
         check(s2.ok() && strs.size() == 2 && strs[1] == "b", "Array -> std::vector<std::string>");
 
-        const common::Value back = ValueConverter<std::vector<int>>::toValue(ints);
+        const common::Value back = ValueConverter<std::vector<int> >::toValue(ints);
         check(std::holds_alternative<common::Array>(back) &&
               std::get_if<common::Array>(&back)->items.size() == 3,
               "std::vector<int> -> Array");
 
         std::vector<double> bad;
-        const auto s3 = ValueConverter<std::vector<double>>::fromValue(av, bad, FieldFlags::Lossy);
+        const auto s3 = ValueConverter<std::vector<double> >::fromValue(av, bad, FieldFlags::Lossy);
         check(s3.ok() && bad.size() == 3 && bad[0] == 1.0, "int 数组在 Lossy 下可转 double 数组");
 
         std::vector<int> mismatch;
-        const auto s4 = ValueConverter<std::vector<int>>::fromValue(
+        const auto s4 = ValueConverter<std::vector<int> >::fromValue(
             common::Value{std::string("nope")}, mismatch, FieldFlags::None);
         check(!s4.ok() && s4.code == common::ErrorCode::MappingError,
               "非 Array 值转 vector 返回 MappingError");

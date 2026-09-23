@@ -12,22 +12,22 @@
 #include <thread>
 #include <vector>
 
-namespace sqlconduit::core
-{
-    class StatsReporter
-    {
+namespace sqlconduit::core::detail {
+    class StatsReporter {
     public:
         using PoolStatsCollector = std::function<std::vector<NamedPoolStats>()>;
 
-        StatsReporter() = default;
+        explicit StatsReporter(common::detail::ObservabilityState &observability)
+            : observability_(&observability) {
+        }
 
         ~StatsReporter();
 
-        StatsReporter(const StatsReporter&) = delete;
+        StatsReporter(const StatsReporter &) = delete;
 
-        StatsReporter& operator=(const StatsReporter&) = delete;
+        StatsReporter &operator=(const StatsReporter &) = delete;
 
-        void start(const config::StatsReportConfig& cfg, PoolStatsCollector collector);
+        void start(const config::StatsReportConfig &cfg, PoolStatsCollector collector);
 
         void stop();
 
@@ -39,14 +39,14 @@ namespace sqlconduit::core
         void writeOnce();
 
         [[nodiscard]] std::string renderText(
-            const std::chrono::system_clock::time_point& now,
-            const std::vector<NamedPoolStats>& pools,
-            const std::vector<common::SlowSqlStats>& slowSql) const;
+            const std::chrono::system_clock::time_point &now,
+            const std::vector<NamedPoolStats> &pools,
+            const std::vector<common::SlowSqlStats> &slowSql) const;
 
         [[nodiscard]] std::string renderJson(
-            const std::chrono::system_clock::time_point& now,
-            const std::vector<NamedPoolStats>& pools,
-            const std::vector<common::SlowSqlStats>& slowSql) const;
+            const std::chrono::system_clock::time_point &now,
+            const std::vector<NamedPoolStats> &pools,
+            const std::vector<common::SlowSqlStats> &slowSql) const;
 
         mutable std::mutex mtx_;
         std::condition_variable cv_;
@@ -54,6 +54,7 @@ namespace sqlconduit::core
         bool running_ = false;
         config::StatsReportConfig cfg_;
         PoolStatsCollector collector_;
+        common::detail::ObservabilityState *observability_;
     };
 }
 

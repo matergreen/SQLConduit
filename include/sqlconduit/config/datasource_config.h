@@ -6,10 +6,8 @@
 #include <vector>
 #include <map>
 
-namespace sqlconduit::config
-{
-    struct OracleConfig
-    {
+namespace sqlconduit::config {
+    struct OracleConfig {
         std::string service_name;
         std::string sid;
         std::string wallet_location;
@@ -19,8 +17,7 @@ namespace sqlconduit::config
         std::string blob_bind = "auto";
     };
 
-    struct DataSourceConfig
-    {
+    struct DataSourceConfig {
         std::string name;
         std::string type;
         std::string host;
@@ -47,8 +44,7 @@ namespace sqlconduit::config
         [[nodiscard]] std::string redact(std::string text) const;
     };
 
-    struct PoolConfig
-    {
+    struct PoolConfig {
         bool enabled = true;
         int min = 1;
         int max = 8;
@@ -59,22 +55,19 @@ namespace sqlconduit::config
         int validation_interval_ms = 500;
     };
 
-    struct RetryConfig
-    {
+    struct RetryConfig {
         int max_attempts = 1;
         int initial_backoff_ms = 50;
         int max_backoff_ms = 1000;
         bool retry_writes = false;
     };
 
-    struct CircuitBreakerConfig
-    {
+    struct CircuitBreakerConfig {
         int failure_threshold = 0;
         int open_interval_ms = 30000;
     };
 
-    struct SqlLogConfig
-    {
+    struct SqlLogConfig {
         bool enabled = false;
         std::string mode = "template";
         std::string level = "debug";
@@ -88,8 +81,7 @@ namespace sqlconduit::config
         bool include_blob_values = false;
     };
 
-    struct SlowSqlConfig
-    {
+    struct SlowSqlConfig {
         bool enabled = false;
         int threshold_ms = 500;
         int aggregate_capacity = 1000;
@@ -99,13 +91,11 @@ namespace sqlconduit::config
         std::vector<int> histogram_buckets_ms{10, 50, 100, 200, 500, 1000, 3000, 10000};
     };
 
-    struct PoolMetricsConfig
-    {
+    struct PoolMetricsConfig {
         bool enabled = true;
     };
 
-    struct StatsReportConfig
-    {
+    struct StatsReportConfig {
         bool enabled = false;
         int interval_ms = 60000;
         std::string file;
@@ -115,8 +105,7 @@ namespace sqlconduit::config
         int slow_sql_limit = 10;
     };
 
-    struct RateLimitConfig
-    {
+    struct RateLimitConfig {
         bool enabled = false;
         int global_qps = 0;
         int per_fingerprint_qps = 0;
@@ -124,8 +113,7 @@ namespace sqlconduit::config
         std::string fingerprint_mode = "off";
     };
 
-    struct SqlAuditConfig
-    {
+    struct SqlAuditConfig {
         bool enabled = false;
         std::string action = "warn";
         bool block_no_where_dml = false;
@@ -136,8 +124,7 @@ namespace sqlconduit::config
         std::vector<std::uint64_t> whitelist_fingerprints;
     };
 
-    struct QueryCacheConfig
-    {
+    struct QueryCacheConfig {
         bool enabled = false;
         int ttl_ms = 60000;
         int max_entries = 1000;
@@ -145,8 +132,7 @@ namespace sqlconduit::config
         bool cache_on_replica_only = false;
     };
 
-    struct WriteBufferConfig
-    {
+    struct WriteBufferConfig {
         bool enabled = false;
         bool acknowledge_data_loss_and_duplicates = false;
         int max_queue = 1000;
@@ -154,57 +140,49 @@ namespace sqlconduit::config
         int flush_interval_ms = 1000;
     };
 
-    struct FailoverConfig
-    {
+    struct FailoverConfig {
         std::vector<std::string> primaries;
         bool acknowledge_external_fencing = false;
         bool require_healthy = false;
         WriteBufferConfig write_buffer;
     };
 
-    struct ObservabilityConfig
-    {
+    struct ObservabilityConfig {
         SqlLogConfig sql_log;
         SlowSqlConfig slow_sql;
         PoolMetricsConfig pool_metrics;
         StatsReportConfig stats_report;
     };
 
-    struct CursorConfig
-    {
+    struct CursorConfig {
         bool enabled = true;
         int default_batch_size = 256;
         int max_open_cursors = 0;
         bool allow_scrollable = false;
     };
 
-    struct PreparedCacheConfig
-    {
+    struct PreparedCacheConfig {
         bool enabled = true;
         int max_per_connection = 0;
     };
 
-    struct ReplicaConfig
-    {
+    struct ReplicaConfig {
         std::string name;
         int weight = 1;
     };
 
-    struct AsyncConfig
-    {
+    struct AsyncConfig {
         bool enabled = true;
         int threads = 0;
         int queue_size = 4096;
         int statement_timeout_ms = 0;
     };
 
-    struct InterceptorsConfig
-    {
+    struct InterceptorsConfig {
         bool enabled = false;
     };
 
-    struct DataSourceGroupConfig
-    {
+    struct DataSourceGroupConfig {
         std::string name;
         std::string primary;
         std::vector<ReplicaConfig> replicas;
@@ -215,8 +193,7 @@ namespace sqlconduit::config
         std::string shadow;
     };
 
-    struct GlobalConfig
-    {
+    struct GlobalConfig {
         std::string default_datasource;
         int heartbeat_interval_ms = 5000;
         PoolConfig pool;

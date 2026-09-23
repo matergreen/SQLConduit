@@ -6,9 +6,8 @@
 #include <memory>
 #include <string>
 
-namespace sqlconduit::driver
-{
-    std::unique_ptr<IDriver> createDriver(const std::string& type);
+namespace sqlconduit::driver {
+    std::unique_ptr<IDriver> createDriver(const std::string &type);
 
     void registerBuiltinDrivers();
 }

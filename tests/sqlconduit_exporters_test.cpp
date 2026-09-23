@@ -23,26 +23,21 @@ using common::OperationType;
 static int g_failed = 0;
 static int g_passed = 0;
 
-static void check(bool cond, const std::string& name)
-{
-    if (cond)
-    {
+static void check(bool cond, const std::string &name) {
+    if (cond) {
         ++g_passed;
         std::cout << "  [PASS] " << name << "\n";
-    }
-    else
-    {
+    } else {
         ++g_failed;
         std::cout << "  [FAIL] " << name << "\n";
     }
 }
 
-static NamedPoolStats makePool(const std::string& name,
+static NamedPoolStats makePool(const std::string &name,
                                size_t idle = 0, size_t borrowed = 0,
                                size_t max = 10, size_t total = 0,
                                std::uint64_t borrows = 0,
-                               std::uint64_t timeouts = 0)
-{
+                               std::uint64_t timeouts = 0) {
     NamedPoolStats p;
     p.dataSource = name;
     p.stats.idle = idle;
@@ -59,10 +54,9 @@ static NamedPoolStats makePool(const std::string& name,
     return p;
 }
 
-static SlowSqlStats makeSlow(const std::string& ds, std::uint64_t fp,
+static SlowSqlStats makeSlow(const std::string &ds, std::uint64_t fp,
                              std::uint64_t count = 1,
-                             std::chrono::microseconds max = std::chrono::milliseconds(50))
-{
+                             std::chrono::microseconds max = std::chrono::milliseconds(50)) {
     SlowSqlStats s;
     s.dataSource = ds;
     s.fingerprint = fp;
@@ -83,39 +77,33 @@ static SlowSqlStats makeSlow(const std::string& ds, std::uint64_t fp,
 static std::mutex g_capMtx;
 static std::vector<PoolMetricsEvent> g_captured;
 
-static void capturingObserver(const PoolMetricsEvent& e)
-{
+static void capturingObserver(const PoolMetricsEvent &e) {
     std::lock_guard<std::mutex> lk(g_capMtx);
     g_captured.push_back(e);
 }
 
-static void clearCaptured()
-{
+static void clearCaptured() {
     std::lock_guard<std::mutex> lk(g_capMtx);
     g_captured.clear();
 }
 
-static bool contains(const std::string& haystack, const std::string& needle)
-{
+static bool contains(const std::string &haystack, const std::string &needle) {
     return haystack.find(needle) != std::string::npos;
 }
 
-static int countMatches(const std::string& haystack, const std::string& regexStr)
-{
+static int countMatches(const std::string &haystack, const std::string &regexStr) {
     std::regex re(regexStr);
     auto begin = std::sregex_iterator(haystack.begin(), haystack.end(), re);
     auto end = std::sregex_iterator();
     return static_cast<int>(std::distance(begin, end));
 }
 
-int main()
-{
+int main() {
     std::cout << "== M3 指标导出：samplePoolMetrics 透传 ==\n";
     {
         clearCaptured();
         common::Observability::setPoolMetricsObserver(capturingObserver);
-        common::Observability::setPoolMetricsCollector([]
-        {
+        common::Observability::setPoolMetricsCollector([] {
             std::vector<NamedPoolStats> v;
             v.push_back(makePool("ds-a", 3, 7, 10));
             v.push_back(makePool("ds-b", 0, 1, 5));
@@ -150,8 +138,7 @@ int main()
     {
         clearCaptured();
         common::Observability::setPoolMetricsObserver(capturingObserver);
-        common::Observability::setPoolMetricsCollector([]() -> std::vector<NamedPoolStats>
-        {
+        common::Observability::setPoolMetricsCollector([]() -> std::vector<NamedPoolStats> {
             throw std::runtime_error("simulated collector failure");
         });
         const auto evt = common::Observability::samplePoolMetrics();
@@ -163,24 +150,19 @@ int main()
     std::cout << "== M3 指标导出：observer 抛异常被吞掉 ==\n";
     {
         clearCaptured();
-        common::Observability::setPoolMetricsCollector([]
-        {
+        common::Observability::setPoolMetricsCollector([] {
             std::vector<NamedPoolStats> v;
             v.push_back(makePool("ds-z", 1, 0, 5));
             return v;
         });
         common::Observability::setPoolMetricsObserver(
-            [](const PoolMetricsEvent&)
-            {
+            [](const PoolMetricsEvent &) {
                 throw std::runtime_error("simulated observer failure");
             });
         bool noThrow = true;
-        try
-        {
-            (void)common::Observability::samplePoolMetrics();
-        }
-        catch (...)
-        {
+        try {
+            (void) common::Observability::samplePoolMetrics();
+        } catch (...) {
             noThrow = false;
         }
         check(noThrow, "observer 抛异常时 samplePoolMetrics 仍正常返回");
@@ -298,15 +280,13 @@ int main()
         const std::string allText = exporters::toPrometheusText(evt, slow, "sqlconduit", 0);
         const std::string cutText = exporters::toPrometheusText(evt, slow, "sqlconduit", 2);
 
-        auto countUnique = [](const std::string& text)
-        {
+        auto countUnique = [](const std::string &text) {
             const std::string pattern = "fingerprint=\"(10[0-9]{2})\"";
             std::regex re(pattern);
             std::set<std::string> seen;
             auto begin = std::sregex_iterator(text.begin(), text.end(), re);
             auto end = std::sregex_iterator();
-            for (auto it = begin; it != end; ++it)
-            {
+            for (auto it = begin; it != end; ++it) {
                 seen.insert((*it)[1].str());
             }
             return static_cast<int>(seen.size());

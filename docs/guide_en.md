@@ -26,7 +26,7 @@ A database connection middleware written in C++17, supporting:
 - **Hot reload**: a new config is built in full, then atomically swapped in, draining the old pool within a grace period.
 - **Multiple database types**: built-in **MySQL / PostgreSQL / ODBC (SQL Server · Oracle)** drivers, plus a **driver extension interface** — adding a database only requires implementing `IDriver` and registering it.
 
-> Status: the core layer (config / pool / heartbeat / transaction / parameter binding / facade) is fully implemented
+> Status: the core layer (config / pool / heartbeat / transaction / parameter binding / Client API) is fully implemented
 > and validated by 146 behavioral tests in `tests/sqlconduit_core_test.cpp` (mock driver, no real database needed).
 >
 > Driver implementation progress:
@@ -62,12 +62,12 @@ include/sqlconduit/
              connection_pool.h     heartbeat_manager.h  database_manager.h
   driver/    idriver.h  driver_registry.h  driver_factory.h
              mysql_driver.h  postgres_driver.h  odbc_driver.h
-  async/     async_types.h(results/Handle)  executor.h(IExecutor/thread pool)
-             sqlconduit_async.h(async facade)  task.h(coroutine layer, optional C++20)
+  async/     async_types.h(Client async results and executor statistics)
   mapping.h  (entity mapping layer v0.5.0: header-only, row <-> business entity, read+write)
-  sqlconduit.h     (public facade)
+  client.h         (sole high-level runtime entry)
+  sqlconduit.h     (public umbrella header)
 src/         corresponding implementations
-tests/       sqlconduit_core_test.cpp  sqlconduit_async_test.cpp  sqlconduit_coro_test.cpp(coro=ON)
+tests/       sqlconduit_core_test.cpp  sqlconduit_client_test.cpp
              sqlconduit_mapping_test.cpp(entity mapping)
 config/      datasources.json.example  datasource.yaml.example
 third_party/nlohmann/json.hpp  (vendored single-header, works offline)
@@ -90,8 +90,6 @@ mkdir -p build && cd build
 cmake ..                                   # core layer only
 # Enable drivers example:
 # cmake .. -DSQLCONDUIT_ENABLE_MYSQL=ON -DSQLCONDUIT_ENABLE_POSTGRES=ON -DSQLCONDUIT_ENABLE_ODBC=ON -DSQLCONDUIT_ENABLE_ORACLE=ON
-# Enable the coroutine layer (optional; only task.cpp is bumped to C++20):
-# cmake .. -DSQLCONDUIT_ENABLE_ASYNC_CORO=ON
 cmake --build .
 
 ```
@@ -147,26 +145,27 @@ cmake .. -DSQLCONDUIT_BUILD_TESTS=ON && cmake --build . -j"$(sysctl -n hw.ncpu)"
 ```cpp
 #include "sqlconduit/sqlconduit.h"
 
-sqlconduit::SQLConduit::init("config/datasources.json");   // load multiple data sources + start heartbeat
+sqlconduit::Client client;
+client.init("config/datasources.json");   // load multiple data sources + start heartbeat
 
 sqlconduit::common::ResultSet rs;
-auto st = sqlconduit::SQLConduit::query("SELECT 1", rs);    // default data source
+auto st = client.query("SELECT 1", rs);    // default data source
 if (st.ok()) { /* use rs */ }
 
 int64_t n = 0;
-sqlconduit::SQLConduit::execute("UPDATE t SET c = 1 WHERE id = 2", n); // default data source
+client.execute("UPDATE t SET c = 1 WHERE id = 2", n); // default data source
 
-sqlconduit::SQLConduit::shutdown();
+client.shutdown();
 ```
 
-Target a named source: `sqlconduit::SQLConduit::query("pg", "SELECT now()", rs);`
+Target a named source: `client.query("pg", "SELECT now()", rs);`
 
 ## Transactions & sessions
 
 `query()` / `execute()` **borrow a fresh connection every time**, so a transaction spanning multiple statements must first pin the connection down:
 
 ```cpp
-auto st = sqlconduit::SQLConduit::transaction([](sqlconduit::core::Session& s) {
+auto st = client.transaction([](sqlconduit::core::Session& s) {
     int64_t n = 0;
     if (auto r = s.execute("UPDATE accounts SET bal = bal - 100 WHERE id = 1", n); !r.ok())
         return r;                       // return failure -> auto rollback
@@ -185,7 +184,7 @@ Use `?` as a placeholder in SQL and pass parameter values via `common::Params` �
 ```cpp
 sqlconduit::common::ResultSet rs;
 sqlconduit::common::Params p{ std::string("O'Brien"), std::int64_t(42) };
-auto st = sqlconduit::SQLConduit::query("SELECT * FROM t WHERE name = ? AND age > ?", p, rs);
+auto st = client.query("SELECT * FROM t WHERE name = ? AND age > ?", p, rs);
 ```
 
 - PostgreSQL / MySQL / Oracle / ODBC all use **native parameter binding**. Oracle additionally rewrites
@@ -211,23 +210,23 @@ Binding, full-SQL diagnostics, cache keys, and prepared signatures distinguish t
 
 Three high-frequency capabilities that all official drivers ship — but which `IDatabaseConnection` had not yet wrapped — are now unified. None of them break the existing architectural invariants (the gate runs only once at the `DataSource` entry point, the result-cache key is unchanged, and failover / write buffer are never used in transactions).
 
-> Note: the explicit `prepare` / `executePrepared` handle API exists only on `Session` (a handle binds to a concrete connection, which the stateless facade cannot hold across calls); generated keys and large-parameter streaming are available on both `DataSource` (via `SQLConduit::dataSource()`) and `Session`.
+> Note: the explicit `prepare` / `executePrepared` handle API exists only on `Session` (a handle binds to a concrete connection and cannot be retained across pooled `Client` borrows); generated keys and large-parameter streaming are available on both `DataSource` (via `client.dataSource()`) and `Session`.
 
 ### Prepared statement reuse (connection-level handle cache)
 
-When the driver supports it and `prepared_cache.enabled` is on, `SQLConduit::query(sql, params)` / `execute(sql, params)` look up an already-compiled handle in the connection's cache keyed by `(normalized SQL + parameter type signature)`; if absent they `prepare` and store it, then run via `executePrepared`. **Fully transparent to the caller, with an unchanged signature** — a hot SQL is prepared only once automatically.
+When the driver supports it and `prepared_cache.enabled` is on, `client.query(sql, params)` / `execute(sql, params)` look up an already-compiled handle in the connection's cache keyed by `(normalized SQL + parameter type signature)`; if absent they `prepare` and store it, then run via `executePrepared`. **Fully transparent to the caller, with an unchanged signature** — a hot SQL is prepared only once automatically.
 
 ```cpp
 // Transparent auto-cache: identical to before, no changes needed
 sqlconduit::common::ResultSet rs;
 sqlconduit::common::Params p{ std::int64_t(1) };
-auto st = sqlconduit::SQLConduit::query("SELECT * FROM t WHERE id = ?", p, rs);
+auto st = client.query("SELECT * FROM t WHERE id = ?", p, rs);
 ```
 
 For fine-grained control on a stable connection, or to reuse one handle across many rows, use the explicit handle API on `Session`:
 
 ```cpp
-auto st = sqlconduit::SQLConduit::transaction([](sqlconduit::core::Session& s) {
+auto st = client.transaction([](sqlconduit::core::Session& s) {
     sqlconduit::core::PreparedStatementHandle h;
     // typesSample is only used to infer the parameter type signature (placeholder values suffice, no real data needed)
     if (auto r = s.prepare("INSERT INTO t(a,b) VALUES(?,?)",
@@ -251,7 +250,7 @@ auto st = sqlconduit::SQLConduit::transaction([](sqlconduit::core::Session& s) {
 `execute` gains an overload that returns the generated columns of the inserted row:
 
 ```cpp
-auto ds = sqlconduit::SQLConduit::dataSource();          // default data source (pass a name for a specific one)
+auto ds = client.dataSource();          // default data source (pass a name for a specific one)
 int64_t n = 0;
 sqlconduit::common::GeneratedKeys keys;
 
@@ -275,7 +274,7 @@ Unified model: `GeneratedKeys` is always "a result set of the generated columns"
 A huge BLOB/CLOB need not be materialized into memory all at once: wrap a synchronous read callback or a `std::istream` in a `StreamSource`, and the driver pulls bytes in chunks during execution. This is **input-direction** streaming — the opposite of result-set streaming (`queryEach` / cursor); don't confuse the two.
 
 ```cpp
-auto ds = sqlconduit::SQLConduit::dataSource();
+auto ds = client.dataSource();
 std::ifstream f("big.bin", std::ios::binary);
 sqlconduit::common::StreamParams sp{ std::int64_t(1), sqlconduit::common::StreamSource(f) };
 int64_t n = 0;
@@ -312,7 +311,7 @@ options.isolation = sqlconduit::common::IsolationLevel::Serializable;
 options.readOnly = false;
 options.timeout = std::chrono::seconds(5);
 
-auto st = sqlconduit::SQLConduit::transaction(options, [](sqlconduit::core::Session& s) {
+auto st = client.transaction(options, [](sqlconduit::core::Session& s) {
     s.savepoint("before_optional_step");
     // ...
     return sqlconduit::common::Status::OK();
@@ -330,7 +329,7 @@ The cancellation path itself is exception-safe: the watchdog thread swallows any
 
 ```cpp
 std::uint64_t rows = 0;
-sqlconduit::SQLConduit::queryEach("SELECT * FROM large_table", {},
+client.queryEach("SELECT * FROM large_table", {},
     [](const sqlconduit::common::Row& row) {
         // returning false stops early
         return consume(row);
@@ -341,7 +340,7 @@ sqlconduit::common::ParamBatch batch{
     {std::int64_t(2), std::string("b")}
 };
 sqlconduit::common::BatchResult result;
-sqlconduit::SQLConduit::executeBatch("INSERT INTO t(id, name) VALUES(?, ?)", batch, result);
+client.executeBatch("INSERT INTO t(id, name) VALUES(?, ?)", batch, result);
 ```
 
 **Batch execution is atomic**, with consistent behavior across all four drivers: when the caller has not opened a transaction, the middleware wraps it in one automatically; if any row in the middle fails, the whole batch rolls back and `BatchResult` carries no partial affected-row counts (avoiding a caller mistakenly assuming the earlier rows committed). When the caller is already in a transaction, the outer transaction is reused and the rollback scope is up to the caller.
@@ -359,7 +358,7 @@ opts.batch_size = 1000;          // rows prefetched per fetch (or fall back to c
 opts.auto_transaction = true;    // when no transaction is open, the cursor opens its own to back the statement
 
 std::unique_ptr<sqlconduit::core::Cursor> cur;
-auto st = sqlconduit::SQLConduit::openCursor("SELECT * FROM large_table WHERE k > ?",
+auto st = client.openCursor("SELECT * FROM large_table WHERE k > ?",
                                  sqlconduit::common::Params{std::int64_t(0)}, opts, cur);
 if (!st.ok()) { /* handle error */ }
 
@@ -371,7 +370,7 @@ while (cur->fetch(0, batch).ok() && cur->hasNext()) {  // fetch(0) = take batch_
 cur->close();   // explicitly return the connection; if skipped, it is closed + returned on destruction
 ```
 
-The facade `SQLConduit::openCursor` has two overloads: default data source, or a named one. Within a transaction/session you can also use `Session::openCursor(...)` (the connection is not additionally occupied and returns with the session). `fetch(n, out)` **appends** at most n rows to `out` (it does not clear, so multiple fetches accumulate the same result set); `n == 0` lets the driver decide by batch_size. `fetchRow` fetches a single row, `close` closes explicitly (idempotent), and `isOpen` / `hasNext` / `rowsFetched` expose state.
+`client.openCursor` has two overloads: default data source, or a named one. Within a transaction/session you can also use `Session::openCursor(...)` (the connection is not additionally occupied and returns with the session). `fetch(n, out)` **appends** at most n rows to `out` (it does not clear, so multiple fetches accumulate the same result set); `n == 0` lets the driver decide by batch_size. `fetchRow` fetches a single row, `close` closes explicitly (idempotent), and `isOpen` / `hasNext` / `rowsFetched` expose state.
 
 ### Two binding modes
 
@@ -434,7 +433,7 @@ A cursor passes through `preGate` (audit + rate limit) but **does not enter the 
 }
 ```
 
-Call `SQLConduit::reload(path, grace)` to atomically load a new config and wait for in-flight operations on the old pool to return.
+Call `client.reload(path, grace)` to atomically load a new config and wait for in-flight operations on the old pool to return.
 
 ## Rate limiting, auditing, caching & primary failover
 
@@ -517,20 +516,20 @@ public:
 
 Two ways to mount it:
 
-- **Global default**: `SQLConduit::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());`
+- **Global default**: `client.setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());`
   Any data source that does not explicitly specify a limiter falls back to this default when
   `rate_limit` is not enabled in config.
-  It may be called before or after `SQLConduit::init()`; a later call immediately updates every existing
+  It may be called before or after `client.init()`; a later call immediately updates every existing
   source and group that inherits the default.
 - **Per-source override**: pass a `shared_ptr<IRateLimiter>` to `DataSourceOptions::rate_limiter`
   (or `GroupOptions::rate_limiter`); that source uses your implementation, **taking priority over
   the global default**.
 
 ```cpp
-sqlconduit::SQLConduit::init("datasources.json");
+client.init("datasources.json");
 
 // global default: every source without an explicit limiter uses the sliding window
-sqlconduit::SQLConduit::setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());
+client.setDefaultRateLimiter(std::make_shared<SlidingWindowLimiter>());
 
 // a specific source gets a high-throughput allow implementation (tests / allowlist)
 sqlconduit::core::DataSourceOptions opts;
@@ -540,7 +539,7 @@ mgr.addDataSource(cfg, opts);
 
 Priority (high → low): `opts.rate_limiter` (per source) > config `rate_limit` (a `RateLimiter`
 created when either `global_qps` or `per_fingerprint_qps` is enabled) >
-`SQLConduit::setDefaultRateLimiter` (global default).
+`client.setDefaultRateLimiter` (global default).
 The call sites `preGate` / `gateSession` only call `acquire`, so swapping the algorithm is
 completely transparent and non-intrusive to upper layers.
 
@@ -602,11 +601,11 @@ public:
     void onCompletion(const sqlconduit::core::ExecutionView &view) override { /* cleanup */ }
 };
 
-sqlconduit::SQLConduit::addInterceptor(std::make_shared<TenantQuotaInterceptor>());
+client.addInterceptor(std::make_shared<TenantQuotaInterceptor>());
 ```
 
 - Global registry: `core::InterceptorRegistry::add / clear / snapshot / enabled / setEnabled`.
-  Operate the registry directly when you don't want the facade; `setEnabled(false)` turns the
+  Operate the registry directly when you need low-level control; `setEnabled(false)` turns the
   whole interceptor chain off without deleting instances.
 - Robustness: exceptions thrown inside an interceptor are swallowed by the middleware (a SPI error
   must not take down the business); the interceptor chain has a recursion-depth guard per thread
@@ -644,11 +643,11 @@ The middleware has **two real KV caches**, plus a statistics LRU (slow-SQL aggre
 - `query_cache` caches **result data**; its key is `(SQL + parameter values)`.
 - `prepared_cache` caches **statement handles**; its key is `(SQL + parameter type signature)`.
 
-### 1. Query result cache (QueryCache, global singleton)
+### 1. Query result cache (QueryCache, scoped to a Client runtime)
 
 Applies only to the leaf read path of `DataSource::query` (non-transactional, non-session reads). A group-forwarded leaf uses its own data-source name as a key prefix, so the same SQL hitting the primary vs. a replica becomes two independent entries — that is what lets write-invalidation clear exactly the right node.
 
-Implementation (`src/core/query_cache.cpp`): a global singleton with `std::unordered_map<std::string, Entry> store_` + `std::list<std::string> lru_` (most-recently-used at the head), guarded by a single `std::mutex mtx_`. The `enabled_` / `replicaOnly_` flags are mirrored in `std::atomic`s — **the hot path reads the atomic flags lock-free, and never touches mtx_ when the cache is off**. Hit/eviction/invalidation counters are atomics exposed via `QueryCache::stats()`; clearing the cache on hot reload does not reset these (they are process-cumulative).
+Implementation (`src/core/query_cache.cpp`): each `Client` runtime owns an independent state containing `std::unordered_map<std::string, Entry> store_` + `std::list<std::string> lru_` (most-recently-used at the head), guarded by one `std::mutex mtx_`. The `enabled_` / `replicaOnly_` flags are mirrored in `std::atomic`s — **the hot path reads the atomic flags lock-free, and never touches mtx_ when the cache is off**. Hit, eviction, and invalidation counters belong to that instance as well; clearing the cache on hot reload does not reset them.
 
 **KV contents:**
 - **key** = `data-source name + '\0' + cacheKey(sql, params)`, where `cacheKey` = raw SQL + `\x1e` + param count + per-param (`\x1f` + type tag + length-prefixed value). NULL, bool, int64, uint64, double, Decimal, string, Date, Time, Timestamp, UUID, JSON, and Blob each have a distinct tag; doubles are serialized bitwise and text/binary values carry length prefixes, **so different types or values cannot collide**.
@@ -663,7 +662,7 @@ Implementation (`src/core/query_cache.cpp`): a global singleton with `std::unord
 
 ### 2. Prepared-statement cache (PreparedCache, per-connection handle cache)
 
-All four drivers (`MySQLConnection` / `PostgresConnection` / `OracleConnection` / `OdbcConnection`) maintain their own per-connection handle cache inside `prepare()`. The facade's `Session::runPreparedQuery` / `runPreparedExec`, when `preparedPathUsable()`, calls `conn->prepare`, which looks up the "current connection" cache internally — that is the **transparent auto-cache** behind `DataSource::query/execute(params)` (usage in the section "Prepared statements" above). The generated-keys path does NOT use this (see caveats below).
+All four drivers (`MySQLConnection` / `PostgresConnection` / `OracleConnection` / `OdbcConnection`) maintain their own per-connection handle cache inside `prepare()`. `Session::runPreparedQuery` / `runPreparedExec`, when `preparedPathUsable()`, calls `conn->prepare`, which looks up the "current connection" cache internally — that is the **transparent auto-cache** behind `DataSource::query/execute(params)` (usage in the section "Prepared statements" above). The generated-keys path does NOT use this (see caveats below).
 
 Implementation: each connection keeps an SQL-to-handle cache, an LRU list, and a handle-ID-to-cache-key index. The latter validates in O(1) that an explicit handle still belongs to this connection and has not been evicted. The cache survives a return to the pool; `close()` → `closeAllPrepared()` releases native handles and clears every index.
 
@@ -691,14 +690,14 @@ In `observer.cpp`, slow-SQL aggregation: when a statement is judged slow it is a
 
 ## Dynamic data sources (v0.4.0 M4: add/remove at runtime)
 
-After `SQLConduit::init` starts, you can still add and remove data sources and groups at runtime — the config is no longer a one-shot snapshot:
+After `client.init` starts, you can still add and remove data sources and groups at runtime — the config is no longer a one-shot snapshot:
 
 | Method | Purpose |
 | --- | --- |
-| `SQLConduit::addDataSource(cfg, opts)` | Register a new leaf data source (build pool + start heartbeat + insert DataSource) |
-| `SQLConduit::removeDataSource(name, grace=5s)` | Unregister a leaf data source; refused if referenced by a group |
-| `SQLConduit::addGroup(cfg, opts)` | Register a read-write group (primary + replicas + failover + optional write buffer) |
-| `SQLConduit::removeGroup(name, grace=5s)` | Unregister a group; stops its write-buffer thread |
+| `client.addDataSource(cfg, opts)` | Register a new leaf data source (build pool + start heartbeat + insert DataSource) |
+| `client.removeDataSource(name, grace=5s)` | Unregister a leaf data source; refused if referenced by a group |
+| `client.addGroup(cfg, opts)` | Register a read-write group (primary + replicas + failover + optional write buffer) |
+| `client.removeGroup(name, grace=5s)` | Unregister a group; stops its write-buffer thread |
 
 `opts` uses `core::DataSourceOptions` / `core::GroupOptions`, which control `retry` / `circuit_breaker` / `rate_limiter` / `cursor` / `attach_heartbeat` and `acknowledge_external_fencing` / `acknowledge_data_loss_and_duplicates`. The latter two ack flags mirror `init()` semantics — `addGroup` never silently enables automatic write failover or write buffering; the caller must explicitly opt in.
 
@@ -711,17 +710,17 @@ After `SQLConduit::init` starts, you can still add and remove data sources and g
 - **Grace period**: the grace parameter of `removeDataSource` / `removeGroup` follows the same semantics as `shutdown` — wait for in-flight connections to return, force-close on timeout. `grace=0` returns immediately (the pool is marked closed) — useful for "I want to take it down but don't want to wait".
 
 ```cpp
-sqlconduit::SQLConduit::init("datasources.json");                  // startup snapshot
+client.init("datasources.json");                  // startup snapshot
 
 sqlconduit::core::DataSourceOptions leafOpts;
-sqlconduit::SQLConduit::addDataSource(cfg, leafOpts);              // add a pool at runtime
+client.addDataSource(cfg, leafOpts);              // add a pool at runtime
 
 sqlconduit::core::GroupOptions grpOpts;
 grpOpts.acknowledge_external_fencing = true;          // mandatory: explicit opt-in for write failover
-sqlconduit::SQLConduit::addGroup(grp, grpOpts);                    // wire a read-write group at runtime
+client.addGroup(grp, grpOpts);                    // wire a read-write group at runtime
 
-sqlconduit::SQLConduit::removeGroup("legacy_grp");                 // remove the group first
-sqlconduit::SQLConduit::removeDataSource("legacy_leaf");           // then remove the leaf
+client.removeGroup("legacy_grp");                 // remove the group first
+client.removeDataSource("legacy_leaf");           // then remove the leaf
 ```
 
 Concurrency safety is provided by `mtx_` — multiple threads calling `addDataSource` with different names do not interfere; concurrent same-name calls let the later caller fail gracefully with `ConfigError` — **neither caller** believes it succeeded. See `tests/sqlconduit_dynamic_test.cpp` for the full concurrent-behavior matrix (79 assertions across 16 scenarios covering add/remove/group/ack/concurrency/grace).
@@ -758,7 +757,7 @@ Using an **enum instead of `bool`** is deliberate: `bool idempotent=false` canno
 - **The no-retry-inside-transactions invariant (I4)** — transactional statements never enter the retry loop;
 - **Non-retryable errors** (business / constraint violations) still don't retry — the declaration only overrides the "connection-class retryable error" tier.
 
-The async path is identical in source: `async::execute`'s `maxAttempts` reads the stack-top `ContextScope` snapshot taken at submit time (`entryCtx.idempotency`), using the same priority table as the sync `resolveWriteAttempts`. See `tests/sqlconduit_idempotency_test.cpp` for the behavior matrix (19 assertions across 9 scenarios covering three states × sync/async × reads-unaffected).
+`Client::*Async` captures the stack-top `ContextScope` at submission. Its worker uses the captured `idempotency` and the same retry-priority table as the synchronous path. See `tests/sqlconduit_idempotency_test.cpp` for the behavior matrix.
 
 ## Shadow routing (v0.4.0 M6: cut all traffic for a group to a shadow data source)
 
@@ -785,7 +784,7 @@ Replay production traffic for full-stack load testing: redirect reads and writes
 **Triggering**: via SPI (most common — switch by tenant / canary percentage):
 
 ```cpp
-sqlconduit::SQLConduit::addInterceptor({
+client.addInterceptor({
     .onRoute = [](const std::string&, const std::string&,
                   sqlconduit::common::OperationType,
                   sqlconduit::common::SqlContext &ctx) {
@@ -795,7 +794,7 @@ sqlconduit::SQLConduit::addInterceptor({
 });
 ```
 
-Or directly via thread-local `ContextScope` (applies to every call in the same thread/coroutine):
+Or directly via thread-local `ContextScope` (applies throughout the same call chain):
 
 ```cpp
 sqlconduit::common::ContextScope scope({.shadow = true});
@@ -902,8 +901,8 @@ public:
     void onCompletion(const sqlconduit::core::ExecutionView&) override {}
 };
 
-// Register before SQLConduit::init:
-sqlconduit::SQLConduit::addInterceptor(std::make_shared<MaskingInterceptor>());
+// Register before client.init:
+client.addInterceptor(std::make_shared<MaskingInterceptor>());
 sqlconduit::core::InterceptorRegistry::setEnabled(true);
 ```
 
@@ -913,7 +912,7 @@ sqlconduit::core::InterceptorRegistry::setEnabled(true);
 |---|---|
 | `DataSource::queryUngated` (sync) | stores the raw result before top-level `afterExecution` |
 | `DataSource::cacheStore` (sync) | `if (rows.transformed) return;` |
-| `async::query`'s `step2Statement` (async) | `if (policy.cacheable && !ctx->entryCtx.shadow) target->cacheStore(...)` — the inner `cacheStore` runs the guard |
+| `Client::queryAsync` (async) | the worker caches only the raw pre-interceptor result, and `cacheStore` still runs the transformed guard |
 
 **Why redacted results must not enter the cache**: the cache stores raw results, but redaction is per-role / per-tenant view. Putting a redacted result into the cache means the next user with different permissions will read the previous user's view — **cross-user data leak**.
 
@@ -923,73 +922,32 @@ Use `mutableRows()` to rewrite regular query results. Implement `onRow` for `que
 
 Preserved invariant: **data in interceptor → data out interceptor → cache guard** all hinges solely on the `transformed` flag. See `tests/sqlconduit_redaction_test.cpp` for the full behavior matrix (38 assertions across 5 scenarios covering sync / async / cache hit / I10 guard / redaction flag).
 
-## Async API (v0.2.0: callbacks / futures / coroutines)
+## Async API (Client futures)
 
-The three calling styles share one execution pipeline — governance gates (audit / rate limit / circuit breaker / cache), retry backoff, statement timeout, cancellation — and differ only in how results are delivered. Enable `async` in the config:
+Asynchronous work starts from an explicit `Client` and shares that instance's data-source topology, cache, audit policy, interceptors, and observability state. Enable its executor in configuration:
 
 ```json
 { "async": { "enabled": true, "threads": 4, "queue_size": 4096 } }
 ```
 
-`threads` is the worker count (0 = hardware_concurrency); one extra timer thread drives retry backoff and timeout checks. When the queue is full, new operations fail fast with `Overloaded` (explicit backpressure, not implicit queueing). `SQLConduit::shutdown` rejects new operations, waits for in-flight ones to finish, then stops the executors and the pools.
-
-**Callback style (hot path)** — completion callbacks are delivered by the completion executor, never on the caller's stack; the returned `Handle` supports cancellation:
+`threads` is the worker count (0 means `hardware_concurrency`); a full queue rejects new work with `Overloaded`. `shutdown()` rejects new operations, drains submitted work, then closes this client's executor and pools.
 
 ```cpp
-sqlconduit::async::Options opts;
-opts.timeout = std::chrono::milliseconds(2000);   // overall statement deadline
-auto h = sqlconduit::async::query("SELECT id FROM users WHERE age > ?",
-                            {sqlconduit::common::Value(std::int64_t(18))},
-    [](sqlconduit::async::QueryResult &&r) {            // runs on the completion executor; keep it short
-        if (r.status.ok()) useRows(std::move(r.rows));
-    }, opts);
-// To give up mid-flight: h.cancel() — Queued never touches the pool;
-// Running forwards a best-effort driver cancel
+auto query = client.queryAsync(
+    "SELECT id FROM users WHERE age > ?",
+    {sqlconduit::common::Value(std::int64_t(18))});
+auto qr = query.get();
+if (qr.status.ok()) useRows(std::move(qr.rows));
+
+auto update = client.executeAsync(
+    "UPDATE users SET active = 1 WHERE id = ?",
+    {sqlconduit::common::Value(std::int64_t(7))});
+auto er = update.get(); // er.status / er.affected
 ```
 
-**Future style (convenience)** — no cancellation (use the callback style with a `Handle` if you need it); dropping a future without consuming it is legal:
+The available methods are `queryAsync()`, `queryAllAsync()`, `executeAsync()`, `executeKeysAsync()`, `queryEachAsync()`, `executeBatchAsync()`, and `transactionAsync()`. They return standard `std::future` objects; destroying an unconsumed future is valid.
 
-```cpp
-auto fut = sqlconduit::async::execute("UPDATE users SET active = 1 WHERE id = ?",
-                                {sqlconduit::common::Value(std::int64_t(7))});
-auto r = fut.get();   // r.status / r.affected
-```
-
-**Coroutine style (optional, C++20)** — a lazy `Task` that starts only on `co_await`; destroying an un-awaited task is a safe no-op. Governance / retry / cancellation / timeout are identical to the callback style; coroutines always resume on the completion executor thread:
-
-```bash
-cmake .. -DSQLCONDUIT_ENABLE_ASYNC_CORO=ON   # only task.cpp is bumped to C++20; the rest stays C++17
-```
-
-```cpp
-#include "sqlconduit/async/task.h"   // the including TU must be compiled as C++20
-
-sqlconduit::async::Task<void> demo() {
-    // Hoist parameters to a named local: braced temporaries inside co_await
-    // arguments trigger a GCC 13 ICE (see notes below).
-    sqlconduit::common::Params params;
-    params.push_back(sqlconduit::common::Value(std::int64_t(18)));
-
-    auto q = co_await sqlconduit::async::queryAsync("SELECT id FROM users WHERE age > ?", params);
-    if (q.status.ok()) useRows(std::move(q.rows));
-
-    auto tx = co_await sqlconduit::async::transactionAsync({}, [](sqlconduit::core::Session &s) {
-        std::int64_t n = 0;
-        return s.execute("UPDATE users SET active = 1", n);  // non-OK rolls back
-    });
-}
-
-sqlconduit::async::run(demo());   // controlled fire-and-forget: the frame destroys itself on completion
-```
-
-**Custom executor (asio integration)**: implement `IExecutor::post(std::function<void()>)`, then inject the adapter through `sqlconduit::async::setExecutor(...)`; completion callbacks and coroutine resumes then run on your event-loop threads.
-
-Constraints and caveats:
-
-- Callbacks and transaction lambdas run on workers: keep them short and thread-safe. **Never call `sqlconduit::async::*` inside a transaction lambda** — nested async can deadlock on a small pool; use the synchronous `Session` methods directly.
-- An uncaught exception inside a top-level coroutine started by `run()` terminates the process (never silently swallowed); handle exceptions inside the coroutine or propagate them via `co_await` to an enclosing `try/catch`.
-- Do not write coroutine bodies as lambdas capturing locals — the closure temporary dies before the async operation completes and the captures dangle; use named functions returning `Task`.
-- Known GCC 13 defect: non-trivial braced temporaries directly inside `co_await` arguments (e.g. `{Value(1)}`) trigger an internal compiler error (PR109227 family); hoist parameters into a named local first. GCC 14+ / Clang / MSVC are unaffected.
+The public async boundary deliberately has no global callback facade, cancellation `Handle`, custom-executor injection, or coroutine wrapper. Per-statement timeout comes from this client's `async.statement_timeout_ms`; when a driver cannot actively cancel a blocking call, SQLConduit can only report `QueryTimeout` on a best-effort basis after that call returns. Transaction callbacks run on workers and should use synchronous `Session` methods directly rather than nesting asynchronous pool borrows.
 
 ## Entity mapping (v0.5.0: row <-> business entity, read and write)
 
@@ -1024,15 +982,15 @@ template <> struct sqlconduit::mapping::RowMapper<User> {
 ### Read
 
 ```cpp
-auto r = sqlconduit::queryAs<User>("SELECT id,name,email,balance,created_at FROM users WHERE age > ?",
+auto r = sqlconduit::queryAs<User>(client, "SELECT id,name,email,balance,created_at FROM users WHERE age > ?",
                              {sqlconduit::common::Value(std::int64_t(18))});
 if (r.status.ok()) for (auto &u : r.items) use(u);      // r.items: std::vector<User>
 
-auto one = sqlconduit::queryOneAs<User>("SELECT * FROM users WHERE id = ?",
+auto one = sqlconduit::queryOneAs<User>(client, "SELECT * FROM users WHERE id = ?",
                                   {sqlconduit::common::Value(std::int64_t(1))});
 // one.value: std::optional<User>; **more than one row is an error**, not a silent first row
 
-sqlconduit::queryEachAs<User>("SELECT * FROM users", [](User &&u) { use(u); return true; });
+sqlconduit::queryEachAs<User>(client, "SELECT * FROM users", [](User &&u) { use(u); return true; });
 ```
 
 Cursors and in-transaction use work the same way: `sqlconduit::fetchAs<T>(cursor)`, `sqlconduit::queryAs<T>(session, sql)`.
@@ -1049,9 +1007,9 @@ auto insM = sqlconduit::insertSql<User>("users",
                                                  // "INSERT INTO `users` (...) VALUES (?, ...)"
 auto upd = sqlconduit::updateSql<User>("users");        // "UPDATE \"users\" SET ... WHERE \"id\" = ?"
 
-auto k = sqlconduit::insertAs("users", u);              // executes + back-fills the generated key
-auto n = sqlconduit::updateAs("users", u);              // located by PrimaryKey
-auto b = sqlconduit::insertBatchAs("users", std::vector<User>{...});
+auto k = sqlconduit::insertAs(client, "users", u);              // executes + back-fills the generated key
+auto n = sqlconduit::updateAs(client, "users", u);              // located by PrimaryKey
+auto b = sqlconduit::insertBatchAs(client, "users", std::vector<User>{...});
 ```
 
 **Identifiers are quoted per dialect.** `insertSql<T>(table)` / `updateSql<T>(table)` without a
@@ -1105,7 +1063,7 @@ A type mismatch or NULL landing in a non-`optional` member is an **error** (`Err
 
 - **Query cache**: only the raw `ResultSet` is cached, mapping runs after a hit — entities never enter the cache.
 - **Redaction**: mapping happens after `afterExecution`, so entities see redacted values.
-- **Async**: `sqlconduit::async::queryAs<T>` ships in callback / future / coroutine form; mapping runs on the **completion-delivery thread** (a worker by default, the `io_context` thread when asio is injected), so mapping must stay cheap — use streaming `queryEachAs` for large result sets.
+- **Async**: call `client.queryAsync()` first, then pass its `ResultSet` to `mapping::fromRows<T>()`; use synchronous `queryEachAs(client, ...)` to stream large results.
 
 ## PostgreSQL arrays / composites / geometric types
 
@@ -1153,7 +1111,7 @@ back verbatim**: a PG `point` column does not accept `{"x":1,"y":2}`, only `(1,2
 common::Array tags;  tags.items = {Value{"red"}, Value{"blue"}};
 common::Composite addr; addr.fields = {{"city", Value{"Shanghai"}}, {"zip", Value{"200000"}}};
 
-SQLConduit::execute("INSERT INTO t (tags, addr, pt) VALUES (?, ?, ?)",
+client.execute("INSERT INTO t (tags, addr, pt) VALUES (?, ?, ?)",
               Params{ Value{tags}, Value{addr},
                       Value{common::Json{common::pgFormatPoint(common::PgPoint{1, 2})}} }, n);
 ```
@@ -1363,7 +1321,7 @@ CallParams params{
     CallParam::refCursor()
 };
 CallOutput result;
-auto status = sqlconduit::SQLConduit::call("BEGIN report_pkg.run(?, ?, ?); END;", params, result);
+auto status = client.call("BEGIN report_pkg.run(?, ?, ?); END;", params, result);
 // result.outParams[0] is the scalar OUT; result.sets[0] is the REF CURSOR
 ```
 
@@ -1450,12 +1408,12 @@ anonymous PL/SQL and suppresses only ORA-04043; every other database error is re
 util::CreateRoutineOptions o;
 o.dataSource = "main";
 o.stripDelimiter = true;          // default: strip DELIMITER directives from scripts and log it
-util::createRoutine("CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END", o);
+util::createRoutine(client, "CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END", o);
 
 util::RoutineRef ref{"public.p", util::RoutineKind::Procedure, "pg"};
 util::DropRoutineOptions d;
 d.cascade = true;                 // PostgreSQL only; other dialects -> NotSupported
-util::dropRoutine(ref, d);
+util::dropRoutine(client, ref, d);
 ```
 
 `replace` (`CREATE OR REPLACE`) is PostgreSQL only and `ifNotExists` is supported by no dialect in
@@ -1467,8 +1425,8 @@ this matrix — both answer `NotSupported`.
 util::IndexSpec spec{"t", "idx_t_a", {"a", "b"}};
 spec.unique = true;
 spec.usingMethod = "BTREE";       // MySQL: after the column list; PG: after ON; SQL Server: rejected
-util::createIndex(spec);
-util::dropIndex("t", "idx_t_a");
+util::createIndex(client, spec);
+util::dropIndex(client, "t", "idx_t_a");
 ```
 
 `ifNotExists` / `concurrent` are PostgreSQL only, and `CONCURRENTLY` inside a transaction block
@@ -1484,18 +1442,18 @@ util::RoutineRef proc{"p", util::RoutineKind::Procedure, "my"};
 util::CallParams params;
 params.emplace_back(common::Value(std::int64_t(7)));
 util::CallResult r;
-util::call(proc, params, r);
+util::call(client, proc, params, r);
 // r.sets: every result set produced; r.rowCount(): rows across all of them
 
 // OUT / INOUT — the Session overload is required
 params.emplace_back(util::CallParam{util::ParamDirection::Out, common::Value(std::int64_t(0))});
-SQLConduit::transaction("my", [&](core::Session &s) { return util::call(s, proc, params, r); });
+client.transaction("my", [&](core::Session &s) { return util::call(client, s, proc, params, r); });
 // r.outParams[0] is the OUT value
 
 // affected rows only: returnsRows = false
 util::CallOptions o;
 o.returnsRows = false;
-util::call(proc, params, r, o);
+util::call(client, proc, params, r, o);
 ```
 
 | Dialect | OUT | INOUT | Mechanism / limit |
@@ -1505,9 +1463,8 @@ util::call(proc, params, r, o);
 | PostgreSQL (procedure) | ❌ | ❌ | PG's `CALL` does not hand OUT values to the client → `NotSupported` |
 | SQL Server | ❌ | ❌ | Requires `DECLARE @var <type>` first; SQLConduit cannot infer the type → `NotSupported` |
 
-The async path has no connection affinity, so `SELECT @var` may land on a different connection —
-**OUT / INOUT are not supported there**. Use `async::util::callAll()` (callback / future /
-coroutine) when you need multiple result sets.
+The asynchronous util wrappers were removed. Use synchronous `util::call(client, ...)` for multiple
+result sets and its `Session` overload when OUT / INOUT parameters require connection affinity.
 
 Multiple result sets depend on driver capability: MySQL implements real `mysql_next_result`
 collection; other drivers fall back to a single result set. MySQL's `query` / `execute` now drain
@@ -1524,7 +1481,6 @@ dropping blank fragments — so semicolons inside a MySQL procedure body are nev
 
 - Governance: each statement goes through `detail::runDdl`, the same path as `createRoutine` / `createIndex` (pinned to primary, `shadow` cleared, `NonIdempotent` by default, cache invalidated).
 - Errors: a `readSqlFile` failure or missing directory yields `ErrorCode::IoError`; with `stopOnError=true` (default) it stops at the first error, with `false` it runs everything and the last error wins; per-file `ScriptResult` carries `path/status/statements/executed`.
-- Async: `async::util` ships the same callback / future / coroutine forms. Statements are strictly sequential—the next one is submitted only after the previous callback completes. Callback forms return an aggregate `Handle`: `state()` follows the current statement, while `cancel()` cancels it and prevents later statements from being submitted. Even with `stopOnError=false`, the final status retains the last error. Each statement is wrapped in `ExecScope` and runs through `async::execute`.
 
 ### Governance (invariants)
 
@@ -1535,7 +1491,7 @@ dropping blank fragments — so semicolons inside a MySQL procedure body are nev
 | I3 | A structural change invalidates that data source's query cache (guaranteed by core `markWrite()`) |
 | I4 | Auditing still applies: allow/deny lists, read-only and `require_limit_select` all stay — only "semicolons inside a routine body" is exempt |
 | I5 | Unsupported dialect combinations answer `NotSupported`; never a silent downgrade |
-| I7 | Callback / future / coroutine forms share the synchronous path — same governance, same error codes |
+| I7 | Every util operation receives an explicit `Client&` and shares that client's governance state and error codes |
 
 ### Auditing and routine bodies (the core bug fixed in v0.5.1)
 
@@ -1551,7 +1507,7 @@ while `CREATE PROCEDURE ... END; DROP TABLE t` is **still blocked**.
 ### Known limitations
 
 1. **Multiple result sets**: MySQL / SQL Server `CALL` now collects every result set; other drivers fall back to one.
-2. **OUT / INOUT parameters**: supported for MySQL (needs `Session`) and postgres functions; postgres procedures, SQL Server and the async path return `NotSupported`.
+2. **OUT / INOUT parameters**: supported for MySQL (needs `Session`) and postgres functions; postgres procedures and SQL Server return `NotSupported`.
 3. **DDL inside a transaction**: MySQL commits implicitly and cannot roll back; util cannot change that, so DDL runs outside transactions by default.
 4. **No dialect translation for routine bodies**: keep one script per dialect and let util manage and run them.
 
@@ -1601,21 +1557,21 @@ Full SQL, slow SQL, and pool metrics are configured via `observability`; full pa
 `sql_log.mode="full"` renders parameters in the actual driver dialect, but is still for diagnostics only — database execution continues to use native parameter binding. Strings and BLOBs may contain passwords, tokens, or personal data, and only enter the log after the corresponding `include_*_values` is explicitly turned on; both SQL and individual parameters have length caps.
 
 ```cpp
-sqlconduit::SQLConduit::setObserver([](const sqlconduit::common::OperationEvent& event) {
+client.setObserver([](const sqlconduit::common::OperationEvent& event) {
     // event: data source, operation type, duration, structured status, row count, and SQL fingerprint.
     // When neither SQL logging nor slow SQL is enabled, by default it still carries no SQL or parameters.
 });
 
-auto topSlow = sqlconduit::SQLConduit::slowSqlStats(20, "main");       // sorted by average duration
-auto recent = sqlconduit::SQLConduit::recentSlowSql(50, "main");      // sorted by most recent
-sqlconduit::SQLConduit::clearSlowSqlStats();
+auto topSlow = client.slowSqlStats(20, "main");       // sorted by average duration
+auto recent = client.recentSlowSql(50, "main");      // sorted by most recent
+client.clearSlowSqlStats();
 
 sqlconduit::core::ConnectionPool::Stats stats;
-if (sqlconduit::SQLConduit::poolStats(stats, "app")) {
+if (client.poolStats(stats, "app")) {
     // min/max, utilization(), idle/borrowed/waiting, high-water marks, borrow-wait duration, eviction counts, etc.
 }
 
-auto physicalPools = sqlconduit::SQLConduit::allPoolStats();
+auto physicalPools = client.allPoolStats();
 ```
 
 Slow SQL uses parameterized-template fingerprint aggregation, with fixed capacity and a duration histogram to bound memory. Observer exceptions are isolated and do not change the database operation result. A group's `poolStats` aggregates its members, while `allPoolStats` returns every physical pool — handy for locating a specific primary or replica.
@@ -1645,8 +1601,8 @@ ds.execute("UPDATE t SET v = ? WHERE id = ?", ...);
   non-SQL operations keep their trace empty, never faking a trace for a non-existent SQL chain.
 - **Log format** — when `sql_log.mode == "full"` and trace is non-empty, the line ends with
   `trace=... span=...` so you can pull a window by trace, without polluting legacy no-trace links.
-- **Async propagation is automatic** — `StatementOp` / `SessionOp` snapshot `entryCtx` so
-  worker threads automatically wrap a `ContextScope(entryCtx)` before executing; the caller
+- **Async propagation is automatic** — `Client::*Async` snapshots the context at submission, so
+  worker threads restore it with `ContextScope` before executing; the caller
   never has to thread the context manually.
 
 **W3C `traceparent` parse and format**:
@@ -1684,7 +1640,7 @@ ctx.shadow   = true;            // this tenant routes to the shadow DB
 sqlconduit::common::ContextScope scope(ctx);
 
 // SPI afterExecution sets view.result->transformed = true above
-sqlconduit::SQLConduit::setObserver([](const sqlconduit::common::OperationEvent &event) {
+client.setObserver([](const sqlconduit::common::OperationEvent &event) {
     if (event.shadow && event.status.ok()) {
         shadowQps[event.dataSource]++;
     }
@@ -1701,8 +1657,8 @@ sqlconduit::SQLConduit::setObserver([](const sqlconduit::common::OperationEvent 
   as a `ContextScope` onto the thread stack, then `emitSql` reads from the top of the
   stack as its very first action — so the marking uses the same decision as
   `readTarget` / `writeTargets`. No "marked shadow but routed to primary" inconsistency.
-- **Asynchronous shadow marking**: `StatementOp::entryCtx` is snapshotted at submit,
-  and the worker runs `ContextScope(entryCtx)` before execution — the marking crosses
+- **Asynchronous shadow marking**: `Client::*Async` snapshots the context at submission,
+  and the worker restores it with `ContextScope` before execution — the marking crosses
   threads with the op and cannot leak into the next submission.
 - **`transformed` only comes from queries**: write / batch / stream / executePrepared
   don't carry a `ResultSet`; `observeSql` passes `nullptr` for them and
@@ -1836,7 +1792,7 @@ target_link_libraries(my_app PRIVATE sqlconduit::sqlconduit)
 link arguments for the driver client libraries are resolved from the local environment during
 `find_package` (see the next section). nlohmann/json is a purely build-time private dependency — it is
 neither installed nor exported, so it cannot conflict with a system or sibling `nlohmann_json` header.
-Be sure to call `SQLConduit::shutdown()` before exit, to reclaim the pool and heartbeat threads. When
+Be sure to call `client.shutdown()` before exit, to reclaim the pool and heartbeat threads. When
 embedding SQLConduit as a subproject, pass `-DSQLCONDUIT_INSTALL=OFF` so it adds no install rules to
 the parent project.
 
@@ -1870,7 +1826,7 @@ If a library is missing, `find_package` fails during configuration and names the
 
 > **Expected behavior (out-of-the-box notes)**
 > - `SQLCONDUIT_ENABLE_*` are all OFF by default; a driver not enabled at compile time returns `DriverDisabled` on call.
-> - Call `SQLConduit::shutdown()` before process exit to reclaim the pool and heartbeat threads.
+> - Call `client.shutdown()` before process exit to reclaim the pool and heartbeat threads.
 
 ## Extending a new database type
 

@@ -1,4 +1,3 @@
-#include "sqlconduit/async/sqlconduit_async.h"
 #include "sqlconduit/common/pg_types.h"
 #include "sqlconduit/sqlconduit.h"
 #include "sqlconduit/mapping.h"
@@ -18,8 +17,9 @@
 #include <thread>
 #include <vector>
 
-struct PgItem
-{
+static sqlconduit::Client g_client;
+
+struct PgItem {
     std::int64_t id = 0;
     std::string name;
     std::int64_t qty = 0;
@@ -28,45 +28,38 @@ struct PgItem
     sqlconduit::common::Timestamp createdAt;
 };
 
-struct PgTyped
-{
+struct PgTyped {
     std::int64_t id = 0;
     std::vector<std::string> tags;
     sqlconduit::common::PgPoint pt;
 };
 
-namespace sqlconduit::mapping
-{
-    template <>
-    struct RowMapper<PgTyped>
-    {
-        static Mapping<PgTyped> describe()
-        {
+namespace sqlconduit::mapping {
+    template<>
+    struct RowMapper<PgTyped> {
+        static Mapping<PgTyped> describe() {
             return Mapping<PgTyped>()
-                   .field(&PgTyped::id, "id", FieldFlags::PrimaryKey | FieldFlags::Generated)
-                   .field(&PgTyped::tags, "tags")
-                   .field(&PgTyped::pt, "pt");
+                    .field(&PgTyped::id, "id", FieldFlags::PrimaryKey | FieldFlags::Generated)
+                    .field(&PgTyped::tags, "tags")
+                    .field(&PgTyped::pt, "pt");
         }
     };
 
-    template <>
-    struct RowMapper<PgItem>
-    {
-        static Mapping<PgItem> describe()
-        {
+    template<>
+    struct RowMapper<PgItem> {
+        static Mapping<PgItem> describe() {
             return Mapping<PgItem>()
-                   .field(&PgItem::id, "id", FieldFlags::PrimaryKey | FieldFlags::Generated)
-                   .field(&PgItem::name, "name")
-                   .field(&PgItem::qty, "qty")
-                   .field(&PgItem::price, "price")
-                   .field(&PgItem::active, "active")
-                   .field(&PgItem::createdAt, "created_at");
+                    .field(&PgItem::id, "id", FieldFlags::PrimaryKey | FieldFlags::Generated)
+                    .field(&PgItem::name, "name")
+                    .field(&PgItem::qty, "qty")
+                    .field(&PgItem::price, "price")
+                    .field(&PgItem::active, "active")
+                    .field(&PgItem::createdAt, "created_at");
         }
     };
 }
 
-namespace
-{
+namespace {
     using sqlconduit::common::ErrorCode;
     using sqlconduit::common::Params;
     using sqlconduit::common::ResultSet;
@@ -82,105 +75,88 @@ namespace
 
     int gChecks = 0;
 
-    void require(bool condition, const std::string& message)
-    {
+    void require(bool condition, const std::string &message) {
         ++gChecks;
         if (!condition) throw std::runtime_error(message);
     }
 
-    void requireOk(const Status& status, const std::string& where)
-    {
+    void requireOk(const Status &status, const std::string &where) {
         require(status.ok(), where + " failed: [" + sqlconduit::common::errorCodeToString(status.code)
-                + "] " + status.message + " sqlstate=" + status.sqlState);
+                             + "] " + status.message + " sqlstate=" + status.sqlState);
     }
 
-    std::string env(const char* name, const std::string& fallback = {})
-    {
-        const char* value = std::getenv(name);
+    std::string env(const char *name, const std::string &fallback = {}) {
+        const char *value = std::getenv(name);
         return value && *value ? value : fallback;
     }
 
-    std::string jsonEscape(const std::string& value)
-    {
+    std::string jsonEscape(const std::string &value) {
         std::ostringstream out;
-        for (const unsigned char c : value)
-        {
-            switch (c)
-            {
-            case '\\': out << "\\\\";
-                break;
-            case '"': out << "\\\"";
-                break;
-            case '\n': out << "\\n";
-                break;
-            case '\r': out << "\\r";
-                break;
-            case '\t': out << "\\t";
-                break;
-            default:
-                if (c < 0x20)
-                {
-                    const char* hex = "0123456789abcdef";
-                    out << "\\u00" << hex[c >> 4] << hex[c & 0x0f];
-                }
-                else
-                {
-                    out << static_cast<char>(c);
-                }
+        for (const unsigned char c: value) {
+            switch (c) {
+                case '\\': out << "\\\\";
+                    break;
+                case '"': out << "\\\"";
+                    break;
+                case '\n': out << "\\n";
+                    break;
+                case '\r': out << "\\r";
+                    break;
+                case '\t': out << "\\t";
+                    break;
+                default:
+                    if (c < 0x20) {
+                        const char *hex = "0123456789abcdef";
+                        out << "\\u00" << hex[c >> 4] << hex[c & 0x0f];
+                    } else {
+                        out << static_cast<char>(c);
+                    }
             }
         }
         return out.str();
     }
 
-    std::int64_t asInt(const Value& value)
-    {
-        if (const auto* v = std::get_if<std::int64_t>(&value)) return *v;
+    std::int64_t asInt(const Value &value) {
+        if (const auto *v = std::get_if<std::int64_t>(&value)) return *v;
         throw std::runtime_error("expected int64 result value");
     }
 
-    const std::string& asString(const Value& value)
-    {
-        if (const auto* v = std::get_if<std::string>(&value)) return *v;
+    const std::string &asString(const Value &value) {
+        if (const auto *v = std::get_if<std::string>(&value)) return *v;
         throw std::runtime_error("expected string result value");
     }
 
-    bool existsByName(const std::string& table, const std::string& name)
-    {
+    bool existsByName(const std::string &table, const std::string &name) {
         ResultSet rows;
-        requireOk(sqlconduit::SQLConduit::query("SELECT count(*) AS n FROM " + table + " WHERE name = ?",
-                                                Params{std::string(name)}, rows),
+        requireOk(g_client.query("SELECT count(*) AS n FROM " + table + " WHERE name = ?",
+                                 Params{std::string(name)}, rows),
                   "count by name");
         return asInt(rows.rows().at(0).at("n")) != 0;
     }
 
-    struct Fixture
-    {
+    struct Fixture {
         std::string schema;
         std::string table;
         std::string configPath;
         bool initialized = false;
 
-        Fixture()
-        {
+        Fixture() {
             const auto stamp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
             schema = "sqlconduit_it_" + std::to_string(static_cast<unsigned long long>(stamp));
             table = schema + ".items";
             configPath = "/tmp/" + schema + ".json";
         }
 
-        ~Fixture()
-        {
-            if (initialized)
-            {
+        ~Fixture() {
+            if (initialized) {
                 std::int64_t affected = 0;
-                (void)sqlconduit::SQLConduit::execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE", affected);
-                sqlconduit::SQLConduit::shutdown(std::chrono::milliseconds(3000));
+                (void) g_client.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE", affected);
+                g_client.shutdown(std::chrono::milliseconds(3000));
             }
             std::remove(configPath.c_str());
         }
 
-        void start()
-        {
+        void start() {
             const std::string host = env("SQLCONDUIT_TEST_PG_HOST", "127.0.0.1");
             const std::string port = env("SQLCONDUIT_TEST_PG_PORT", "5432");
             const std::string user = env("SQLCONDUIT_TEST_PG_USER", "postgres");
@@ -188,8 +164,7 @@ namespace
             require(!env("SQLCONDUIT_TEST_PG_PASSWORD").empty(),
                     "SQLCONDUIT_TEST_PG_PASSWORD must be set for the integration test");
 
-            auto dataSource = [&](const std::string& name, int maxRows)
-            {
+            auto dataSource = [&](const std::string &name, int maxRows) {
                 std::ostringstream out;
                 out << "{\"name\":\"" << name << "\",\"type\":\"postgres\",";
                 out << "\"host\":\"" << jsonEscape(host) << "\",\"port\":" << port << ',';
@@ -204,41 +179,41 @@ namespace
             std::ofstream file(configPath);
             require(static_cast<bool>(file), "cannot create temporary integration config");
             file << "{\n"
-                << "\"default_datasource\":\"pg\",\n"
-                << "\"heartbeat_interval_ms\":1000,\n"
-                << "\"pool\":{\"enabled\":true,\"min\":0,\"max\":4,"
-                "\"borrow_timeout_ms\":1000,\"validation_interval_ms\":0},\n"
-                << "\"retry\":{\"max_attempts\":1,\"retry_writes\":false},\n"
-                << "\"circuit_breaker\":{\"failure_threshold\":0},\n"
-                << "\"prepared_cache\":{\"enabled\":true,\"max_per_connection\":8},\n"
-                << "\"cursor\":{\"enabled\":true,\"default_batch_size\":2,"
-                "\"max_open_cursors\":1,\"allow_scrollable\":false},\n"
-                << "\"query_cache\":{\"enabled\":true,\"ttl_ms\":60000,"
-                "\"max_entries\":100},\n"
-                << "\"observability\":{\"sql_log\":{\"enabled\":false},"
-                "\"slow_sql\":{\"enabled\":true,\"threshold_ms\":0,"
-                "\"aggregate_capacity\":100,\"recent_capacity\":100,"
-                "\"retain_rendered_sql\":false},"
-                "\"pool_metrics\":{\"enabled\":true}},\n"
-                << "\"async\":{\"enabled\":true,\"threads\":2,\"queue_size\":64},\n"
-                << "\"datasources\":[" << dataSource("pg", 0) << ','
-                << dataSource("limited", 2) << "],\n\"groups\":[]\n}\n";
+                    << "\"default_datasource\":\"pg\",\n"
+                    << "\"heartbeat_interval_ms\":1000,\n"
+                    << "\"pool\":{\"enabled\":true,\"min\":0,\"max\":4,"
+                    "\"borrow_timeout_ms\":1000,\"validation_interval_ms\":0},\n"
+                    << "\"retry\":{\"max_attempts\":1,\"retry_writes\":false},\n"
+                    << "\"circuit_breaker\":{\"failure_threshold\":0},\n"
+                    << "\"prepared_cache\":{\"enabled\":true,\"max_per_connection\":8},\n"
+                    << "\"cursor\":{\"enabled\":true,\"default_batch_size\":2,"
+                    "\"max_open_cursors\":1,\"allow_scrollable\":false},\n"
+                    << "\"query_cache\":{\"enabled\":true,\"ttl_ms\":60000,"
+                    "\"max_entries\":100},\n"
+                    << "\"observability\":{\"sql_log\":{\"enabled\":false},"
+                    "\"slow_sql\":{\"enabled\":true,\"threshold_ms\":0,"
+                    "\"aggregate_capacity\":100,\"recent_capacity\":100,"
+                    "\"retain_rendered_sql\":false},"
+                    "\"pool_metrics\":{\"enabled\":true}},\n"
+                    << "\"async\":{\"enabled\":true,\"threads\":2,\"queue_size\":64},\n"
+                    << "\"datasources\":[" << dataSource("pg", 0) << ','
+                    << dataSource("limited", 2) << "],\n\"groups\":[]\n}\n";
             file.close();
 
-            requireOk(sqlconduit::SQLConduit::init(configPath), "SQLConduit::init");
+            requireOk(g_client.init(configPath), "g_client.init");
             initialized = true;
             std::int64_t affected = 0;
-            requireOk(sqlconduit::SQLConduit::execute("CREATE SCHEMA " + schema, affected), "create schema");
-            requireOk(sqlconduit::SQLConduit::execute(
+            requireOk(g_client.execute("CREATE SCHEMA " + schema, affected), "create schema");
+            requireOk(g_client.execute(
                           "CREATE TABLE " + table + " ("
                           "id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, qty BIGINT NOT NULL, "
                           "price DOUBLE PRECISION NOT NULL, active BOOLEAN NOT NULL, payload BYTEA, "
                           "amount NUMERIC(30,9), due_date DATE, local_time TIME, external_id UUID, "
                           "metadata JSONB, created_at TIMESTAMPTZ NOT NULL)", affected), "create table");
-            requireOk(sqlconduit::SQLConduit::execute("CREATE TYPE " + schema +
-                                                      ".addr AS (city TEXT, zip TEXT)", affected),
+            requireOk(g_client.execute("CREATE TYPE " + schema +
+                                       ".addr AS (city TEXT, zip TEXT)", affected),
                       "create composite type");
-            requireOk(sqlconduit::SQLConduit::execute(
+            requireOk(g_client.execute(
                           "CREATE TABLE " + schema + ".typed ("
                           "id BIGSERIAL PRIMARY KEY, tags TEXT[], nums INT[], addr "
                           + schema + ".addr, pt POINT, bx BOX)", affected),
@@ -246,15 +221,14 @@ namespace
         }
     };
 
-    void testConnectivityAndTypes(Fixture& f)
-    {
+    void testConnectivityAndTypes(Fixture &f) {
         ResultSet version;
-        requireOk(sqlconduit::SQLConduit::query("SELECT current_database() AS db, version() AS version", version),
+        requireOk(g_client.query("SELECT current_database() AS db, version() AS version", version),
                   "server identity query");
         require(version.rowCount() == 1, "server identity query returned wrong row count");
         require(!asString(version.rows()[0].at("version")).empty(), "PostgreSQL version is empty");
 
-        auto ds = sqlconduit::SQLConduit::dataSource();
+        auto ds = g_client.dataSource();
         require(ds != nullptr, "default datasource is missing");
         const sqlconduit::common::Timestamp timestamp = std::chrono::system_clock::now();
         const sqlconduit::common::Blob blob{0x00, 0x01, 0x7f, 0x80, 0xff};
@@ -277,12 +251,12 @@ namespace
         require(affected == 1 && keys.lastInsertId() > 0, "generated key or affected rows is wrong");
 
         ResultSet rows;
-        requireOk(sqlconduit::SQLConduit::query(
+        requireOk(g_client.query(
                       "SELECT name, qty, price, active, payload, amount, due_date, local_time, external_id, "
                       "metadata, created_at FROM " + f.table + " WHERE id = ?",
                       Params{keys.lastInsertId()}, rows), "type round trip");
         require(rows.rowCount() == 1, "type round trip returned wrong row count");
-        const auto& row = rows.rows()[0];
+        const auto &row = rows.rows()[0];
         require(asString(row.at("name")) == "alpha", "text round trip failed");
         require(asInt(row.at("qty")) == 7, "bigint round trip failed");
         require(std::abs(std::get<double>(row.at("price")) - 12.5) < 0.0001,
@@ -305,36 +279,33 @@ namespace
                 "timestamptz was not mapped to Timestamp");
 
         ResultSet nullRow;
-        requireOk(sqlconduit::SQLConduit::query("SELECT ?::text AS value", Params{nullptr}, nullRow),
+        requireOk(g_client.query("SELECT ?::text AS value", Params{nullptr}, nullRow),
                   "NULL binding");
         require(std::holds_alternative<std::nullptr_t>(nullRow.rows()[0].at("value")),
                 "NULL binding round trip failed");
     }
 
-    void testBatchPreparedAndStreaming(Fixture& f)
-    {
+    void testBatchPreparedAndStreaming(Fixture &f) {
         sqlconduit::common::ParamBatch batch{
             Params{std::string("batch-1"), std::int64_t(1)},
             Params{std::string("batch-2"), std::int64_t(2)},
             Params{std::string("batch-3"), std::int64_t(3)}
         };
         sqlconduit::common::BatchResult result;
-        requireOk(sqlconduit::SQLConduit::executeBatch(
+        requireOk(g_client.executeBatch(
                       "INSERT INTO " + f.table
                       + " (name, qty, price, active, created_at) VALUES (?, ?, 1.0, true, now())",
                       batch, result), "batch insert");
         require(result.affected.size() == 3 && result.totalAffected() == 3,
                 "batch affected rows are wrong");
 
-        requireOk(sqlconduit::SQLConduit::withSession([&](sqlconduit::core::Session& session)
-        {
+        requireOk(g_client.withSession([&](sqlconduit::core::Session &session) {
             sqlconduit::core::PreparedStatementHandle prepared;
             auto st = session.prepare("SELECT qty FROM " + f.table + " WHERE name = ?",
                                       Params{std::string("sample")}, prepared);
             if (!st.ok()) return st;
             if (!prepared.valid()) return Status::error(ErrorCode::QueryError, "invalid prepared handle");
-            for (int i = 1; i <= 3; ++i)
-            {
+            for (int i = 1; i <= 3; ++i) {
                 ResultSet rows;
                 st = session.executePrepared(prepared, Params{std::string("batch-") + std::to_string(i)}, rows);
                 if (!st.ok()) return st;
@@ -346,17 +317,15 @@ namespace
 
         std::uint64_t streamedRows = 0;
         int callbacks = 0;
-        requireOk(sqlconduit::SQLConduit::queryEach(
+        requireOk(g_client.queryEach(
                       "SELECT id FROM " + f.table + " ORDER BY id", {},
-                      [&](const sqlconduit::common::Row&) { return ++callbacks < 2; }, streamedRows),
+                      [&](const sqlconduit::common::Row &) { return ++callbacks < 2; }, streamedRows),
                   "queryEach early stop");
         require(callbacks == 2 && streamedRows == 2, "queryEach early stop count is wrong");
     }
 
-    void testTransactions(Fixture& f)
-    {
-        requireOk(sqlconduit::SQLConduit::transaction([&](sqlconduit::core::Session& session)
-        {
+    void testTransactions(Fixture &f) {
+        requireOk(g_client.transaction([&](sqlconduit::core::Session &session) {
             std::int64_t affected = 0;
             auto st = session.execute(
                 "INSERT INTO " + f.table
@@ -377,8 +346,7 @@ namespace
         require(existsByName(f.table, "committed"), "committed row is missing");
         require(!existsByName(f.table, "savepoint-temp"), "savepoint rollback did not roll back row");
 
-        const Status rollback = sqlconduit::SQLConduit::transaction([&](sqlconduit::core::Session& session)
-        {
+        const Status rollback = g_client.transaction([&](sqlconduit::core::Session &session) {
             std::int64_t affected = 0;
             const auto st = session.execute(
                 "INSERT INTO " + f.table
@@ -392,8 +360,7 @@ namespace
 
         sqlconduit::common::TransactionOptions readOnly;
         readOnly.readOnly = true;
-        requireOk(sqlconduit::SQLConduit::transaction(readOnly, [&](sqlconduit::core::Session& session)
-        {
+        requireOk(g_client.transaction(readOnly, [&](sqlconduit::core::Session &session) {
             ResultSet rows;
             return session.query("SELECT count(*) AS n FROM " + f.table, rows);
         }), "read-only transaction");
@@ -401,8 +368,7 @@ namespace
         sqlconduit::common::TransactionOptions timeout;
         timeout.timeout = std::chrono::milliseconds(100);
         const auto started = std::chrono::steady_clock::now();
-        const Status timed = sqlconduit::SQLConduit::transaction(timeout, [](sqlconduit::core::Session& session)
-        {
+        const Status timed = g_client.transaction(timeout, [](sqlconduit::core::Session &session) {
             ResultSet rows;
             return session.query("SELECT pg_sleep(2)", rows);
         });
@@ -412,10 +378,9 @@ namespace
                 "transaction timeout did not interrupt pg_sleep promptly");
     }
 
-    void testErrorsLimitsAndCursor(Fixture& f)
-    {
+    void testErrorsLimitsAndCursor(Fixture &f) {
         std::int64_t affected = 0;
-        const Status duplicate = sqlconduit::SQLConduit::execute(
+        const Status duplicate = g_client.execute(
             "INSERT INTO " + f.table
             + " (name, qty, price, active, created_at) VALUES (?, 1, 1, true, now())",
             Params{std::string("alpha")}, affected);
@@ -424,17 +389,17 @@ namespace
         require(duplicate.sqlState == "23505", "unique violation SQLSTATE was not preserved");
 
         ResultSet limited;
-        const Status limit = sqlconduit::SQLConduit::query(
+        const Status limit = g_client.query(
             "limited", "SELECT id FROM " + f.table + " ORDER BY id", {}, limited);
         require(limit.code == ErrorCode::QueryError, "max_result_rows did not reject oversized result");
 
         sqlconduit::core::CursorOptions options;
         options.batch_size = 2;
         std::unique_ptr<sqlconduit::core::Cursor> cursor;
-        requireOk(sqlconduit::SQLConduit::openCursor("SELECT id FROM " + f.table + " ORDER BY id", {}, options, cursor),
+        requireOk(g_client.openCursor("SELECT id FROM " + f.table + " ORDER BY id", {}, options, cursor),
                   "open cursor");
         std::unique_ptr<sqlconduit::core::Cursor> second;
-        const Status cursorLimit = sqlconduit::SQLConduit::openCursor(
+        const Status cursorLimit = g_client.openCursor(
             "SELECT id FROM " + f.table + " ORDER BY id", {}, options, second);
         require(cursorLimit.code == ErrorCode::CursorLimit, "max_open_cursors was not enforced");
 
@@ -443,65 +408,48 @@ namespace
         require(streamed.rowCount() >= 5, "cursor did not stream all rows");
         requireOk(cursor->close(), "cursor close");
         sqlconduit::core::ConnectionPool::Stats stats;
-        require(sqlconduit::SQLConduit::poolStats(stats), "pool stats unavailable");
+        require(g_client.poolStats(stats), "pool stats unavailable");
         require(stats.borrowed == 0, "cursor close did not immediately return its connection");
 
         std::unique_ptr<sqlconduit::core::Cursor> reopened;
-        requireOk(sqlconduit::SQLConduit::openCursor(
+        requireOk(g_client.openCursor(
                       "SELECT id FROM " + f.table + " ORDER BY id", {}, options, reopened),
                   "reopen cursor after close");
         requireOk(reopened->close(), "close reopened cursor");
     }
 
-    void testCacheAsyncAndObservability(Fixture& f)
-    {
+    void testCacheAsyncAndObservability(Fixture &f) {
         ResultSet before;
-        requireOk(sqlconduit::SQLConduit::query("SELECT qty FROM " + f.table + " WHERE name = ?",
-                                                Params{std::string("alpha")}, before), "cached read before write");
+        requireOk(g_client.query("SELECT qty FROM " + f.table + " WHERE name = ?",
+                                 Params{std::string("alpha")}, before), "cached read before write");
         std::int64_t affected = 0;
-        requireOk(sqlconduit::SQLConduit::execute("UPDATE " + f.table + " SET qty = ? WHERE name = ?",
-                                                  Params{std::int64_t(99), std::string("alpha")}, affected),
+        requireOk(g_client.execute("UPDATE " + f.table + " SET qty = ? WHERE name = ?",
+                                   Params{std::int64_t(99), std::string("alpha")}, affected),
                   "cache invalidating write");
         ResultSet after;
-        requireOk(sqlconduit::SQLConduit::query("SELECT qty FROM " + f.table + " WHERE name = ?",
-                                                Params{std::string("alpha")}, after), "cached read after write");
+        requireOk(g_client.query("SELECT qty FROM " + f.table + " WHERE name = ?",
+                                 Params{std::string("alpha")}, after), "cached read after write");
         require(asInt(after.rows()[0].at("qty")) == 99, "write did not invalidate query cache");
 
-        auto future = sqlconduit::async::query("SELECT count(*) AS n FROM " + f.table);
+        auto future = g_client.queryAsync("SELECT count(*) AS n FROM " + f.table);
         auto asyncRows = future.get();
         requireOk(asyncRows.status, "async future query");
         require(asInt(asyncRows.rows.rows()[0].at("n")) >= 5, "async query returned wrong count");
 
-        std::promise<sqlconduit::async::QueryResult> completion;
-        sqlconduit::async::Options options;
-        options.timeout = std::chrono::milliseconds(100);
-        const auto started = std::chrono::steady_clock::now();
-        auto handle = sqlconduit::async::query(
-            "SELECT pg_sleep(2)",
-            [&](sqlconduit::async::QueryResult&& result) { completion.set_value(std::move(result)); },
-            options);
-        require(handle.valid(), "async timeout handle is invalid");
-        auto timed = completion.get_future().get();
-        const auto elapsed = std::chrono::steady_clock::now() - started;
-        require(timed.status.code == ErrorCode::QueryTimeout,
-                "async pg_sleep was not classified as QueryTimeout: " + timed.status.message);
-        require(elapsed < std::chrono::seconds(2), "async cancellation did not interrupt pg_sleep promptly");
-
         sqlconduit::core::ConnectionPool::Stats stats;
-        require(sqlconduit::SQLConduit::poolStats(stats), "pool stats unavailable after async test");
+        require(g_client.poolStats(stats), "pool stats unavailable after async test");
         require(stats.borrowRequests > 0 && stats.borrowSuccesses > 0 && stats.connectionsCreated > 0,
                 "pool counters were not populated");
-        require(!sqlconduit::SQLConduit::slowSqlStats(100).empty(), "slow SQL aggregates are empty");
-        require(!sqlconduit::SQLConduit::recentSlowSql(100).empty(), "recent slow SQL records are empty");
+        require(!g_client.slowSqlStats(100).empty(), "slow SQL aggregates are empty");
+        require(!g_client.recentSlowSql(100).empty(), "recent slow SQL records are empty");
     }
 
 
-    void testEntityMapping(Fixture& f)
-    {
+    void testEntityMapping(Fixture &f) {
         const std::string ent = f.schema + "_entity";
         std::int64_t aff = 0;
-        (void)sqlconduit::SQLConduit::execute("DROP TABLE IF EXISTS " + ent, aff);
-        requireOk(sqlconduit::SQLConduit::execute(
+        (void) g_client.execute("DROP TABLE IF EXISTS " + ent, aff);
+        requireOk(g_client.execute(
                       "CREATE TABLE " + ent + " ("
                       "id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, qty BIGINT NOT NULL, "
                       "price DOUBLE PRECISION NOT NULL, active BOOLEAN NOT NULL, "
@@ -513,19 +461,18 @@ namespace
         item.price = 3.5;
         item.active = true;
         item.createdAt = sqlconduit::common::Timestamp{std::chrono::system_clock::now()};
-        auto ins = sqlconduit::insertAs<PgItem>(ent, item);
+        auto ins = sqlconduit::insertAs<PgItem>(g_client, ent, item);
         require(ins.status.ok(), "insertAs failed: " + ins.status.message);
         require(ins.affected == 1, "insertAs affected mismatch");
         require(item.id > 0, "insertAs did not backfill generated id (PG auto-key gap?)");
         const std::int64_t id = item.id;
 
-        auto got = sqlconduit::queryAs<PgItem>(
-            "SELECT id,name,qty,price,active,created_at FROM " + ent + " WHERE id=?",
-            Params{std::int64_t(id)});
+        auto got = sqlconduit::queryAs<PgItem>(g_client,
+                                               "SELECT id,name,qty,price,active,created_at FROM " + ent + " WHERE id=?",
+                                               Params{std::int64_t(id)});
         require(got.status.ok(), "queryAs failed: " + got.status.message);
         require(got.items.size() == 1, "queryAs wrong row count");
-        if (!got.items.empty())
-        {
+        if (!got.items.empty()) {
             require(got.items[0].name == "map_item_1", "mapped name mismatch");
             require(got.items[0].qty == 11, "mapped qty mismatch");
             require(std::abs(got.items[0].price - 3.5) < 1e-9, "mapped price mismatch");
@@ -533,11 +480,12 @@ namespace
         }
 
         item.qty = 99;
-        auto upd = sqlconduit::updateAs<PgItem>(ent, item);
+        auto upd = sqlconduit::updateAs<PgItem>(g_client, ent, item);
         require(upd.status.ok() && upd.affected == 1, "updateAs failed");
-        auto got2 = sqlconduit::queryAs<PgItem>(
-            "SELECT id,name,qty,price,active,created_at FROM " + ent + " WHERE id=?",
-            Params{std::int64_t(id)});
+        auto got2 = sqlconduit::queryAs<PgItem>(g_client,
+                                                "SELECT id,name,qty,price,active,created_at FROM " + ent +
+                                                " WHERE id=?",
+                                                Params{std::int64_t(id)});
         require(got2.status.ok() && !got2.items.empty() && got2.items[0].qty == 99,
                 "updateAs did not persist");
 
@@ -554,49 +502,47 @@ namespace
         b2.active = false;
         b2.createdAt = sqlconduit::common::Timestamp{std::chrono::system_clock::now()};
         std::vector<PgItem> bv{b1, b2};
-        auto batch = sqlconduit::insertBatchAs<PgItem>(ent, bv);
+        auto batch = sqlconduit::insertBatchAs<PgItem>(g_client, ent, bv);
         require(batch.status.ok(), "insertBatchAs failed: " + batch.status.message);
         require(batch.batch.totalAffected() == 2, "insertBatchAs affected mismatch");
         require(bv[0].id > 0 && bv[1].id > 0, "insertBatchAs did not backfill generated ids");
         require(bv[0].id != bv[1].id, "insertBatchAs backfilled the same id twice");
 
         std::uint64_t mappedRows = 0;
-        auto each = sqlconduit::queryEachAs<PgItem>(
-            "SELECT id,name,qty,price,active,created_at FROM " + ent +
-            " WHERE name LIKE 'map_%' ORDER BY id",
-            Params{}, [&](PgItem&&) { return true; }, mappedRows);
+        auto each = sqlconduit::queryEachAs<PgItem>(g_client,
+                                                    "SELECT id,name,qty,price,active,created_at FROM " + ent +
+                                                    " WHERE name LIKE 'map_%' ORDER BY id",
+                                                    Params{}, [&](PgItem &&) { return true; }, mappedRows);
         require(each.ok() && mappedRows >= 3, "queryEachAs mapped count mismatch");
 
         std::int64_t d = 0;
-        requireOk(sqlconduit::SQLConduit::execute("DROP TABLE IF EXISTS " + ent, d), "drop entity table");
+        requireOk(g_client.execute("DROP TABLE IF EXISTS " + ent, d), "drop entity table");
     }
 
-    void testScriptExecution(Fixture& f)
-    {
+    void testScriptExecution(Fixture &f) {
         const std::string script =
-            "INSERT INTO " + f.table + " (name, qty, price, active, created_at) "
-            "VALUES ('script_a',1,1.0,true,now());\n"
-            "INSERT INTO " + f.table + " (name, qty, price, active, created_at) "
-            "VALUES ('script_b',2,2.0,true,now());";
+                "INSERT INTO " + f.table + " (name, qty, price, active, created_at) "
+                "VALUES ('script_a',1,1.0,true,now());\n"
+                "INSERT INTO " + f.table + " (name, qty, price, active, created_at) "
+                "VALUES ('script_b',2,2.0,true,now());";
         std::size_t executed = 0;
-        auto st = sqlconduit::common::util::runScriptText(script, {}, &executed);
+        auto st = sqlconduit::common::util::runScriptText(g_client, script, {}, &executed);
         require(st.ok(), "runScriptText failed: " + st.message);
         require(executed == 2, "runScriptText executed count mismatch");
 
         const std::string proc =
-            "CREATE PROCEDURE sqlconduit_it_script_proc() AS $$ BEGIN PERFORM 1; END; $$ LANGUAGE plpgsql";
-        auto procSt = sqlconduit::common::util::createRoutine(proc);
+                "CREATE PROCEDURE sqlconduit_it_script_proc() AS $$ BEGIN PERFORM 1; END; $$ LANGUAGE plpgsql";
+        auto procSt = sqlconduit::common::util::createRoutine(g_client, proc);
         require(procSt.ok(), "createRoutine(procedure) failed: " + procSt.message);
         std::int64_t dropped = 0;
-        requireOk(sqlconduit::SQLConduit::execute("DROP PROCEDURE IF EXISTS sqlconduit_it_script_proc", dropped),
+        requireOk(g_client.execute("DROP PROCEDURE IF EXISTS sqlconduit_it_script_proc", dropped),
                   "drop script procedure");
     }
 
-    void testRoutinesAndCall(Fixture& f)
-    {
-        require(sqlconduit::common::util::createRoutine(
-                    "CREATE FUNCTION sqlconduit_it_add(a INT, b INT) RETURNS INT AS $$ SELECT a + b $$ "
-                    "LANGUAGE sql").ok(), "createRoutine(function) failed");
+    void testRoutinesAndCall(Fixture &f) {
+        require(sqlconduit::common::util::createRoutine(g_client,
+                                                        "CREATE FUNCTION sqlconduit_it_add(a INT, b INT) RETURNS INT AS $$ SELECT a + b $$ "
+                                                        "LANGUAGE sql").ok(), "createRoutine(function) failed");
         RoutineRef addRef{"sqlconduit_it_add", RoutineKind::Function};
         CallParams addParams{
             CallParam(ParamDirection::In, std::int64_t(3)),
@@ -606,19 +552,19 @@ namespace
         sqlconduit::common::util::CallOptions addOpts;
         addOpts.dialect = Dialect::Postgres;
         addOpts.returnsRows = true;
-        auto addSt = sqlconduit::common::util::call(addRef, addParams, addRes, addOpts);
+        auto addSt = sqlconduit::common::util::call(g_client, addRef, addParams, addRes, addOpts);
         require(addSt.ok(), "call(function) failed: " + addSt.message);
         require(!addRes.sets.empty() && !addRes.sets.front().rows().empty(),
                 "function result set missing");
-        if (!addRes.sets.empty() && !addRes.sets.front().rows().empty())
-        {
-            const auto& v = addRes.sets.front().rows().front().data().begin()->second;
+        if (!addRes.sets.empty() && !addRes.sets.front().rows().empty()) {
+            const auto &v = addRes.sets.front().rows().front().data().begin()->second;
             require(std::get<std::int64_t>(v) == 7, "function return mismatch");
         }
 
-        require(sqlconduit::common::util::createRoutine(
-                    "CREATE FUNCTION sqlconduit_it_swap(INOUT a INT, INOUT b INT) RETURNS RECORD AS $$ "
-                    "BEGIN a := a + b; b := a - b; a := a - b; END; $$ LANGUAGE plpgsql").ok(),
+        require(sqlconduit::common::util::createRoutine(g_client,
+                                                        "CREATE FUNCTION sqlconduit_it_swap(INOUT a INT, INOUT b INT) RETURNS RECORD AS $$ "
+                                                        "BEGIN a := a + b; b := a - b; a := a - b; END; $$ LANGUAGE plpgsql")
+                .ok(),
                 "createRoutine(function INOUT) failed");
         RoutineRef swapRef{"sqlconduit_it_swap", RoutineKind::Function};
         CallParams io{
@@ -629,30 +575,27 @@ namespace
         sqlconduit::common::util::CallOptions ioOpts;
         ioOpts.dialect = Dialect::Postgres;
         ioOpts.returnsRows = true;
-        auto ioSt = sqlconduit::SQLConduit::withSession([&](sqlconduit::core::Session& s)
-        {
-            return sqlconduit::common::util::call(s, swapRef, io, ioRes, ioOpts);
+        auto ioSt = g_client.withSession([&](sqlconduit::core::Session &s) {
+            return sqlconduit::common::util::call(g_client, s, swapRef, io, ioRes, ioOpts);
         });
         require(ioSt.ok(), "call(function INOUT) failed: " + ioSt.message);
         require(ioRes.outParams.size() == 2, "INOUT out params count mismatch");
-        if (ioRes.outParams.size() == 2)
-        {
+        if (ioRes.outParams.size() == 2) {
             require(asInt(ioRes.outParams[0]) == 9, "INOUT a after swap mismatch");
             require(asInt(ioRes.outParams[1]) == 5, "INOUT b after swap mismatch");
         }
 
         std::vector<ResultSet> sets;
-        auto mSt = sqlconduit::SQLConduit::queryAll("SELECT 1 AS n; SELECT 2 AS n", Params{}, sets);
+        auto mSt = g_client.queryAll("SELECT 1 AS n; SELECT 2 AS n", Params{}, sets);
         require(mSt.ok(), "queryAll failed on PG: " + mSt.message);
         require(!sets.empty(), "queryAll returned no result set on PG");
 
         std::int64_t d = 0;
-        requireOk(sqlconduit::SQLConduit::execute("DROP FUNCTION IF EXISTS sqlconduit_it_add", d), "drop fn add");
-        requireOk(sqlconduit::SQLConduit::execute("DROP FUNCTION IF EXISTS sqlconduit_it_swap", d), "drop fn swap");
+        requireOk(g_client.execute("DROP FUNCTION IF EXISTS sqlconduit_it_add", d), "drop fn add");
+        requireOk(g_client.execute("DROP FUNCTION IF EXISTS sqlconduit_it_swap", d), "drop fn swap");
     }
 
-    void testArrayCompositeGeometry(Fixture& f)
-    {
+    void testArrayCompositeGeometry(Fixture &f) {
         const std::string typed = f.schema + ".typed";
         std::int64_t affected = 0;
 
@@ -672,7 +615,7 @@ namespace
         const std::string pointText = sqlconduit::common::pgFormatPoint(sqlconduit::common::PgPoint{1, 2});
         const std::string boxText = sqlconduit::common::pgFormatBox(sqlconduit::common::PgBox{{3, 4}, {1, 2}});
 
-        requireOk(sqlconduit::SQLConduit::execute(
+        requireOk(g_client.execute(
                       "INSERT INTO " + typed + " (tags, nums, addr, pt, bx) VALUES (?, ?, ?, ?, ?)",
                       Params{
                           Value{tags}, Value{nums}, Value{addr},
@@ -683,97 +626,62 @@ namespace
         require(affected == 1, "typed insert affected rows mismatch");
 
         ResultSet rows;
-        requireOk(sqlconduit::SQLConduit::query("SELECT tags, nums, addr, pt, bx FROM " + typed, rows),
+        requireOk(g_client.query("SELECT tags, nums, addr, pt, bx FROM " + typed, rows),
                   "read typed row");
         require(rows.rowCount() == 1, "typed row count mismatch");
         if (rows.rowCount() != 1) return;
-        const auto& row = rows.rows()[0];
+        const auto &row = rows.rows()[0];
 
-        const auto* readTags = std::get_if<sqlconduit::common::Array>(&row.at("tags"));
+        const auto *readTags = std::get_if<sqlconduit::common::Array>(&row.at("tags"));
         require(readTags != nullptr && readTags->items.size() == 2, "TEXT[] surfaced as Array");
         if (readTags && readTags->items.size() == 2)
             require(std::get<std::string>(readTags->items[0]) == "red", "tags[0] value mismatch");
 
-        const auto* readNums = std::get_if<sqlconduit::common::Array>(&row.at("nums"));
+        const auto *readNums = std::get_if<sqlconduit::common::Array>(&row.at("nums"));
         require(readNums != nullptr && readNums->items.size() == 3 &&
                 std::get<std::int64_t>(readNums->items[0]) == 1, "INT[] surfaced as Array of int64");
 
-        const auto* readAddr = std::get_if<sqlconduit::common::Composite>(&row.at("addr"));
+        const auto *readAddr = std::get_if<sqlconduit::common::Composite>(&row.at("addr"));
         require(readAddr != nullptr && readAddr->fields.size() == 2, "composite surfaced as Composite");
-        if (readAddr)
-        {
-            const auto* city = readAddr->find("city");
+        if (readAddr) {
+            const auto *city = readAddr->find("city");
             require(city != nullptr && std::get<std::string>(*city) == "Shanghai",
                     "composite field city mismatch");
         }
 
-        const auto* readPoint = std::get_if<sqlconduit::common::Json>(&row.at("pt"));
+        const auto *readPoint = std::get_if<sqlconduit::common::Json>(&row.at("pt"));
         require(readPoint != nullptr && readPoint->value == pointText, "POINT surfaced as Json text");
         sqlconduit::common::PgPoint parsed{};
         require(readPoint && sqlconduit::common::pgParsePoint(readPoint->value, parsed) &&
                 parsed.x == 1 && parsed.y == 2, "POINT text parses back to PgPoint");
 
         ResultSet nested;
-        requireOk(sqlconduit::SQLConduit::query("SELECT ARRAY[[1,2],[3,4]] AS m", nested), "nested array query");
+        requireOk(g_client.query("SELECT ARRAY[[1,2],[3,4]] AS m", nested), "nested array query");
         require(nested.rowCount() == 1, "nested array row missing");
-        if (nested.rowCount() == 1)
-        {
-            const auto* outer = std::get_if<sqlconduit::common::Array>(&nested.rows()[0].at("m"));
+        if (nested.rowCount() == 1) {
+            const auto *outer = std::get_if<sqlconduit::common::Array>(&nested.rows()[0].at("m"));
             require(outer && outer->items.size() == 2 &&
                     std::holds_alternative<sqlconduit::common::Array>(outer->items[0]),
                     "nested array parsed as Array of Array");
         }
 
-        const auto entities = sqlconduit::queryAs<PgTyped>("SELECT id, tags, pt FROM " + typed, Params{});
+        const auto entities = sqlconduit::queryAs<PgTyped>(g_client, "SELECT id, tags, pt FROM " + typed, Params{});
         requireOk(entities.status, "queryAs<PgTyped>");
         require(entities.items.size() == 1, "queryAs<PgTyped> row count mismatch");
-        if (entities.items.size() == 1)
-        {
+        if (entities.items.size() == 1) {
             require(entities.items[0].tags.size() == 2 && entities.items[0].tags[0] == "red",
                     "mapping bound std::vector<std::string> from Array");
             require(entities.items[0].pt == sqlconduit::common::PgPoint{1, 2},
                     "mapping bound PgPoint from Json text");
         }
 
-        requireOk(sqlconduit::SQLConduit::execute("DELETE FROM " + typed, affected), "clean typed table");
-    }
-
-    void testAsyncUtil(Fixture& f)
-    {
-        const std::string fn =
-            "CREATE FUNCTION sqlconduit_it_aadd(a INT, b INT) RETURNS INT AS $$ SELECT a + b $$ LANGUAGE sql";
-        auto fr = sqlconduit::async::util::createRoutine(fn).get();
-        require(fr.status.ok(), "async createRoutine failed: " + fr.status.message);
-
-        const std::string script =
-            "INSERT INTO " + f.table + " (name, qty, price, active, created_at) "
-            "VALUES ('async_script',1,1.0,true,now());";
-        auto exec = sqlconduit::async::util::runScriptText(script).get();
-        require(exec.status.ok(), "async runScriptText failed: " + exec.status.message);
-
-        sqlconduit::async::util::Options callAllOpts;
-        auto mr = sqlconduit::async::util::callAll(
-            "SELECT sqlconduit_it_aadd(?, ?)",
-            sqlconduit::common::Params{std::int64_t(6), std::int64_t(7)}, callAllOpts).get();
-        require(mr.status.ok(), "async callAll failed: " + mr.status.message);
-        require(!mr.sets.empty() && !mr.sets.front().rows().empty(), "async callAll set missing");
-        if (!mr.sets.empty() && !mr.sets.front().rows().empty())
-        {
-            const auto& val = mr.sets.front().rows().front().data().begin()->second;
-            require(std::get<std::int64_t>(val) == 13, "async function return mismatch");
-        }
-
-        std::int64_t d = 0;
-        requireOk(sqlconduit::SQLConduit::execute("DROP FUNCTION IF EXISTS sqlconduit_it_aadd", d),
-                  "drop async function");
+        requireOk(g_client.execute("DELETE FROM " + typed, affected), "clean typed table");
     }
 }
 
-int main()
-{
+int main() {
     Fixture fixture;
-    try
-    {
+    try {
         fixture.start();
         testConnectivityAndTypes(fixture);
         testBatchPreparedAndStreaming(fixture);
@@ -784,14 +692,11 @@ int main()
         testScriptExecution(fixture);
         testRoutinesAndCall(fixture);
         testArrayCompositeGeometry(fixture);
-        testAsyncUtil(fixture);
         std::cout << "PostgreSQL integration test passed (" << gChecks << " checks)\n";
         return 0;
-    }
-    catch (const std::exception& error)
-    {
+    } catch (const std::exception &error) {
         std::cerr << "PostgreSQL integration test failed after " << gChecks
-            << " checks: " << error.what() << '\n';
+                << " checks: " << error.what() << '\n';
         return 1;
     }
 }

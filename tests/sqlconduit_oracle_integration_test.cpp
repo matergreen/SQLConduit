@@ -14,8 +14,9 @@
 #include <thread>
 #include <vector>
 
-struct OraItem
-{
+static sqlconduit::Client g_client;
+
+struct OraItem {
     std::int64_t id = 0;
     std::string name;
     std::int64_t qty = 0;
@@ -26,28 +27,24 @@ struct OraItem
     sqlconduit::common::Timestamp createdAt;
 };
 
-namespace sqlconduit::mapping
-{
-    template <>
-    struct RowMapper<OraItem>
-    {
-        static Mapping<OraItem> describe()
-        {
+namespace sqlconduit::mapping {
+    template<>
+    struct RowMapper<OraItem> {
+        static Mapping<OraItem> describe() {
             return Mapping<OraItem>()
-                   .field(&OraItem::id, "id", FieldFlags::PrimaryKey | FieldFlags::Generated)
-                   .field(&OraItem::name, "name")
-                   .field(&OraItem::qty, "qty")
-                   .field(&OraItem::price, "price")
-                   .field(&OraItem::payload, "payload")
-                   .field(&OraItem::doc, "doc")
-                   .field(&OraItem::amount, "amount")
-                   .field(&OraItem::createdAt, "created_at");
+                    .field(&OraItem::id, "id", FieldFlags::PrimaryKey | FieldFlags::Generated)
+                    .field(&OraItem::name, "name")
+                    .field(&OraItem::qty, "qty")
+                    .field(&OraItem::price, "price")
+                    .field(&OraItem::payload, "payload")
+                    .field(&OraItem::doc, "doc")
+                    .field(&OraItem::amount, "amount")
+                    .field(&OraItem::createdAt, "created_at");
         }
     };
 }
 
-namespace
-{
+namespace {
     using sqlconduit::common::ErrorCode;
     using sqlconduit::common::Params;
     using sqlconduit::common::ResultSet;
@@ -56,81 +53,68 @@ namespace
 
     int gChecks = 0;
 
-    void require(const bool condition, const std::string& message)
-    {
+    void require(const bool condition, const std::string &message) {
         ++gChecks;
         if (!condition) throw std::runtime_error(message);
     }
 
-    void requireOk(const Status& status, const std::string& where)
-    {
+    void requireOk(const Status &status, const std::string &where) {
         require(status.ok(), where + " failed: [" + sqlconduit::common::errorCodeToString(status.code)
-                + "] " + status.message + " sqlstate=" + status.sqlState);
+                             + "] " + status.message + " sqlstate=" + status.sqlState);
     }
 
-    std::string env(const char* name, const std::string& fallback = {})
-    {
-        const char* value = std::getenv(name);
+    std::string env(const char *name, const std::string &fallback = {}) {
+        const char *value = std::getenv(name);
         return value && *value ? value : fallback;
     }
 
-    std::string jsonEscape(const std::string& value)
-    {
+    std::string jsonEscape(const std::string &value) {
         std::ostringstream out;
-        for (const unsigned char c : value)
-        {
-            switch (c)
-            {
-            case '\\': out << "\\\\";
-                break;
-            case '"': out << "\\\"";
-                break;
-            default: out << static_cast<char>(c);
+        for (const unsigned char c: value) {
+            switch (c) {
+                case '\\': out << "\\\\";
+                    break;
+                case '"': out << "\\\"";
+                    break;
+                default: out << static_cast<char>(c);
             }
         }
         return out.str();
     }
 
-    std::int64_t asInt(const Value& value)
-    {
-        if (const auto* v = std::get_if<std::int64_t>(&value)) return *v;
-        if (const auto* v = std::get_if<sqlconduit::common::Decimal>(&value))
+    std::int64_t asInt(const Value &value) {
+        if (const auto *v = std::get_if<std::int64_t>(&value)) return *v;
+        if (const auto *v = std::get_if<sqlconduit::common::Decimal>(&value))
             return static_cast<std::int64_t>(std::strtoll(v->value.c_str(), nullptr, 10));
         throw std::runtime_error("expected integer result value");
     }
 
-    const std::string& asString(const Value& value)
-    {
-        if (const auto* v = std::get_if<std::string>(&value)) return *v;
+    const std::string &asString(const Value &value) {
+        if (const auto *v = std::get_if<std::string>(&value)) return *v;
         throw std::runtime_error("expected string result value");
     }
 
-    struct Fixture
-    {
+    struct Fixture {
         std::string table;
         std::string configPath;
         bool initialized = false;
 
-        Fixture()
-        {
+        Fixture() {
             const auto stamp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
             table = "SQLCONDUIT_IT_" + std::to_string(static_cast<unsigned long long>(stamp) % 1000000000);
             configPath = "/tmp/" + table + ".json";
         }
 
-        ~Fixture()
-        {
-            if (initialized)
-            {
+        ~Fixture() {
+            if (initialized) {
                 std::int64_t affected = 0;
-                (void)sqlconduit::SQLConduit::execute("DROP TABLE " + table + " PURGE", affected);
-                sqlconduit::SQLConduit::shutdown(std::chrono::milliseconds(3000));
+                (void) g_client.execute("DROP TABLE " + table + " PURGE", affected);
+                g_client.shutdown(std::chrono::milliseconds(3000));
             }
             std::remove(configPath.c_str());
         }
 
-        void start()
-        {
+        void start() {
             const std::string host = env("SQLCONDUIT_TEST_ORACLE_HOST", "127.0.0.1");
             const std::string port = env("SQLCONDUIT_TEST_ORACLE_PORT", "1521");
             const std::string user = env("SQLCONDUIT_TEST_ORACLE_USER", "system");
@@ -140,34 +124,34 @@ namespace
 
             std::ostringstream ds;
             ds << "{\"name\":\"ora\",\"type\":\"oracle\","
-                << "\"host\":\"" << jsonEscape(host) << "\",\"port\":" << port << ','
-                << "\"user\":\"" << jsonEscape(user) << "\","
-                << "\"password_env\":\"SQLCONDUIT_TEST_ORACLE_PASSWORD\","
-                << "\"oracle\":{\"service_name\":\"" << jsonEscape(service) << "\"},"
-                << "\"connection_timeout_ms\":5000,\"query_timeout_ms\":0}";
+                    << "\"host\":\"" << jsonEscape(host) << "\",\"port\":" << port << ','
+                    << "\"user\":\"" << jsonEscape(user) << "\","
+                    << "\"password_env\":\"SQLCONDUIT_TEST_ORACLE_PASSWORD\","
+                    << "\"oracle\":{\"service_name\":\"" << jsonEscape(service) << "\"},"
+                    << "\"connection_timeout_ms\":5000,\"query_timeout_ms\":0}";
 
             std::ofstream file(configPath);
             require(static_cast<bool>(file), "cannot create temporary integration config");
             file << "{\n"
-                << "\"default_datasource\":\"ora\",\n"
-                << "\"heartbeat_interval_ms\":1000,\n"
-                << "\"pool\":{\"enabled\":true,\"min\":0,\"max\":4,"
-                "\"borrow_timeout_ms\":5000,\"validation_interval_ms\":0},\n"
-                << "\"retry\":{\"max_attempts\":1,\"retry_writes\":false},\n"
-                << "\"circuit_breaker\":{\"failure_threshold\":0},\n"
-                << "\"prepared_cache\":{\"enabled\":true,\"max_per_connection\":8},\n"
-                << "\"query_cache\":{\"enabled\":false},\n"
-                << "\"observability\":{\"sql_log\":{\"enabled\":false},"
-                "\"slow_sql\":{\"enabled\":false}},\n"
-                << "\"async\":{\"enabled\":true,\"threads\":2,\"queue_size\":64},\n"
-                << "\"datasources\":[" << ds.str() << "],\n\"groups\":[]\n}\n";
+                    << "\"default_datasource\":\"ora\",\n"
+                    << "\"heartbeat_interval_ms\":1000,\n"
+                    << "\"pool\":{\"enabled\":true,\"min\":0,\"max\":4,"
+                    "\"borrow_timeout_ms\":5000,\"validation_interval_ms\":0},\n"
+                    << "\"retry\":{\"max_attempts\":1,\"retry_writes\":false},\n"
+                    << "\"circuit_breaker\":{\"failure_threshold\":0},\n"
+                    << "\"prepared_cache\":{\"enabled\":true,\"max_per_connection\":8},\n"
+                    << "\"query_cache\":{\"enabled\":false},\n"
+                    << "\"observability\":{\"sql_log\":{\"enabled\":false},"
+                    "\"slow_sql\":{\"enabled\":false}},\n"
+                    << "\"async\":{\"enabled\":true,\"threads\":2,\"queue_size\":64},\n"
+                    << "\"datasources\":[" << ds.str() << "],\n\"groups\":[]\n}\n";
             file.close();
 
-            requireOk(sqlconduit::SQLConduit::init(configPath), "SQLConduit::init");
+            requireOk(g_client.init(configPath), "g_client.init");
             initialized = true;
 
             std::int64_t affected = 0;
-            requireOk(sqlconduit::SQLConduit::execute(
+            requireOk(g_client.execute(
                           "CREATE TABLE " + table + " ("
                           "\"id\" NUMBER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, "
                           "\"name\" VARCHAR2(200) NOT NULL UNIQUE, "
@@ -181,10 +165,9 @@ namespace
         }
     };
 
-    void testConnectivityAndTypes(Fixture& f)
-    {
+    void testConnectivityAndTypes(Fixture &f) {
         ResultSet identity;
-        requireOk(sqlconduit::SQLConduit::query("SELECT USER AS CURRENT_USER, 1 AS ONE FROM DUAL", identity),
+        requireOk(g_client.query("SELECT USER AS CURRENT_USER, 1 AS ONE FROM DUAL", identity),
                   "SELECT ... FROM DUAL");
         require(identity.rowCount() == 1, "DUAL query returned wrong row count");
         require(!asString(identity.rows()[0].at("CURRENT_USER")).empty(), "USER is empty");
@@ -197,7 +180,7 @@ namespace
         const std::string clobText = "Oracle CLOB 中文往返验证";
         const sqlconduit::common::Decimal amount{"12345.678901234"};
         std::int64_t affected = 0;
-        requireOk(sqlconduit::SQLConduit::execute(
+        requireOk(g_client.execute(
                       "INSERT INTO " + f.table +
                       " (\"name\", \"qty\", \"price\", \"payload\", \"doc\", \"big_blob\", "
                       "\"amount\", \"created_at\") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -209,39 +192,38 @@ namespace
         require(affected == 1, "typed insert affected mismatch");
 
         ResultSet ids;
-        requireOk(sqlconduit::SQLConduit::query("SELECT \"id\" FROM " + f.table + " WHERE \"name\" = ?",
-                                                Params{std::string("raw-types")}, ids), "read generated id");
+        requireOk(g_client.query("SELECT \"id\" FROM " + f.table + " WHERE \"name\" = ?",
+                                 Params{std::string("raw-types")}, ids), "read generated id");
         require(ids.rowCount() == 1, "typed row count mismatch");
 
         ResultSet rows;
-        requireOk(sqlconduit::SQLConduit::query(
+        requireOk(g_client.query(
                       "SELECT \"id\", \"qty\", \"price\", \"payload\", \"doc\", \"big_blob\", "
                       "\"amount\", \"created_at\" FROM " + f.table + " WHERE \"name\" = ?",
                       Params{std::string("raw-types")}, rows), "read raw row back");
         require(rows.rowCount() == 1, "raw row count mismatch");
-        const auto& row = rows.rows()[0];
+        const auto &row = rows.rows()[0];
         require(asInt(row.at("qty")) == 7, "NUMBER(19) round trip");
-        const auto* price = std::get_if<double>(&row.at("price"));
+        const auto *price = std::get_if<double>(&row.at("price"));
         require(price != nullptr && *price == 12.5, "BINARY_DOUBLE round trip");
-        const auto* blob = std::get_if<sqlconduit::common::Blob>(&row.at("payload"));
+        const auto *blob = std::get_if<sqlconduit::common::Blob>(&row.at("payload"));
         require(blob != nullptr && *blob == payload, "RAW round trip to Blob");
         require(asString(row.at("doc")) == clobText, "UTF-8 CLOB round trip to string");
-        const auto* big = std::get_if<sqlconduit::common::Blob>(&row.at("big_blob"));
+        const auto *big = std::get_if<sqlconduit::common::Blob>(&row.at("big_blob"));
         require(big != nullptr && big->size() == bigBlob.size(),
                 "BLOB round trip length (temporary LOB bind)");
         if (big && big->size() == bigBlob.size())
             require(*big == bigBlob, "BLOB round trip content");
-        const auto* dec = std::get_if<sqlconduit::common::Decimal>(&row.at("amount"));
+        const auto *dec = std::get_if<sqlconduit::common::Decimal>(&row.at("amount"));
         require(dec != nullptr && dec->value == amount.value, "NUMBER(30,9) round trip to Decimal");
-        const auto* ts = std::get_if<sqlconduit::common::Timestamp>(&row.at("created_at"));
+        const auto *ts = std::get_if<sqlconduit::common::Timestamp>(&row.at("created_at"));
         require(ts != nullptr, "TIMESTAMP round trip to Timestamp");
         if (ts)
             require(sqlconduit::common::timestampToString(*ts) == sqlconduit::common::timestampToString(created),
                     "TIMESTAMP value preserved");
     }
 
-    void testMappingRoundTrip(Fixture& f)
-    {
+    void testMappingRoundTrip(Fixture &f) {
         OraItem item;
         item.name = "mapping-row";
         item.qty = 3;
@@ -251,14 +233,15 @@ namespace
         item.amount = sqlconduit::common::Decimal{"42.5"};
         item.createdAt = std::chrono::system_clock::now();
 
-        const auto inserted = sqlconduit::insertAs<OraItem>(f.table, item);
+        const auto inserted = sqlconduit::insertAs<OraItem>(g_client, f.table, item);
         require(inserted.status.ok(), "insertAs failed: " + inserted.status.message);
         require(inserted.affected == 1, "insertAs affected mismatch");
         require(item.id > 0, "insertAs did not backfill the generated id");
 
-        const auto fetched = sqlconduit::queryAs<OraItem>(
-            "SELECT \"id\", \"name\", \"qty\", \"price\", \"payload\", \"doc\", \"amount\", "
-            "\"created_at\" FROM " + f.table + " WHERE \"id\" = ?", Params{item.id});
+        const auto fetched = sqlconduit::queryAs<OraItem>(g_client,
+                                                          "SELECT \"id\", \"name\", \"qty\", \"price\", \"payload\", \"doc\", \"amount\", "
+                                                          "\"created_at\" FROM " + f.table + " WHERE \"id\" = ?",
+                                                          Params{item.id});
         require(fetched.status.ok(), "queryAs failed: " + fetched.status.message);
         require(fetched.items.size() == 1, "queryAs row count mismatch");
         require(fetched.items[0].name == "mapping-row", "queryAs name mismatch");
@@ -268,12 +251,11 @@ namespace
 
         OraItem toUpdate = fetched.items[0];
         toUpdate.qty = 11;
-        const auto updated = sqlconduit::updateAs<OraItem>(f.table, toUpdate);
+        const auto updated = sqlconduit::updateAs<OraItem>(g_client, f.table, toUpdate);
         require(updated.status.ok() && updated.affected == 1, "updateAs failed");
 
         std::vector<OraItem> batch;
-        for (int i = 0; i < 3; ++i)
-        {
+        for (int i = 0; i < 3; ++i) {
             OraItem b;
             b.name = "batch-" + std::to_string(i);
             b.qty = i;
@@ -282,17 +264,15 @@ namespace
             b.createdAt = std::chrono::system_clock::now();
             batch.push_back(b);
         }
-        const auto batched = sqlconduit::insertBatchAs<OraItem>(f.table, batch);
+        const auto batched = sqlconduit::insertBatchAs<OraItem>(g_client, f.table, batch);
         require(batched.status.ok(), "insertBatchAs failed: " + batched.status.message);
         require(batched.batch.totalAffected() == 3, "insertBatchAs affected mismatch");
-        for (const OraItem& b : batch)
+        for (const OraItem &b: batch)
             require(b.id > 0, "insertBatchAs did not backfill a batch row id");
     }
 
-    void testTransactionsAndSavepoints(Fixture& f)
-    {
-        requireOk(sqlconduit::SQLConduit::transaction([&](sqlconduit::core::Session& session)
-        {
+    void testTransactionsAndSavepoints(Fixture &f) {
+        requireOk(g_client.transaction([&](sqlconduit::core::Session &session) {
             std::int64_t affected = 0;
             Status st = session.execute(
                 "INSERT INTO " + f.table +
@@ -316,17 +296,16 @@ namespace
         }), "transaction commit/savepoint");
 
         ResultSet rows;
-        requireOk(sqlconduit::SQLConduit::query(
+        requireOk(g_client.query(
                       "SELECT count(*) AS N FROM " + f.table + " WHERE \"name\" = ?",
                       Params{std::string("tx-keep")}, rows), "count kept row");
         require(asInt(rows.rows()[0].at("N")) == 1, "committed row is missing");
-        requireOk(sqlconduit::SQLConduit::query(
+        requireOk(g_client.query(
                       "SELECT count(*) AS N FROM " + f.table + " WHERE \"name\" = ?",
                       Params{std::string("tx-temp")}, rows), "count rolled back row");
         require(asInt(rows.rows()[0].at("N")) == 0, "savepoint rollback did not undo the row");
 
-        const Status rolledBack = sqlconduit::SQLConduit::transaction([&](sqlconduit::core::Session& session)
-        {
+        const Status rolledBack = g_client.transaction([&](sqlconduit::core::Session &session) {
             std::int64_t affected = 0;
             const Status st = session.execute(
                 "INSERT INTO " + f.table +
@@ -339,18 +318,16 @@ namespace
             return Status::error(ErrorCode::QueryError, "deliberate rollback");
         });
         require(!rolledBack.ok(), "deliberate failure did not abort the transaction");
-        requireOk(sqlconduit::SQLConduit::query(
+        requireOk(g_client.query(
                       "SELECT count(*) AS N FROM " + f.table + " WHERE \"name\" = ?",
                       Params{std::string("tx-abort")}, rows), "count aborted row");
         require(asInt(rows.rows()[0].at("N")) == 0, "aborted transaction left a row behind");
     }
 
-    void testStreamingAndErrors(Fixture& f)
-    {
+    void testStreamingAndErrors(Fixture &f) {
         std::int64_t affected = 0;
-        for (int i = 0; i < 5; ++i)
-        {
-            requireOk(sqlconduit::SQLConduit::execute(
+        for (int i = 0; i < 5; ++i) {
+            requireOk(g_client.execute(
                           "INSERT INTO " + f.table +
                           " (\"name\", \"qty\", \"price\", \"created_at\") VALUES (?, ?, ?, ?)",
                           Params{
@@ -359,9 +336,9 @@ namespace
                           }, affected), "seed stream row");
         }
         std::uint64_t streamed = 0;
-        requireOk(sqlconduit::SQLConduit::queryEach(
+        requireOk(g_client.queryEach(
                       "SELECT \"name\" FROM " + f.table + " WHERE \"name\" LIKE 'stream-%'",
-                      Params{}, [](const sqlconduit::common::Row&) { return true; }, streamed),
+                      Params{}, [](const sqlconduit::common::Row &) { return true; }, streamed),
                   "queryEach");
         require(streamed == 5, "queryEach streamed the wrong number of rows");
 
@@ -380,7 +357,7 @@ namespace
             }
         };
         sqlconduit::common::BatchResult batchResult;
-        requireOk(sqlconduit::SQLConduit::executeBatch(
+        requireOk(g_client.executeBatch(
                       "INSERT INTO " + f.table +
                       " (\"name\", \"qty\", \"price\", \"created_at\") "
                       "VALUES (?, ?, ?, ?)", batch, batchResult), "OCI array DML");
@@ -390,7 +367,7 @@ namespace
         sqlconduit::core::CursorOptions cursorOptions;
         cursorOptions.batch_size = 2;
         std::unique_ptr<sqlconduit::core::Cursor> cursor;
-        requireOk(sqlconduit::SQLConduit::openCursor(
+        requireOk(g_client.openCursor(
                       "SELECT \"name\", \"qty\" FROM " + f.table +
                       " WHERE \"name\" LIKE ? ORDER BY \"name\"",
                       Params{std::string("array-%")}, cursorOptions, cursor),
@@ -402,7 +379,7 @@ namespace
         requireOk(cursor->close(), "close OCI statement cursor");
 
         std::vector<ResultSet> implicitSets;
-        requireOk(sqlconduit::SQLConduit::queryAll(
+        requireOk(g_client.queryAll(
                       "DECLARE c1 SYS_REFCURSOR; c2 SYS_REFCURSOR; BEGIN "
                       "OPEN c1 FOR SELECT \"name\" FROM " + f.table +
                       " WHERE \"name\" LIKE ? ORDER BY \"name\"; "
@@ -416,7 +393,7 @@ namespace
                 implicitSets[1].rowCount() == 5,
                 "OCIStmtGetNextResult returned both result sets in order");
 
-        const Status duplicate = sqlconduit::SQLConduit::execute(
+        const Status duplicate = g_client.execute(
             "INSERT INTO " + f.table +
             " (\"name\", \"qty\", \"price\", \"created_at\") VALUES (?, ?, ?, ?)",
             Params{
@@ -432,8 +409,7 @@ namespace
                 "ORA-00001 should map to SQLSTATE 23000, got '" + duplicate.sqlState + "'");
     }
 
-    void testCallableApi(Fixture& f)
-    {
+    void testCallableApi(Fixture &f) {
         using sqlconduit::common::CallOutput;
         using sqlconduit::common::CallParam;
         using sqlconduit::common::CallParams;
@@ -447,7 +423,7 @@ namespace
             CallParam{Value{std::int64_t(41)}},
             CallParam::refCursor()
         };
-        requireOk(sqlconduit::SQLConduit::call(
+        requireOk(g_client.call(
                       "BEGIN ? := ? + 1; OPEN ? FOR SELECT COUNT(*) AS N FROM " + f.table +
                       "; END;", params, output), "scalar OUT and REF CURSOR call");
         require(output.outParams.size() == 1 && asInt(output.outParams[0]) == 42,
@@ -466,7 +442,7 @@ namespace
             CallParam::out(ValueType::Int64),
             CallParam{ParamDirection::In, Value{numbers}}
         };
-        requireOk(sqlconduit::SQLConduit::call(
+        requireOk(g_client.call(
                       "BEGIN SELECT SUM(COLUMN_VALUE) INTO ? FROM TABLE(?); END;",
                       collectionParams, output), "named collection constructor call");
         require(output.outParams.size() == 1 && asInt(output.outParams[0]) == 10,
@@ -474,10 +450,8 @@ namespace
     }
 }
 
-int main()
-{
-    try
-    {
+int main() {
+    try {
         Fixture f;
         f.start();
         testConnectivityAndTypes(f);
@@ -487,11 +461,9 @@ int main()
         testCallableApi(f);
         std::cout << "Oracle integration test passed (" << gChecks << " checks)\n";
         return 0;
-    }
-    catch (const std::exception& e)
-    {
+    } catch (const std::exception &e) {
         std::cout << "Oracle integration test failed after " << gChecks << " checks: "
-            << e.what() << "\n";
+                << e.what() << "\n";
         return 1;
     }
 }

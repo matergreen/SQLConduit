@@ -12,21 +12,17 @@
 #include <thread>
 #include <utility>
 
-namespace sqlconduit::core
-{
-    class WriteBuffer
-    {
+namespace sqlconduit::core {
+    class WriteBuffer {
     public:
-        struct Config
-        {
+        struct Config {
             bool enabled = false;
             int max_queue = 1000;
             int ttl_ms = 30000;
             int flush_interval_ms = 1000;
         };
 
-        explicit WriteBuffer(Config cfg) : cfg_(cfg), enabled_(cfg.enabled)
-        {
+        explicit WriteBuffer(Config cfg) : cfg_(cfg), enabled_(cfg.enabled) {
             if (cfg_.max_queue < 1) cfg_.max_queue = 1;
             if (cfg_.flush_interval_ms < 10) cfg_.flush_interval_ms = 10;
         }

@@ -24,58 +24,55 @@ using MysqlBool = my_bool;
 using MysqlBoolArray = std::unique_ptr<MysqlBool[]>;
 #endif
 
-namespace sqlconduit::driver
-{
-    class MySQLConnection : public core::IDatabaseConnection
-    {
+namespace sqlconduit::driver {
+    class MySQLConnection : public core::IDatabaseConnection {
     public:
         MySQLConnection() = default;
 
         ~MySQLConnection() override { MySQLConnection::close(); }
 
-        common::Status connect(const config::DataSourceConfig& cfg) override;
+        common::Status connect(const config::DataSourceConfig &cfg) override;
 
         common::Status ping() override;
 
-        common::Status query(const std::string& sql, common::ResultSet& out) override;
+        common::Status query(const std::string &sql, common::ResultSet &out) override;
 
-        common::Status execute(const std::string& sql, std::int64_t& affected) override;
+        common::Status execute(const std::string &sql, std::int64_t &affected) override;
 
-        common::Status query(const std::string& sql, const common::Params& params,
-                             common::ResultSet& out) override;
+        common::Status query(const std::string &sql, const common::Params &params,
+                             common::ResultSet &out) override;
 
-        common::Status execute(const std::string& sql, const common::Params& params,
-                               std::int64_t& affected) override;
+        common::Status execute(const std::string &sql, const common::Params &params,
+                               std::int64_t &affected) override;
 
-        common::Status execute(const std::string& sql, std::int64_t& affected,
-                               common::GeneratedKeys& out) override;
+        common::Status execute(const std::string &sql, std::int64_t &affected,
+                               common::GeneratedKeys &out) override;
 
-        common::Status execute(const std::string& sql, const common::Params& params,
-                               std::int64_t& affected, common::GeneratedKeys& out) override;
+        common::Status execute(const std::string &sql, const common::Params &params,
+                               std::int64_t &affected, common::GeneratedKeys &out) override;
 
         [[nodiscard]] bool supportsPrepared() const override;
 
-        common::Status prepare(const std::string& sql, const common::Params& typesSample,
-                               core::PreparedStatementHandle& out) override;
+        common::Status prepare(const std::string &sql, const common::Params &typesSample,
+                               core::PreparedStatementHandle &out) override;
 
-        common::Status executePrepared(const core::PreparedStatementHandle& h,
-                                       const common::Params& params,
-                                       common::ResultSet& out) override;
+        common::Status executePrepared(const core::PreparedStatementHandle &h,
+                                       const common::Params &params,
+                                       common::ResultSet &out) override;
 
-        common::Status executePrepared(const core::PreparedStatementHandle& h,
-                                       const common::Params& params,
-                                       std::int64_t& affected) override;
+        common::Status executePrepared(const core::PreparedStatementHandle &h,
+                                       const common::Params &params,
+                                       std::int64_t &affected) override;
 
         void closeAllPrepared() override;
 
         void setPreparedCacheLimit(int maxPerConnection) override;
 
-        common::Status queryEach(const std::string& sql, const common::Params& params,
-                                 const common::RowCallback& callback,
-                                 std::uint64_t& rows) override;
+        common::Status queryEach(const std::string &sql, const common::Params &params,
+                                 const common::RowCallback &callback,
+                                 std::uint64_t &rows) override;
 
-        [[nodiscard]] bool supportsMultipleResultSets() const override
-        {
+        [[nodiscard]] bool supportsMultipleResultSets() const override {
 #ifdef SQLCONDUIT_ENABLE_MYSQL
             return true;
 #else
@@ -83,20 +80,19 @@ namespace sqlconduit::driver
 #endif
         }
 
-        common::Status queryAll(const std::string& sql,
-                                std::vector<common::ResultSet>& out) override;
+        common::Status queryAll(const std::string &sql,
+                                std::vector<common::ResultSet> &out) override;
 
-        common::Status queryAll(const std::string& sql, const common::Params& params,
-                                std::vector<common::ResultSet>& out) override;
+        common::Status queryAll(const std::string &sql, const common::Params &params,
+                                std::vector<common::ResultSet> &out) override;
 
-        common::Status openCursor(const std::string& sql, const common::Params& params,
-                                  const core::CursorOptions& opts,
-                                  std::unique_ptr<core::ICursor>& out) override;
+        common::Status openCursor(const std::string &sql, const common::Params &params,
+                                  const core::CursorOptions &opts,
+                                  std::unique_ptr<core::ICursor> &out) override;
 
-        [[nodiscard]] std::string escapeLiteral(const common::Value& v) const override;
+        [[nodiscard]] std::string escapeLiteral(const common::Value &v) const override;
 
-        [[nodiscard]] bool supportsParams() const override
-        {
+        [[nodiscard]] bool supportsParams() const override {
 #ifdef SQLCONDUIT_ENABLE_MYSQL
             return true;
 #else
@@ -106,17 +102,17 @@ namespace sqlconduit::driver
 
         common::Status begin() override;
 
-        common::Status begin(const common::TransactionOptions& options) override;
+        common::Status begin(const common::TransactionOptions &options) override;
 
         common::Status commit() override;
 
         common::Status rollback() override;
 
-        common::Status savepoint(const std::string& name) override;
+        common::Status savepoint(const std::string &name) override;
 
-        common::Status releaseSavepoint(const std::string& name) override;
+        common::Status releaseSavepoint(const std::string &name) override;
 
-        common::Status rollbackToSavepoint(const std::string& name) override;
+        common::Status rollbackToSavepoint(const std::string &name) override;
 
         void close() override;
 
@@ -127,14 +123,14 @@ namespace sqlconduit::driver
         common::Status cancel() override;
 
     private:
-        common::Status lastError(const char* where);
+        common::Status lastError(const char *where);
 
         common::Status drainRemainingResults();
 
         friend class MyCursor;
 
 #ifdef SQLCONDUIT_ENABLE_MYSQL
-        common::Status stmtError(const char* where, MYSQL_STMT* stmt);
+        common::Status stmtError(const char *where, MYSQL_STMT *stmt);
 #endif
 
         bool open_ = false;
@@ -147,19 +143,17 @@ namespace sqlconduit::driver
         std::uint64_t preparedSeq_ = 0;
         int preparedLimit_ = 0;
 #ifdef SQLCONDUIT_ENABLE_MYSQL
-        MYSQL* m_ = nullptr;
+        MYSQL *m_ = nullptr;
         mutable std::mutex operationMtx_;
         unsigned long activeThreadId_ = 0;
 #endif
     };
 
-    class MySQLDriver : public IDriver
-    {
+    class MySQLDriver : public IDriver {
     public:
-        [[nodiscard]] const char* name() const override { return "mysql"; }
+        [[nodiscard]] const char *name() const override { return "mysql"; }
 
-        std::unique_ptr<core::IDatabaseConnection> createConnection() override
-        {
+        std::unique_ptr<core::IDatabaseConnection> createConnection() override {
             return std::make_unique<MySQLConnection>();
         }
     };

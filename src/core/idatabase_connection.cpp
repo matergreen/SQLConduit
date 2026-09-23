@@ -2,63 +2,54 @@
 
 #include <string>
 
-namespace sqlconduit::core
-{
-    common::Status IDatabaseConnection::cancel()
-    {
+namespace sqlconduit::core {
+    common::Status IDatabaseConnection::cancel() {
         return common::Status::error(common::ErrorCode::NotSupported,
                                      "driver does not support query cancellation");
     }
 
-    common::Status IDatabaseConnection::begin(const common::TransactionOptions& options)
-    {
-        if (options.isolation != common::IsolationLevel::Default || options.readOnly)
-        {
+    common::Status IDatabaseConnection::begin(const common::TransactionOptions &options) {
+        if (options.isolation != common::IsolationLevel::Default || options.readOnly) {
             return common::Status::error(common::ErrorCode::NotSupported,
                                          "driver does not support transaction options");
         }
         return begin();
     }
 
-    common::Status IDatabaseConnection::openCursor(const std::string& sql,
-                                                   const common::Params& params,
-                                                   const CursorOptions& opts,
-                                                   std::unique_ptr<ICursor>& out)
-    {
-        (void)sql;
-        (void)params;
-        (void)opts;
+    common::Status IDatabaseConnection::openCursor(const std::string &sql,
+                                                   const common::Params &params,
+                                                   const CursorOptions &opts,
+                                                   std::unique_ptr<ICursor> &out) {
+        (void) sql;
+        (void) params;
+        (void) opts;
         out.reset();
         return common::Status::error(common::ErrorCode::NotSupported,
                                      "driver does not support cursors");
     }
 
     common::Status IDatabaseConnection::queryEach(
-        const std::string& sql, const common::Params& params,
-        const common::RowCallback& callback, std::uint64_t& rows)
-    {
+        const std::string &sql, const common::Params &params,
+        const common::RowCallback &callback, std::uint64_t &rows) {
         rows = 0;
         common::ResultSet result;
         const auto status = params.empty() ? query(sql, result) : query(sql, params, result);
         if (!status.ok()) return status;
-        for (const auto& row : result.rows())
-        {
+        for (const auto &row: result.rows()) {
             ++rows;
             if (callback && !callback(row)) break;
         }
         return common::Status::OK();
     }
 
-    common::Status IDatabaseConnection::queryAll(const std::string& sql,
-                                                 std::vector<common::ResultSet>& out)
-    {
+    common::Status IDatabaseConnection::queryAll(const std::string &sql,
+                                                 std::vector<common::ResultSet> &out) {
         return queryAll(sql, common::Params{}, out);
     }
 
-    common::Status IDatabaseConnection::queryAll(const std::string& sql,
-                                                 const common::Params& params,
-                                                 std::vector<common::ResultSet>& out)
-    {
+    common::Status IDatabaseConnection::queryAll(const std::string &sql,
+                                                 const common::Params &params,
+                                                 std::vector<common::ResultSet> &out) {
         out.clear();
         common::ResultSet rs;
         const auto status = params.empty() ? query(sql, rs) : query(sql, params, rs);
@@ -67,35 +58,31 @@ namespace sqlconduit::core
         return common::Status::OK();
     }
 
-    common::Status IDatabaseConnection::call(const std::string& sql,
-                                             const common::CallParams& params,
-                                             common::CallOutput& out)
-    {
-        (void)sql;
-        (void)params;
+    common::Status IDatabaseConnection::call(const std::string &sql,
+                                             const common::CallParams &params,
+                                             common::CallOutput &out) {
+        (void) sql;
+        (void) params;
         out.clear();
         return common::Status::error(common::ErrorCode::NotSupported,
                                      "driver does not support callable parameters");
     }
 
     common::Status IDatabaseConnection::executeBatch(
-        const std::string& sql, const common::ParamBatch& batch,
-        common::BatchResult& out)
-    {
+        const std::string &sql, const common::ParamBatch &batch,
+        common::BatchResult &out) {
         out.clear();
         out.affected.reserve(batch.size());
         out.keys.reserve(batch.size());
         if (batch.empty()) return common::Status::OK();
 
         const bool ownTx = !inTransaction();
-        if (ownTx)
-        {
+        if (ownTx) {
             if (const auto st = begin(); !st.ok()) return st;
         }
 
         common::Status status = common::Status::OK();
-        for (const auto& params : batch)
-        {
+        for (const auto &params: batch) {
             std::int64_t affected = 0;
             common::GeneratedKeys keys;
             status = execute(sql, params, affected, keys);
@@ -106,47 +93,40 @@ namespace sqlconduit::core
 
         if (!ownTx) return status;
 
-        if (!status.ok())
-        {
-            (void)rollback();
+        if (!status.ok()) {
+            (void) rollback();
             out.clear();
             return status;
         }
-        if (const auto st = commit(); !st.ok())
-        {
+        if (const auto st = commit(); !st.ok()) {
             out.clear();
             return st;
         }
         return status;
     }
 
-    common::Status IDatabaseConnection::savepoint(const std::string& name)
-    {
-        (void)name;
+    common::Status IDatabaseConnection::savepoint(const std::string &name) {
+        (void) name;
         return common::Status::error(common::ErrorCode::NotSupported,
                                      "driver does not support savepoints");
     }
 
-    common::Status IDatabaseConnection::releaseSavepoint(const std::string& name)
-    {
-        (void)name;
+    common::Status IDatabaseConnection::releaseSavepoint(const std::string &name) {
+        (void) name;
         return common::Status::error(common::ErrorCode::NotSupported,
                                      "driver does not support savepoints");
     }
 
-    common::Status IDatabaseConnection::rollbackToSavepoint(const std::string& name)
-    {
-        (void)name;
+    common::Status IDatabaseConnection::rollbackToSavepoint(const std::string &name) {
+        (void) name;
         return common::Status::error(common::ErrorCode::NotSupported,
                                      "driver does not support savepoints");
     }
 
-    common::Status IDatabaseConnection::query(const std::string& sql,
-                                              const common::Params& params,
-                                              common::ResultSet& out)
-    {
-        if (!allowsLiteralInterpolation())
-        {
+    common::Status IDatabaseConnection::query(const std::string &sql,
+                                              const common::Params &params,
+                                              common::ResultSet &out) {
+        if (!allowsLiteralInterpolation()) {
             return common::Status::error(
                 common::ErrorCode::NotSupported,
                 "driver does not implement native parameter binding");
@@ -156,12 +136,10 @@ namespace sqlconduit::core
         return query(built, out);
     }
 
-    common::Status IDatabaseConnection::execute(const std::string& sql,
-                                                const common::Params& params,
-                                                std::int64_t& affected)
-    {
-        if (!allowsLiteralInterpolation())
-        {
+    common::Status IDatabaseConnection::execute(const std::string &sql,
+                                                const common::Params &params,
+                                                std::int64_t &affected) {
+        if (!allowsLiteralInterpolation()) {
             affected = 0;
             return common::Status::error(
                 common::ErrorCode::NotSupported,
@@ -172,58 +150,49 @@ namespace sqlconduit::core
         return execute(built, affected);
     }
 
-    std::string IDatabaseConnection::escapeLiteral(const common::Value& v) const
-    {
+    std::string IDatabaseConnection::escapeLiteral(const common::Value &v) const {
         return common::escapeLiteralGeneric(v);
     }
 
     common::Status IDatabaseConnection::renderSqlForLogging(
-        const std::string& sql, const common::Params& params,
-        const common::SqlRenderOptions& options, std::string& out) const
-    {
+        const std::string &sql, const common::Params &params,
+        const common::SqlRenderOptions &options, std::string &out) const {
         std::size_t found = 0;
-        out = replacePlaceholders(sql, [&](const std::size_t index)
-        {
+        out = replacePlaceholders(sql, [&](const std::size_t index) {
             if (index >= params.size()) return std::string("?");
-            const auto& value = params[index];
-            if (const auto* text = std::get_if<std::string>(&value))
-            {
+            const auto &value = params[index];
+            if (const auto *text = std::get_if<std::string>(&value)) {
                 if (!options.includeStringValues) return std::string("'<redacted>'");
                 std::string limited = *text;
-                if (limited.size() > options.maxParamLength)
-                {
+                if (limited.size() > options.maxParamLength) {
                     limited.resize(options.maxParamLength);
                     limited += "...[truncated]";
                 }
                 return escapeLiteral(limited);
             }
-            const auto renderTypedText = [&](const std::string& text,
-                                             const char* type) -> std::string
-            {
+            const auto renderTypedText = [&](const std::string &text,
+                                             const char *type) -> std::string {
                 if (!options.includeStringValues)
                     return std::string("'<redacted:") + type + ">'";
                 std::string limited = text;
-                if (limited.size() > options.maxParamLength)
-                {
+                if (limited.size() > options.maxParamLength) {
                     limited.resize(options.maxParamLength);
                     limited += "...[truncated]";
                 }
                 return escapeLiteral(common::Value{std::move(limited)});
             };
-            if (const auto* x = std::get_if<common::Decimal>(&value))
+            if (const auto *x = std::get_if<common::Decimal>(&value))
                 return renderTypedText(x->value, "decimal");
-            if (const auto* x = std::get_if<common::Date>(&value))
+            if (const auto *x = std::get_if<common::Date>(&value))
                 return renderTypedText(x->value, "date");
-            if (const auto* x = std::get_if<common::Time>(&value))
+            if (const auto *x = std::get_if<common::Time>(&value))
                 return renderTypedText(x->value, "time");
-            if (const auto* x = std::get_if<common::Uuid>(&value))
+            if (const auto *x = std::get_if<common::Uuid>(&value))
                 return renderTypedText(x->value, "uuid");
-            if (const auto* x = std::get_if<common::Json>(&value))
+            if (const auto *x = std::get_if<common::Json>(&value))
                 return renderTypedText(x->value, "json");
-            if (const auto* blob = std::get_if<common::Blob>(&value))
-            {
-                if (!options.includeBlobValues)
-                {
+            if (const auto *blob = std::get_if<common::Blob>(&value)) {
+                if (!options.includeBlobValues) {
                     return std::string("'<blob:") + std::to_string(blob->size()) + " bytes>'";
                 }
                 common::Blob limited = *blob;
@@ -231,25 +200,22 @@ namespace sqlconduit::core
                 if (wasTruncated)
                     limited.resize(options.maxParamLength);
                 auto rendered = escapeLiteral(limited);
-                if (wasTruncated)
-                {
+                if (wasTruncated) {
                     rendered += "/* truncated, original_bytes=" +
-                        std::to_string(blob->size()) + " */";
+                            std::to_string(blob->size()) + " */";
                 }
                 return rendered;
             }
             return escapeLiteral(value);
         }, found);
-        if (found != params.size())
-        {
+        if (found != params.size()) {
             out.clear();
             return common::Status::error(
                 common::ErrorCode::QueryError,
                 "SQL placeholder count (" + std::to_string(found) +
                 ") does not match params count (" + std::to_string(params.size()) + ")");
         }
-        if (out.size() > options.maxSqlLength)
-        {
+        if (out.size() > options.maxSqlLength) {
             const auto originalLength = out.size();
             out.resize(options.maxSqlLength);
             out += "...[truncated, original_length=" + std::to_string(originalLength) + "]";
@@ -257,36 +223,31 @@ namespace sqlconduit::core
         return common::Status::OK();
     }
 
-    std::string IDatabaseConnection::replacePlaceholders(const std::string& sql,
-                                                         const PlaceholderVisitor& visitor,
-                                                         std::size_t& found)
-    {
+    std::string IDatabaseConnection::replacePlaceholders(const std::string &sql,
+                                                         const PlaceholderVisitor &visitor,
+                                                         std::size_t &found) {
         std::string out;
         out.reserve(sql.size());
 
         found = 0;
         const size_t n = sql.size();
 
-        for (size_t i = 0; i < n; ++i)
-        {
+        for (size_t i = 0; i < n; ++i) {
             const char c = sql[i];
 
-            if (c == '$')
-            {
+            if (c == '$') {
                 size_t tagEnd = i + 1;
                 while (tagEnd < n &&
-                    (std::isalnum(static_cast<unsigned char>(sql[tagEnd])) ||
+                       (std::isalnum(static_cast<unsigned char>(sql[tagEnd])) ||
                         sql[tagEnd] == '_'))
                     ++tagEnd;
                 const bool validTag = tagEnd < n && sql[tagEnd] == '$' &&
-                (tagEnd == i + 1 ||
-                    !std::isdigit(static_cast<unsigned char>(sql[i + 1])));
-                if (validTag)
-                {
+                                      (tagEnd == i + 1 ||
+                                       !std::isdigit(static_cast<unsigned char>(sql[i + 1])));
+                if (validTag) {
                     const std::string delimiter = sql.substr(i, tagEnd - i + 1);
                     const size_t close = sql.find(delimiter, tagEnd + 1);
-                    if (close != std::string::npos)
-                    {
+                    if (close != std::string::npos) {
                         out.append(sql, i, close + delimiter.size() - i);
                         i = close + delimiter.size() - 1;
                         continue;
@@ -294,29 +255,22 @@ namespace sqlconduit::core
                 }
             }
 
-            if (c == '\'' || c == '"' || c == '`')
-            {
+            if (c == '\'' || c == '"' || c == '`') {
                 out.push_back(c);
                 ++i;
-                while (i < n)
-                {
+                while (i < n) {
                     out.push_back(sql[i]);
-                    if (sql[i] == '\\' && i + 1 < n)
-                    {
+                    if (sql[i] == '\\' && i + 1 < n) {
                         ++i;
                         out.push_back(sql[i]);
                         ++i;
                         continue;
                     }
-                    if (sql[i] == c)
-                    {
-                        if (i + 1 < n && sql[i + 1] == c)
-                        {
+                    if (sql[i] == c) {
+                        if (i + 1 < n && sql[i + 1] == c) {
                             ++i;
                             out.push_back(sql[i]);
-                        }
-                        else
-                        {
+                        } else {
                             break;
                         }
                     }
@@ -325,10 +279,8 @@ namespace sqlconduit::core
                 continue;
             }
 
-            if (c == '-' && i + 1 < n && sql[i + 1] == '-')
-            {
-                while (i < n && sql[i] != '\n')
-                {
+            if (c == '-' && i + 1 < n && sql[i + 1] == '-') {
+                while (i < n && sql[i] != '\n') {
                     out.push_back(sql[i]);
                     ++i;
                 }
@@ -336,15 +288,12 @@ namespace sqlconduit::core
                 continue;
             }
 
-            if (c == '/' && i + 1 < n && sql[i + 1] == '*')
-            {
+            if (c == '/' && i + 1 < n && sql[i + 1] == '*') {
                 out.push_back(c);
                 ++i;
-                while (i < n)
-                {
+                while (i < n) {
                     out.push_back(sql[i]);
-                    if (sql[i] == '*' && i + 1 < n && sql[i + 1] == '/')
-                    {
+                    if (sql[i] == '*' && i + 1 < n && sql[i + 1] == '/') {
                         ++i;
                         out.push_back(sql[i]);
                         break;
@@ -354,8 +303,7 @@ namespace sqlconduit::core
                 continue;
             }
 
-            if (c == '?')
-            {
+            if (c == '?') {
                 out += visitor(found++);
                 continue;
             }
@@ -365,19 +313,16 @@ namespace sqlconduit::core
         return out;
     }
 
-    common::Status IDatabaseConnection::buildSql(const std::string& sql,
-                                                 const common::Params& params,
-                                                 std::string& out) const
-    {
+    common::Status IDatabaseConnection::buildSql(const std::string &sql,
+                                                 const common::Params &params,
+                                                 std::string &out) const {
         std::size_t used = 0;
-        out = replacePlaceholders(sql, [&](std::size_t i) -> std::string
-        {
+        out = replacePlaceholders(sql, [&](std::size_t i) -> std::string {
             if (i >= params.size()) return "?";
             return escapeLiteral(params[i]);
         }, used);
 
-        if (used != params.size())
-        {
+        if (used != params.size()) {
             return common::Status::error(
                 common::ErrorCode::QueryError,
                 "parameter mismatch: supplied " + std::to_string(params.size())
@@ -387,86 +332,76 @@ namespace sqlconduit::core
         return common::Status::OK();
     }
 
-    common::Status IDatabaseConnection::prepare(const std::string& sql,
-                                                const common::Params& typesSample,
-                                                PreparedStatementHandle& out)
-    {
-        (void)sql;
-        (void)typesSample;
+    common::Status IDatabaseConnection::prepare(const std::string &sql,
+                                                const common::Params &typesSample,
+                                                PreparedStatementHandle &out) {
+        (void) sql;
+        (void) typesSample;
         out = PreparedStatementHandle{};
         return common::Status::error(common::ErrorCode::NotSupported,
                                      "driver does not support prepared statements");
     }
 
-    common::Status IDatabaseConnection::executePrepared(const PreparedStatementHandle& h,
-                                                        const common::Params& params,
-                                                        common::ResultSet& out)
-    {
-        (void)h;
-        (void)params;
+    common::Status IDatabaseConnection::executePrepared(const PreparedStatementHandle &h,
+                                                        const common::Params &params,
+                                                        common::ResultSet &out) {
+        (void) h;
+        (void) params;
         out.clear();
         return common::Status::error(common::ErrorCode::NotSupported,
                                      "driver does not support prepared statements");
     }
 
-    common::Status IDatabaseConnection::executePrepared(const PreparedStatementHandle& h,
-                                                        const common::Params& params,
-                                                        std::int64_t& affected)
-    {
-        (void)h;
-        (void)params;
+    common::Status IDatabaseConnection::executePrepared(const PreparedStatementHandle &h,
+                                                        const common::Params &params,
+                                                        std::int64_t &affected) {
+        (void) h;
+        (void) params;
         affected = 0;
         return common::Status::error(common::ErrorCode::NotSupported,
                                      "driver does not support prepared statements");
     }
 
-    void IDatabaseConnection::closeAllPrepared()
-    {
+    void IDatabaseConnection::closeAllPrepared() {
     }
 
-    common::Status IDatabaseConnection::execute(const std::string& sql, std::int64_t& affected,
-                                                common::GeneratedKeys& out)
-    {
+    common::Status IDatabaseConnection::execute(const std::string &sql, std::int64_t &affected,
+                                                common::GeneratedKeys &out) {
         out = common::GeneratedKeys{};
         return execute(sql, affected);
     }
 
-    common::Status IDatabaseConnection::execute(const std::string& sql,
-                                                const common::Params& params,
-                                                std::int64_t& affected,
-                                                common::GeneratedKeys& out)
-    {
+    common::Status IDatabaseConnection::execute(const std::string &sql,
+                                                const common::Params &params,
+                                                std::int64_t &affected,
+                                                common::GeneratedKeys &out) {
         out = common::GeneratedKeys{};
         return execute(sql, params, affected);
     }
 
-    common::Status IDatabaseConnection::query(const std::string& sql,
-                                              const common::StreamParams& params,
-                                              common::ResultSet& out)
-    {
+    common::Status IDatabaseConnection::query(const std::string &sql,
+                                              const common::StreamParams &params,
+                                              common::ResultSet &out) {
         common::Params plain;
         if (const auto st = common::streamParamsToParams(params, plain); !st.ok()) return st;
         return query(sql, plain, out);
     }
 
-    common::Status IDatabaseConnection::execute(const std::string& sql,
-                                                const common::StreamParams& params,
-                                                std::int64_t& affected,
-                                                common::GeneratedKeys& out)
-    {
+    common::Status IDatabaseConnection::execute(const std::string &sql,
+                                                const common::StreamParams &params,
+                                                std::int64_t &affected,
+                                                common::GeneratedKeys &out) {
         common::Params plain;
         if (const auto st = common::streamParamsToParams(params, plain); !st.ok()) return st;
         return execute(sql, plain, affected, out);
     }
 
-    common::Status IDatabaseConnection::executeBatch(const std::string& sql,
-                                                     const common::StreamParamBatch& batch,
-                                                     common::BatchResult& out)
-    {
+    common::Status IDatabaseConnection::executeBatch(const std::string &sql,
+                                                     const common::StreamParamBatch &batch,
+                                                     common::BatchResult &out) {
         common::ParamBatch plain;
         plain.reserve(batch.size());
-        for (const auto& group : batch)
-        {
+        for (const auto &group: batch) {
             common::Params params;
             if (const auto st = common::streamParamsToParams(group, params); !st.ok()) return st;
             plain.push_back(std::move(params));

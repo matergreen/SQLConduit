@@ -9,20 +9,18 @@
 #include <memory>
 #include <vector>
 
-namespace sqlconduit::driver
-{
+namespace sqlconduit::driver {
     using DriverFactoryFn = std::function<std::unique_ptr<IDriver>()>;
 
-    class DriverRegistry
-    {
+    class DriverRegistry {
     public:
-        static DriverRegistry& instance();
+        static DriverRegistry &instance();
 
-        void registerDriver(const std::string& type, DriverFactoryFn fn);
+        void registerDriver(const std::string &type, DriverFactoryFn fn);
 
-        [[nodiscard]] bool has(const std::string& type) const;
+        [[nodiscard]] bool has(const std::string &type) const;
 
-        [[nodiscard]] std::unique_ptr<IDriver> create(const std::string& type) const;
+        [[nodiscard]] std::unique_ptr<IDriver> create(const std::string &type) const;
 
         [[nodiscard]] std::vector<std::string> registeredTypes() const;
 

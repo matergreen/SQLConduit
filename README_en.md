@@ -13,8 +13,7 @@ It is intended for services that need to:
 - configure retries, circuit breaking, read/write routing, rate limits, SQL auditing, and caching;
 - inspect rendered SQL, slow-query statistics, and connection-pool metrics.
 
-The core uses C++17. The optional coroutine API uses C++20. Database drivers are opt-in and
-disabled by default.
+The project uses C++17. Database drivers are opt-in and disabled by default.
 
 ## Quick start
 
@@ -34,8 +33,7 @@ Available switches:
 - `SQLCONDUIT_ENABLE_MYSQL=ON`: MySQL; requires libmysqlclient;
 - `SQLCONDUIT_ENABLE_POSTGRES=ON`: PostgreSQL; requires libpqxx and libpq;
 - `SQLCONDUIT_ENABLE_ORACLE=ON`: Oracle; requires OCI (Oracle Instant Client, Basic + SDK);
-- `SQLCONDUIT_ENABLE_ODBC=ON`: ODBC databases such as SQL Server; requires unixODBC;
-- `SQLCONDUIT_ENABLE_ASYNC_CORO=ON`: enable the C++20 coroutine API.
+- `SQLCONDUIT_ENABLE_ODBC=ON`: ODBC databases such as SQL Server; requires unixODBC.
 
 See the [detailed build instructions](docs/guide_en.md#building-wsl--linux) for Linux and macOS.
 
@@ -85,21 +83,22 @@ Use `?` placeholders. Values are bound natively by the driver:
 #include <string>
 
 int main() {
-    auto status = sqlconduit::SQLConduit::init("config/datasources.json");
+    sqlconduit::Client client;
+    auto status = client.init("config/datasources.json");
     if (!status.ok()) return 1;
 
     sqlconduit::common::ResultSet rows;
     sqlconduit::common::Params params{std::int64_t(42)};
-    status = sqlconduit::SQLConduit::query(
+    status = client.query(
         "SELECT id, name FROM users WHERE id = ?", params, rows);
 
     std::int64_t affected = 0;
     if (status.ok()) {
-        status = sqlconduit::SQLConduit::execute(
+        status = client.execute(
             "UPDATE users SET last_seen = now() WHERE id = ?", params, affected);
     }
 
-    sqlconduit::SQLConduit::shutdown();
+    client.shutdown();
     return status.ok() ? 0 : 1;
 }
 ```
@@ -107,8 +106,46 @@ int main() {
 Pass a data-source name as the first argument to target a specific source:
 
 ```cpp
-sqlconduit::SQLConduit::query("analytics", "SELECT count(*) FROM events", rows);
+client.query("analytics", "SELECT count(*) FROM events", rows);
 ```
+
+`Client` is the sole high-level runtime entry. It is move-only, owns an independent connection
+topology, and closes its pools on destruction. After a successful
+`init()`, use `reload()` for configuration changes; another `init()` returns
+`AlreadyInitialized`.
+
+```cpp
+sqlconduit::Client client;
+auto status = client.init("config/datasources.json");
+if (!status.ok()) return 1;
+
+sqlconduit::common::ResultSet rows;
+status = client.query("SELECT id, name FROM users", rows);
+
+client.shutdown();
+```
+
+Each `Client` owns its query cache, SQL audit policy, interceptors, and observability state. Use
+`setObserver()` for an instance callback and `slowSqlStats()` / `recentSlowSql()` for that
+instance's slow-query data. The library no longer provides an implicit process-wide default client.
+
+Instance clients also provide future-based asynchronous operations backed by that client's own
+executor and connection topology:
+
+```cpp
+auto pending = client.queryAsync("SELECT id, name FROM users WHERE id = ?",
+                                 {std::int64_t(42)});
+auto result = pending.get();
+if (!result.status.ok()) return 1;
+```
+
+`queryAsync()`, `queryAllAsync()`, `executeAsync()`, `executeKeysAsync()`, `queryEachAsync()`,
+`executeBatchAsync()`, and `transactionAsync()` never resolve through another `Client`. With
+`async.enabled: false`, they return a ready future containing a
+`ConfigError` status.
+
+See the [public API stability policy](docs/api_stability.md) for compatibility levels, the 0.x
+versioning rules, and the current asynchronous boundary.
 
 ### 4. Transactions
 
@@ -116,7 +153,7 @@ Use `transaction()` to keep multiple statements on one connection. A successful 
 committed; a returned error or exception is rolled back automatically:
 
 ```cpp
-auto status = sqlconduit::SQLConduit::transaction([](sqlconduit::core::Session &session) {
+auto status = client.transaction([](sqlconduit::core::Session &session) {
     std::int64_t affected = 0;
     auto result = session.execute(
         "UPDATE accounts SET balance = balance - ? WHERE id = ?",
@@ -153,7 +190,7 @@ template <> struct sqlconduit::mapping::RowMapper<User> {
     }
 };
 
-auto r = sqlconduit::queryAs<User>("SELECT id, name, email FROM users WHERE id = ?",
+auto r = sqlconduit::queryAs<User>(client, "SELECT id, name, email FROM users WHERE id = ?",
                              {std::int64_t(42)});
 if (r.status.ok() && !r.items.empty()) use(r.items[0]);
 ```
@@ -161,8 +198,8 @@ if (r.status.ok() && !r.items.empty()) use(r.items[0]);
 Type mismatches and NULL landing in a non-`optional` member yield `MappingError` (no silent default
 values). Missing columns are skipped by default and extra columns ignored; each can be tightened via
 `.missingColumns(...)` / `.extraColumns(...)`. The write direction offers `paramsOf` / `insertSql` /
-`updateSql` / `insertAs` / `updateAs` / `insertBatchAs`, including generated-key back-fill. On the
-async side, `sqlconduit::async::queryAs<T>` comes in callback / future / coroutine form.
+`updateSql` / `insertAs` / `updateAs` / `insertBatchAs`, including generated-key back-fill. For an
+asynchronous query, call `client.queryAsync()` and then map the rows with `mapping::fromRows<T>()`.
 
 ### 5.x Routines and indexes (`sqlconduit/util.h`)
 
@@ -175,17 +212,17 @@ namespace util = sqlconduit::common::util;
 
 util::CreateRoutineOptions o;
 o.dataSource = "main";
-auto st = util::createRoutine(R"(CREATE PROCEDURE p(IN x INT) BEGIN UPDATE t SET a = x; END)", o);
+auto st = util::createRoutine(client, R"(CREATE PROCEDURE p(IN x INT) BEGIN UPDATE t SET a = x; END)", o);
 
 util::RoutineRef fn{"public.f", util::RoutineKind::Function, "pg"};
 std::string sql;
 util::makeCallSql(fn, 2, util::Dialect::Postgres, true, sql);   // SELECT * FROM "public"."f"(?, ?)
 
 common::ResultSet rs;
-util::callQuery(sql, {common::Value(std::int64_t(1))}, rs);
+util::callQuery(client, sql, {common::Value(std::int64_t(1))}, rs);
 
 util::IndexSpec idx{"t", "idx_t_a", {"a"}, false, false, false, "BTREE"};
-util::createIndex(idx);
+util::createIndex(client, idx);
 ```
 
 A structured call returns **every result set** the routine produced and can carry OUT / INOUT
@@ -198,21 +235,19 @@ util::RoutineRef proc{"p", util::RoutineKind::Procedure, "my"};
 util::CallParams params;
 params.emplace_back(common::Value(std::int64_t(7)));
 util::CallResult r;
-util::call(proc, params, r);   // r.sets / r.rowCount() / r.affected
+util::call(client, proc, params, r);   // r.sets / r.rowCount() / r.affected
 
 // OUT / INOUT: the Session overload is required (the session variable must be read
 // back on the same connection)
 params.emplace_back(util::CallParam{util::ParamDirection::Out, common::Value(std::int64_t(0))});
-SQLConduit::transaction("my", [&](core::Session &s) { return util::call(s, proc, params, r); });
+client.transaction("my", [&](core::Session &s) { return util::call(client, s, proc, params, r); });
 // r.outParams[0] is the OUT value
 ```
 
 OUT / INOUT support: MySQL (requires `Session`) and postgres functions (pool path is enough, the
 values are the leading columns of the result row). Oracle uses
 `CallParam::out(common::ValueType::String)` and `CallParam::refCursor()` directly through the pool.
-postgres procedures and SQL Server return
-`NotSupported`, and so does the async path (no connection affinity). Use
-`async::util::callAll()` to collect multiple result sets asynchronously.
+postgres procedures and SQL Server return `NotSupported`.
 
 Governance: DDL is pinned to the primary (the `shadow` flag is cleared), defaults to
 `NonIdempotent` (no retries), and invalidates that data source's query cache after a structural
@@ -230,16 +265,14 @@ governance as `createRoutine` / `createIndex` (pinned to primary, no retry, cach
 util::ScriptOptions o;
 o.dataSource = "main";
 
-util::runScriptsInDir("./migrations", o);     // recursively run every .sql under the directory
-util::runScripts({"./a.sql", "./b.sql"}, o);  // explicit file list
-util::runScriptText("CREATE TABLE t(id INT); INSERT INTO t VALUES (1);", o);  // in-memory script
+util::runScriptsInDir(client, "./migrations", o);     // recursively run every .sql under the directory
+util::runScripts(client, {"./a.sql", "./b.sql"}, o);  // explicit file list
+util::runScriptText(client, "CREATE TABLE t(id INT); INSERT INTO t VALUES (1);", o);  // in-memory script
 ```
 
 On failure a missing file/directory yields `IoError`; a statement error stops at the first one when
 `stopOnError` (default) is true, or runs everything and lets the last error win when false. Per-file
-results land in `perFile`. Async: `async::util::runScriptText` / `runScripts` / `runScriptsInDir`
-(callback / future / coroutine). Statements are scheduled strictly in sequence; callback forms
-return a `Handle` that can report state or cancel the remaining script.
+results land in `perFile`.
 
 ### 6. Run tests
 
@@ -314,7 +347,7 @@ default link path — add `-L` yourself (for example `-L$(brew --prefix libpq)/l
 include(FetchContent)
 FetchContent_Declare(sqlconduit
     GIT_REPOSITORY https://github.com/matergreen/SQLConduit.git
-    GIT_TAG        v0.6.0)
+    GIT_TAG        v0.7.0)
 FetchContent_MakeAvailable(sqlconduit)
 
 target_link_libraries(your_target PRIVATE sqlconduit::sqlconduit)

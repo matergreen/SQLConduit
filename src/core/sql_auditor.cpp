@@ -1,4 +1,5 @@
 #include "sqlconduit/core/sql_auditor.h"
+#include "sqlconduit/core/runtime_services.h"
 
 #include "sqlconduit/common/sql_analyze.h"
 #include "sqlconduit/common/logger.h"
@@ -6,29 +7,17 @@
 #include <memory>
 #include <mutex>
 
-namespace sqlconduit::core
-{
-    std::atomic<bool> SqlAuditor::enabled_{false};
-    std::mutex SqlAuditor::mtx_;
-    std::shared_ptr<const SqlAuditor::Policy> SqlAuditor::policy_;
-    std::atomic<std::uint64_t> SqlAuditor::checked_{0};
-    std::atomic<std::uint64_t> SqlAuditor::warned_{0};
-    std::atomic<std::uint64_t> SqlAuditor::blocked_{0};
-
-    namespace
-    {
+namespace sqlconduit::core {
+    namespace {
         common::Status verdict(const bool block, const bool logIt,
-                               const char* reason, const std::string& sql,
-                               std::atomic<std::uint64_t>& warned,
-                               std::atomic<std::uint64_t>& blocked)
-        {
-            if (logIt)
-            {
+                               const char *reason, const std::string &sql,
+                               std::atomic<std::uint64_t> &warned,
+                               std::atomic<std::uint64_t> &blocked) {
+            if (logIt) {
                 SQLCONDUIT_LOG_WARN(std::string("sql audit ") + (block ? "blocked" : "warn") + " ("
                     + reason + "): " + sql);
             }
-            if (block)
-            {
+            if (block) {
                 blocked.fetch_add(1, std::memory_order_relaxed);
                 return common::Status::error(common::ErrorCode::SqlBlocked, reason);
             }
@@ -37,8 +26,7 @@ namespace sqlconduit::core
         }
     }
 
-    void SqlAuditor::configure(const config::SqlAuditConfig& cfg)
-    {
+    void detail::SqlAuditorState::configure(const config::SqlAuditConfig &cfg) {
         auto policy = std::make_shared<Policy>();
         policy->block = cfg.action == "block";
         policy->log_blocked = cfg.log_blocked;
@@ -51,7 +39,7 @@ namespace sqlconduit::core
                                  cfg.whitelist_fingerprints.end());
         policy->needsFingerprint = !policy->blacklist.empty() || !policy->whitelist.empty();
         policy->needsKind = policy->enforce_read_only || policy->block_no_where_dml ||
-            policy->require_limit_select;
+                            policy->require_limit_select;
         {
             std::lock_guard<std::mutex> lk(mtx_);
             policy_ = std::move(policy);
@@ -59,9 +47,9 @@ namespace sqlconduit::core
         enabled_.store(cfg.enabled, std::memory_order_release);
     }
 
-    common::Status SqlAuditor::check(const std::string& sql, const common::OperationType type,
-                                     const bool readOnly)
-    {
+    common::Status detail::SqlAuditorState::check(const std::string &sql,
+                                                  const common::OperationType type,
+                                                  const bool readOnly) {
         if (!enabled_.load(std::memory_order_acquire)) return common::Status::OK();
 
         std::shared_ptr<const Policy> policy;
@@ -74,56 +62,48 @@ namespace sqlconduit::core
         checked_.fetch_add(1, std::memory_order_relaxed);
         using namespace common::sql;
 
-        if (hasMultipleStatements(sql, true))
-        {
+        if (hasMultipleStatements(sql, true)) {
             return verdict(policy->block, policy->log_blocked,
                            "multiple SQL statements are not allowed", sql,
                            warned_, blocked_);
         }
 
-        if (policy->needsFingerprint)
-        {
+        if (policy->needsFingerprint) {
             const std::uint64_t fp = fingerprintTemplate(sql);
 
             if (!policy->whitelist.empty() &&
-                policy->whitelist.find(fp) == policy->whitelist.end())
-            {
+                policy->whitelist.find(fp) == policy->whitelist.end()) {
                 return verdict(true, policy->log_blocked,
                                "SQL not in audit whitelist", sql, warned_, blocked_);
             }
-            if (policy->blacklist.find(fp) != policy->blacklist.end())
-            {
+            if (policy->blacklist.find(fp) != policy->blacklist.end()) {
                 return verdict(true, policy->log_blocked,
                                "SQL in audit blacklist", sql, warned_, blocked_);
             }
         }
 
-        if (!policy->needsKind)
-        {
-            (void)type;
+        if (!policy->needsKind) {
+            (void) type;
             return common::Status::OK();
         }
 
         const StatementKind kind = classifyStatement(sql);
 
-        if (policy->enforce_read_only && readOnly && isWrite(kind))
-        {
+        if (policy->enforce_read_only && readOnly && isWrite(kind)) {
             return verdict(policy->block, policy->log_blocked,
                            "write on read-only datasource", sql, warned_, blocked_);
         }
 
         if (policy->block_no_where_dml &&
             (kind == StatementKind::Update || kind == StatementKind::Delete) &&
-            !hasWhereClause(sql))
-        {
+            !hasWhereClause(sql)) {
             return verdict(policy->block, policy->log_blocked,
                            "UPDATE/DELETE without WHERE clause", sql, warned_, blocked_);
         }
 
         const bool isCursor = (type == common::OperationType::Select);
         if (policy->require_limit_select && !isCursor && kind == StatementKind::Select &&
-            !common::sql::hasRowLimitClause(sql))
-        {
+            !common::sql::hasRowLimitClause(sql)) {
             return verdict(policy->block, policy->log_blocked,
                            "SELECT without LIMIT clause", sql, warned_, blocked_);
         }
@@ -131,12 +111,25 @@ namespace sqlconduit::core
         return common::Status::OK();
     }
 
-    SqlAuditor::Stats SqlAuditor::stats()
-    {
-        Stats out;
+    SqlAuditStats detail::SqlAuditorState::stats() const {
+        SqlAuditStats out;
         out.checked = checked_.load(std::memory_order_relaxed);
         out.warned = warned_.load(std::memory_order_relaxed);
         out.blocked = blocked_.load(std::memory_order_relaxed);
         return out;
+    }
+
+    void SqlAuditor::configure(const config::SqlAuditConfig &cfg) {
+        detail::defaultRuntimeServices()->sqlAuditor.configure(cfg);
+    }
+
+    common::Status SqlAuditor::check(const std::string &sql,
+                                     const common::OperationType type,
+                                     const bool readOnly) {
+        return detail::defaultRuntimeServices()->sqlAuditor.check(sql, type, readOnly);
+    }
+
+    SqlAuditor::Stats SqlAuditor::stats() {
+        return detail::defaultRuntimeServices()->sqlAuditor.stats();
     }
 }

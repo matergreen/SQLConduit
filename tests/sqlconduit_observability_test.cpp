@@ -11,15 +11,11 @@
 using namespace sqlconduit::common;
 using sqlconduit::config::ObservabilityConfig;
 
-namespace sqlconduit::common
-{
-    namespace
-    {
-        bool isLowerHex16(const std::string& s)
-        {
+namespace sqlconduit::common {
+    namespace {
+        bool isLowerHex16(const std::string &s) {
             if (s.size() != 16) return false;
-            for (char c : s)
-            {
+            for (char c: s) {
                 if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
             }
             return true;
@@ -30,15 +26,11 @@ namespace sqlconduit::common
 static int g_failed = 0;
 static int g_passed = 0;
 
-static void check(bool cond, const std::string& name)
-{
-    if (cond)
-    {
+static void check(bool cond, const std::string &name) {
+    if (cond) {
         ++g_passed;
         std::cout << "  [PASS] " << name << "\n";
-    }
-    else
-    {
+    } else {
         ++g_failed;
         std::cout << "  [FAIL] " << name << "\n";
     }
@@ -47,16 +39,14 @@ static void check(bool cond, const std::string& name)
 static std::mutex g_capMtx;
 static std::vector<OperationEvent> g_captured;
 
-static void capturingObserver(const OperationEvent& e)
-{
+static void capturingObserver(const OperationEvent &e) {
     std::lock_guard<std::mutex> lk(g_capMtx);
     g_captured.push_back(e);
 }
 
 #define CLEAR_CAPTURED() do { std::lock_guard<std::mutex> _lk(g_capMtx); g_captured.clear(); } while (0)
 
-int main()
-{
+int main() {
     std::cout << "== M2 追踪上下文：emitSql 无 ctx 时不发幽灵字段 ==\n";
     {
         CLEAR_CAPTURED();
@@ -193,8 +183,7 @@ int main()
 
         const auto recent = Observability::recentSlowSql(10);
         check(recent.size() == 1, "慢 SQL 窗口收到一条");
-        if (!recent.empty())
-        {
+        if (!recent.empty()) {
             check(recent[0].traceId == ctx.traceId,
                   "SlowSqlRecord.traceId 与 event.traceId 同源");
             check(recent[0].spanId == ctx.spanId,

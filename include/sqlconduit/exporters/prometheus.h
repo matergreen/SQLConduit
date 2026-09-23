@@ -7,11 +7,10 @@
 #include <string>
 #include <vector>
 
-namespace sqlconduit::exporters
-{
-    std::string toPrometheusText(const common::PoolMetricsEvent& pools,
-                                 const std::vector<common::SlowSqlStats>& slow,
-                                 const std::string& prefix = "sqlconduit",
+namespace sqlconduit::exporters {
+    std::string toPrometheusText(const common::PoolMetricsEvent &pools,
+                                 const std::vector<common::SlowSqlStats> &slow,
+                                 const std::string &prefix = "sqlconduit",
                                  std::size_t maxFingerprintLabels = 0);
 }
 

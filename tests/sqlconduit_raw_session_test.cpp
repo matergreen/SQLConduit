@@ -1,4 +1,3 @@
-#include "sqlconduit/async/sqlconduit_async.h"
 #include "sqlconduit/common/context.h"
 #include "sqlconduit/config/config_loader.h"
 #include "sqlconduit/config/datasource_config.h"
@@ -21,56 +20,46 @@
 using namespace sqlconduit;
 using common::Row;
 using common::Status;
+static Client g_client;
 
 static int g_failed = 0;
 static int g_passed = 0;
 static std::string g_scenario;
 
-static void check(bool cond, const std::string& name)
-{
-    if (cond)
-    {
+static void check(bool cond, const std::string &name) {
+    if (cond) {
         ++g_passed;
         std::cout << "  [PASS] " << name << "\n";
-    }
-    else
-    {
+    } else {
         ++g_failed;
         std::cout << "  [FAIL] " << g_scenario << ": " << name << "\n";
     }
 }
 
-static std::string rowString(const common::ResultSet& rs, const std::string& field)
-{
+static std::string rowString(const common::ResultSet &rs, const std::string &field) {
     if (rs.empty()) return {};
-    const auto& row = rs.rows().front();
+    const auto &row = rs.rows().front();
     if (!row.has(field)) return {};
-    const auto& v = row.at(field);
+    const auto &v = row.at(field);
     if (!std::holds_alternative<std::string>(v)) return {};
     return std::get<std::string>(v);
 }
 
-namespace mockraw
-{
-    class Connection : public core::IDatabaseConnection
-    {
+namespace mockraw {
+    class Connection : public core::IDatabaseConnection {
     public:
-        explicit Connection(std::string tag) : tag_(std::move(tag))
-        {
+        explicit Connection(std::string tag) : tag_(std::move(tag)) {
         }
 
-        common::Status connect(const config::DataSourceConfig&) override
-        {
+        common::Status connect(const config::DataSourceConfig &) override {
             open_ = true;
             return Status::OK();
         }
 
         common::Status ping() override { return Status::OK(); }
 
-        common::Status query(const std::string&, common::ResultSet& out) override
-        {
-            if (!open_)
-            {
+        common::Status query(const std::string &, common::ResultSet &out) override {
+            if (!open_) {
                 auto st = Status::error(common::ErrorCode::NotConnected, "not open");
                 st.retryable = true;
                 st.connectionBroken = true;
@@ -83,10 +72,8 @@ namespace mockraw
             return Status::OK();
         }
 
-        common::Status execute(const std::string&, std::int64_t& a) override
-        {
-            if (!open_)
-            {
+        common::Status execute(const std::string &, std::int64_t &a) override {
+            if (!open_) {
                 auto st = Status::error(common::ErrorCode::NotConnected, "not open");
                 st.retryable = true;
                 st.connectionBroken = true;
@@ -107,17 +94,14 @@ namespace mockraw
         std::string tag_;
     };
 
-    class Driver : public driver::IDriver
-    {
+    class Driver : public driver::IDriver {
     public:
-        explicit Driver(std::string tag) : tag_(std::move(tag))
-        {
+        explicit Driver(std::string tag) : tag_(std::move(tag)) {
         }
 
-        const char* name() const override { return "mockraw"; }
+        const char *name() const override { return "mockraw"; }
 
-        std::unique_ptr<core::IDatabaseConnection> createConnection() override
-        {
+        std::unique_ptr<core::IDatabaseConnection> createConnection() override {
             return std::make_unique<Connection>(tag_);
         }
 
@@ -125,19 +109,16 @@ namespace mockraw
         std::string tag_;
     };
 
-    inline void install(std::string dsname, std::string tag)
-    {
+    inline void install(std::string dsname, std::string tag) {
         driver::DriverRegistry::instance().registerDriver(
             dsname, [tag] { return std::make_unique<Driver>(tag); });
     }
 }
 
-static void uninstallAllMock()
-{
+static void uninstallAllMock() {
 }
 
-static config::DataSourceConfig dsCfg(const std::string& name)
-{
+static config::DataSourceConfig dsCfg(const std::string &name) {
     config::DataSourceConfig c;
     c.name = name;
     c.type = name;
@@ -146,16 +127,14 @@ static config::DataSourceConfig dsCfg(const std::string& name)
     return c;
 }
 
-static core::DataSourceOptions rawOpts()
-{
+static core::DataSourceOptions rawOpts() {
     core::DataSourceOptions o;
     o.retry.retry_writes = false;
     o.circuit_breaker.failure_threshold = 0;
     return o;
 }
 
-static void M8_1_sync_write_then_read_in_scope()
-{
+static void M8_1_sync_write_then_read_in_scope() {
     g_scenario = "M8.1";
     std::cout << "== M8.1 sync write-then-read in same scope: wIRT=primary ==\n";
 
@@ -194,8 +173,7 @@ static void M8_1_sync_write_then_read_in_scope()
     uninstallAllMock();
 }
 
-static void M8_2_sync_write_no_scope_RAW_zero()
-{
+static void M8_2_sync_write_no_scope_RAW_zero() {
     g_scenario = "M8.2";
     std::cout << "== M8.2 sync no-scope with RAW=0: pinRequestWrite 早返，读走副本 ==\n";
 
@@ -229,8 +207,7 @@ static void M8_2_sync_write_no_scope_RAW_zero()
     uninstallAllMock();
 }
 
-static void M8_3_sync_scopes_isolated()
-{
+static void M8_3_sync_scopes_isolated() {
     g_scenario = "M8.3";
     std::cout << "== M8.3 sync: A 帧写 / B 帧读 → B 不受 A wIRT 影响（RAW=0 隔离时间戳）==\n";
 
@@ -270,8 +247,7 @@ static void M8_3_sync_scopes_isolated()
     uninstallAllMock();
 }
 
-static void M8_4_async_wirt_in_entryctx()
-{
+static void M8_4_async_wirt_in_entryctx() {
     g_scenario = "M8.4";
     std::cout << "== M8.4 async: 新 submit 的 entryCtx 不被前次 op 污染（RAW=0）==\n";
 
@@ -279,7 +255,7 @@ static void M8_4_async_wirt_in_entryctx()
     mockraw::install("r0", "replica-0");
 
     const auto path = (std::filesystem::temp_directory_path() /
-        "sqlconduit_m8_async.json").string();
+                       "sqlconduit_m8_async.json").string();
     std::ofstream(path) << R"({
   "default_datasource": "grp",
   "heartbeat_interval_ms": 5000,
@@ -298,27 +274,20 @@ static void M8_4_async_wirt_in_entryctx()
     { "name": "grp", "primary": "primary", "replicas": [{ "name": "r0", "weight": 1 }], "read_after_write_ms": 0 }
   ]
 })";
-    check(SQLConduit::init(path).ok(), "SQLConduit::init ok");
+    g_client = Client{};
+    check(g_client.init(path).ok(), "Client::init ok");
 
     {
-        std::promise<async::ExecResult> pw;
-        auto fw = pw.get_future();
         common::ContextScope scope({});
-        async::execute("grp", "UPDATE x",
-                       [&pw](async::ExecResult&& r) mutable { pw.set_value(std::move(r)); });
-        auto rw = fw.get();
+        auto rw = g_client.executeAsync("grp", "UPDATE x", {}).get();
         check(rw.status.ok(), "async write: status ok");
         check(rw.affected == 1, "async write: affected==1");
     }
 
     common::ResultSet rs;
     {
-        std::promise<async::QueryResult> pr;
-        auto fr = pr.get_future();
         common::ContextScope scope({});
-        async::query("grp", "SELECT source FROM t",
-                     [&pr](async::QueryResult&& r) mutable { pr.set_value(std::move(r)); });
-        auto rr = fr.get();
+        auto rr = g_client.queryAsync("grp", "SELECT source FROM t", {}).get();
         check(rr.status.ok(), "async read after unrelated scope: status ok");
         rs = std::move(rr.rows);
     }
@@ -326,20 +295,19 @@ static void M8_4_async_wirt_in_entryctx()
     check(src == "replica-0",
           "M8.4 RAW=0 + 新 submit：source==replica-0（前次 op 的 entryCtx.wIRT 不串）");
 
-    SQLConduit::shutdown(std::chrono::milliseconds(0));
+    g_client.shutdown(std::chrono::milliseconds(0));
     uninstallAllMock();
 }
 
-static void M8_5_config_loader_warns_on_replica_zero_window()
-{
+static void M8_5_config_loader_warns_on_replica_zero_window() {
     g_scenario = "M8.5";
     std::cout << "== M8.5 config_loader 副本 + 零窗口：stderr WARN 必须出现 ==\n";
 
     std::ostringstream capturedStderr;
-    auto* const originalStderr = std::cerr.rdbuf(capturedStderr.rdbuf());
+    auto *const originalStderr = std::cerr.rdbuf(capturedStderr.rdbuf());
 
     const auto path = (std::filesystem::temp_directory_path() /
-        "sqlconduit_m8_cfg_warn.json").string();
+                       "sqlconduit_m8_cfg_warn.json").string();
     std::ofstream(path) << R"({
   "default_datasource": "p",
   "heartbeat_interval_ms": 5000,
@@ -368,8 +336,8 @@ static void M8_5_config_loader_warns_on_replica_zero_window()
 
     const std::string captured = capturedStderr.str();
     const bool sawWarn = captured.find("read_after_write_ms=0") != std::string::npos
-        && captured.find("replica") != std::string::npos
-        && captured.find("stale data") != std::string::npos;
+                         && captured.find("replica") != std::string::npos
+                         && captured.find("stale data") != std::string::npos;
     check(sawWarn,
           "M8.5 stderr 输出含 'read_after_write_ms=0 / replica / stale data' 提示");
 
@@ -377,8 +345,7 @@ static void M8_5_config_loader_warns_on_replica_zero_window()
     uninstallAllMock();
 }
 
-static void M8_6_idempotency_orthogonal()
-{
+static void M8_6_idempotency_orthogonal() {
     g_scenario = "M8.6";
     std::cout << "== M8.6 NonIdempotent 写后置位 wIRT：与幂等正交 ==\n";
 
@@ -421,8 +388,7 @@ static void M8_6_idempotency_orthogonal()
     uninstallAllMock();
 }
 
-int main()
-{
+int main() {
     std::cout << "===== sqlconduit_raw_session_test (M8) =====\n";
 
     M8_1_sync_write_then_read_in_scope();

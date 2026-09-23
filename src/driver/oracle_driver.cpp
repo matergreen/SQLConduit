@@ -11,19 +11,15 @@
 #include <utility>
 #include <vector>
 
-namespace sqlconduit::driver
-{
-    namespace
-    {
-        [[maybe_unused]] common::Status notConnected(const char* where)
-        {
+namespace sqlconduit::driver {
+    namespace {
+        [[maybe_unused]] common::Status notConnected(const char *where) {
             return common::Status::error(common::ErrorCode::NotConnected,
                                          std::string("Oracle: not connected (") + where + ")");
         }
 
         [[maybe_unused]] common::Status paramMismatch(const std::size_t supplied,
-                                                      const std::size_t placeholders)
-        {
+                                                      const std::size_t placeholders) {
             return common::Status::error(
                 common::ErrorCode::QueryError,
                 "parameter mismatch: supplied " + std::to_string(supplied)
@@ -31,71 +27,62 @@ namespace sqlconduit::driver
                 + " '?' placeholder(s)");
         }
 
-        [[maybe_unused]] common::Status driverDisabled(const char* where)
-        {
+        [[maybe_unused]] common::Status driverDisabled(const char *where) {
             return common::Status::error(
                 common::ErrorCode::DriverDisabled,
                 std::string("Oracle driver not built (") + where +
                 "). Rebuild with -DSQLCONDUIT_ENABLE_ORACLE=ON");
         }
 
-        [[maybe_unused]] bool validSavepointName(const std::string& name)
-        {
+        [[maybe_unused]] bool validSavepointName(const std::string &name) {
             if (name.empty() || name.size() > 128) return false;
-            for (const char c : name)
-            {
+            for (const char c: name) {
                 const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                    (c >= '0' && c <= '9') || c == '_';
+                                (c >= '0' && c <= '9') || c == '_';
                 if (!ok) return false;
             }
             return true;
         }
 
-        [[maybe_unused]] std::string quotedLiteral(const std::string& text)
-        {
+        [[maybe_unused]] std::string quotedLiteral(const std::string &text) {
             std::string s = "'";
-            for (const char c : text) s += c == '\'' ? "''" : std::string(1, c);
+            for (const char c: text) s += c == '\'' ? "''" : std::string(1, c);
             s += '\'';
             return s;
         }
 
 #ifdef SQLCONDUIT_ENABLE_ORACLE
-        common::Status oracleError(OCIError* err, common::ErrorCode fallback,
-                                   const char* where);
+        common::Status oracleError(OCIError *err, common::ErrorCode fallback,
+                                   const char *where);
 
-        class ActiveOperation
-        {
+        class ActiveOperation {
         public:
-            ActiveOperation(std::mutex& mutex, bool& active)
-                : mutex_(mutex), active_(active)
-            {
+            ActiveOperation(std::mutex &mutex, bool &active)
+                : mutex_(mutex), active_(active) {
                 std::lock_guard<std::mutex> lock(mutex_);
                 active_ = true;
             }
 
-            ~ActiveOperation()
-            {
+            ~ActiveOperation() {
                 std::lock_guard<std::mutex> lock(mutex_);
                 active_ = false;
             }
 
-            ActiveOperation(const ActiveOperation&) = delete;
+            ActiveOperation(const ActiveOperation &) = delete;
 
-            ActiveOperation& operator=(const ActiveOperation&) = delete;
+            ActiveOperation &operator=(const ActiveOperation &) = delete;
 
         private:
-            std::mutex& mutex_;
-            bool& active_;
+            std::mutex &mutex_;
+            bool &active_;
         };
 
         const ub2 kCharsetAl32Utf8 = 873;
 
-        ub2 resolveClientCharset(const config::DataSourceConfig& cfg)
-        {
+        ub2 resolveClientCharset(const config::DataSourceConfig &cfg) {
             int charset = cfg.oracle.charset_id;
             if (const auto it = cfg.extra.find("charset_id");
-                charset == 873 && it != cfg.extra.end())
-            {
+                charset == 873 && it != cfg.extra.end()) {
                 const long legacy = std::strtol(it->second.c_str(), nullptr, 10);
                 if (legacy > 0 && legacy < 65536) charset = static_cast<int>(legacy);
             }
@@ -103,19 +90,16 @@ namespace sqlconduit::driver
             return static_cast<ub2>(charset);
         }
 
-        bool ociOk(const sword rc)
-        {
+        bool ociOk(const sword rc) {
             return rc == OCI_SUCCESS || rc == OCI_SUCCESS_WITH_INFO;
         }
 
         enum class LobBindMode { Auto, Raw, Lob };
 
-        LobBindMode resolveLobBindMode(const config::DataSourceConfig& cfg)
-        {
+        LobBindMode resolveLobBindMode(const config::DataSourceConfig &cfg) {
             if (cfg.oracle.blob_bind == "lob") return LobBindMode::Lob;
             if (cfg.oracle.blob_bind == "raw") return LobBindMode::Raw;
-            if (const auto it = cfg.extra.find("blob_bind"); it != cfg.extra.end())
-            {
+            if (const auto it = cfg.extra.find("blob_bind"); it != cfg.extra.end()) {
                 if (it->second == "lob") return LobBindMode::Lob;
                 if (it->second == "raw") return LobBindMode::Raw;
             }
@@ -124,28 +108,24 @@ namespace sqlconduit::driver
 
         const std::size_t kDirectBindLimit = 4000;
 
-        class LobBindGuard
-        {
+        class LobBindGuard {
         public:
-            LobBindGuard(OCIEnv* env, OCISvcCtx* svc, OCIError* err)
-                : env_(env), svc_(svc), err_(err)
-            {
+            LobBindGuard(OCIEnv *env, OCISvcCtx *svc, OCIError *err)
+                : env_(env), svc_(svc), err_(err) {
             }
 
             ~LobBindGuard() { release(); }
 
-            LobBindGuard(const LobBindGuard&) = delete;
+            LobBindGuard(const LobBindGuard &) = delete;
 
-            LobBindGuard& operator=(const LobBindGuard&) = delete;
+            LobBindGuard &operator=(const LobBindGuard &) = delete;
 
-            OCILobLocator* createBlob(const std::vector<unsigned char>& data)
-            {
-                void* p = nullptr;
+            OCILobLocator *createBlob(const std::vector<unsigned char> &data) {
+                void *p = nullptr;
                 if (!ociOk(OCIDescriptorAlloc(env_, &p, OCI_DTYPE_LOB, 0, nullptr))) return nullptr;
-                auto* loc = static_cast<OCILobLocator*>(p);
+                auto *loc = static_cast<OCILobLocator *>(p);
                 if (!ociOk(OCILobCreateTemporary(svc_, err_, loc, 0, SQLCS_IMPLICIT, OCI_TEMP_BLOB,
-                                                 0, OCI_DURATION_SESSION)))
-                {
+                                                 0, OCI_DURATION_SESSION))) {
                     OCIDescriptorFree(loc, OCI_DTYPE_LOB);
                     return nullptr;
                 }
@@ -153,17 +133,15 @@ namespace sqlconduit::driver
                 oraub8 byteAmt = static_cast<oraub8>(data.size());
                 oraub8 charAmt = 0;
                 const sword wrc = OCILobWrite2(svc_, err_, loc, &byteAmt, &charAmt, 1,
-                                               const_cast<unsigned char*>(data.data()),
+                                               const_cast<unsigned char *>(data.data()),
                                                static_cast<oraub8>(data.size()), OCI_ONE_PIECE,
                                                nullptr, nullptr, 0, SQLCS_IMPLICIT);
                 if (!ociOk(wrc)) return nullptr;
                 return loc;
             }
 
-            void release()
-            {
-                for (auto* l : locs_)
-                {
+            void release() {
+                for (auto *l: locs_) {
                     OCILobFreeTemporary(svc_, err_, l);
                     OCIDescriptorFree(l, OCI_DTYPE_LOB);
                 }
@@ -171,87 +149,73 @@ namespace sqlconduit::driver
             }
 
         private:
-            OCIEnv* env_;
-            OCISvcCtx* svc_;
-            OCIError* err_;
-            std::vector<OCILobLocator*> locs_;
+            OCIEnv *env_;
+            OCISvcCtx *svc_;
+            OCIError *err_;
+            std::vector<OCILobLocator *> locs_;
         };
 
-        struct OracleInputStorage
-        {
-            OracleInputStorage(OCIEnv* env, OCISvcCtx* svc, OCIError* err,
+        struct OracleInputStorage {
+            OracleInputStorage(OCIEnv *env, OCISvcCtx *svc, OCIError *err,
                                const std::size_t count)
                 : lobGuard(env, svc, err), text(count), raw(count), lobs(count, nullptr),
-                  indicators(count, 0), lengths(count, 0), returnCodes(count, 0)
-            {
+                  indicators(count, 0), lengths(count, 0), returnCodes(count, 0) {
             }
 
             LobBindGuard lobGuard;
-            std::vector<std::vector<char>> text;
+            std::vector<std::vector<char> > text;
             std::vector<common::Blob> raw;
-            std::vector<OCILobLocator*> lobs;
+            std::vector<OCILobLocator *> lobs;
             std::vector<sb2> indicators;
             std::vector<ub2> lengths;
             std::vector<ub2> returnCodes;
         };
 
-        common::Status bindOracleInputs(OCIEnv* env, OCISvcCtx* svc, OCIError* err,
-                                        OCIStmt* stmt, const config::DataSourceConfig& cfg,
-                                        const common::Params& params,
-                                        OracleInputStorage& storage)
-        {
+        common::Status bindOracleInputs(OCIEnv *env, OCISvcCtx *svc, OCIError *err,
+                                        OCIStmt *stmt, const config::DataSourceConfig &cfg,
+                                        const common::Params &params,
+                                        OracleInputStorage &storage) {
             static char kEmpty[1] = {0};
             const LobBindMode lobMode = resolveLobBindMode(cfg);
-            for (std::size_t i = 0; i < params.size(); ++i)
-            {
+            for (std::size_t i = 0; i < params.size(); ++i) {
                 const auto value = common::oracleBindValue(params[i]);
                 if (value.unsupported)
                     return common::Status::error(common::ErrorCode::NotSupported,
                                                  "Oracle: unsupported parameter type");
-                if (value.raw)
-                {
+                if (value.raw) {
                     if (lobMode == LobBindMode::Lob ||
-                        (lobMode == LobBindMode::Auto && value.raw->size() > kDirectBindLimit))
-                    {
+                        (lobMode == LobBindMode::Auto && value.raw->size() > kDirectBindLimit)) {
                         storage.lobs[i] = storage.lobGuard.createBlob(*value.raw);
                         if (!storage.lobs[i])
                             return oracleError(err, common::ErrorCode::QueryError, "lob bind");
-                    }
-                    else
-                    {
+                    } else {
                         if (value.raw->size() > 32767)
                             return common::Status::error(common::ErrorCode::NotSupported,
                                                          "Oracle: raw bind exceeds 32767 bytes");
                         storage.raw[i] = *value.raw;
                         storage.lengths[i] = static_cast<ub2>(storage.raw[i].size());
                     }
-                }
-                else if (value.text)
-                {
+                } else if (value.text) {
                     storage.text[i].assign(value.text->begin(), value.text->end());
                     storage.text[i].push_back('\0');
                     storage.lengths[i] = static_cast<ub2>(storage.text[i].size());
-                }
-                else storage.indicators[i] = -1;
+                } else storage.indicators[i] = -1;
 
-                OCIBind* bind = nullptr;
+                OCIBind *bind = nullptr;
                 sword rc = OCI_SUCCESS;
-                if (storage.lobs[i])
-                {
+                if (storage.lobs[i]) {
                     rc = OCIBindByPos(stmt, &bind, err, static_cast<ub4>(i + 1), &storage.lobs[i],
-                                      sizeof(OCILobLocator*),
+                                      sizeof(OCILobLocator *),
                                       static_cast<ub2>(common::kSqltBlob), &storage.indicators[i],
                                       &storage.lengths[i], &storage.returnCodes[i], 0, nullptr,
                                       OCI_DEFAULT);
-                }
-                else
-                {
+                } else {
                     const bool raw = !storage.raw[i].empty();
-                    void* data = raw
-                                     ? static_cast<void*>(storage.raw[i].data())
+                    void *data = raw
+                                     ? static_cast<void *>(storage.raw[i].data())
                                      : storage.indicators[i] == -1
-                                     ? static_cast<void*>(kEmpty)
-                                     : static_cast<void*>(storage.text[i].data());
+                                           ? static_cast<void *>(kEmpty)
+                                           : static_cast<void *>(storage.text[i].data());
                     const sb4 size = storage.indicators[i] == -1
                                          ? 0
                                          : static_cast<sb4>(
@@ -268,16 +232,15 @@ namespace sqlconduit::driver
             return common::Status::OK();
         }
 
-        common::Status oracleError(OCIError* err, const common::ErrorCode fallback,
-                                   const char* where)
-        {
+        common::Status oracleError(OCIError *err, const common::ErrorCode fallback,
+                                   const char *where) {
             OraText stateBuf[8] = {0};
             OraText msgBuf[1024] = {0};
             sb4 code = 0;
             OCIErrorGet(err, 1, stateBuf, &code, msgBuf,
                         static_cast<ub4>(sizeof(msgBuf)), OCI_HTYPE_ERROR);
-            std::string msg(reinterpret_cast<const char*>(msgBuf));
-            std::string state(reinterpret_cast<const char*>(stateBuf));
+            std::string msg(reinterpret_cast<const char *>(msgBuf));
+            std::string state(reinterpret_cast<const char *>(stateBuf));
             while (!msg.empty() && (msg.back() == '\n' || msg.back() == '\r')) msg.pop_back();
             if (msg.empty()) msg = "OCI call failed";
             if (state.size() != 5) state = common::oracleSqlState(static_cast<int>(code));
@@ -286,8 +249,7 @@ namespace sqlconduit::driver
                                                  std::move(state), code);
         }
 
-        struct OraColumnMeta
-        {
+        struct OraColumnMeta {
             std::string name;
             std::uint16_t sqlt = 0;
             std::uint32_t size = 0;
@@ -295,57 +257,52 @@ namespace sqlconduit::driver
             std::int32_t scale = 0;
         };
 
-        class OracleResultReader
-        {
+        class OracleResultReader {
         public:
-            OracleResultReader(OCIEnv* env, OCISvcCtx* svc, OCIError* err,
+            OracleResultReader(OCIEnv *env, OCISvcCtx *svc, OCIError *err,
                                const std::int64_t lobMaxBytes)
-                : env_(env), svc_(svc), err_(err), lobMaxBytes_(lobMaxBytes)
-            {
+                : env_(env), svc_(svc), err_(err), lobMaxBytes_(lobMaxBytes) {
             }
 
-            ~OracleResultReader()
-            {
-                for (auto* locator : lobs_)
+            ~OracleResultReader() {
+                for (auto *locator: lobs_)
                     if (locator != nullptr) OCIDescriptorFree(locator, OCI_DTYPE_LOB);
             }
 
-            common::Status setup(OCIStmt* stmt)
-            {
+            common::Status setup(OCIStmt *stmt) {
                 stmt_ = stmt;
                 ub4 count = 0;
                 sword rc = OCIAttrGet(stmt_, OCI_HTYPE_STMT, &count, nullptr,
                                       OCI_ATTR_PARAM_COUNT, err_);
                 if (!ociOk(rc)) return oracleError(err_, common::ErrorCode::QueryError, "describe");
                 columns_.reserve(count);
-                for (ub4 c = 0; c < count; ++c)
-                {
-                    OCIParam* param = nullptr;
+                for (ub4 c = 0; c < count; ++c) {
+                    OCIParam *param = nullptr;
                     rc = OCIParamGet(stmt_, OCI_HTYPE_STMT, err_,
-                                     reinterpret_cast<void**>(&param), c + 1);
+                                     reinterpret_cast<void **>(&param), c + 1);
                     if (!ociOk(rc)) return oracleError(err_, common::ErrorCode::QueryError, "param");
                     OraColumnMeta meta;
                     ub2 dtype = 0, dsize = 0;
                     sb2 precision = 0;
                     sb1 scale = 0;
-                    OraText* name = nullptr;
+                    OraText *name = nullptr;
                     ub4 nameLen = 0;
-                    (void)OCIAttrGet(param, OCI_DTYPE_PARAM, &dtype, nullptr,
-                                     OCI_ATTR_DATA_TYPE, err_);
-                    (void)OCIAttrGet(param, OCI_DTYPE_PARAM, &dsize, nullptr,
-                                     OCI_ATTR_DATA_SIZE, err_);
-                    (void)OCIAttrGet(param, OCI_DTYPE_PARAM, &precision, nullptr,
-                                     OCI_ATTR_PRECISION, err_);
-                    (void)OCIAttrGet(param, OCI_DTYPE_PARAM, &scale, nullptr,
-                                     OCI_ATTR_SCALE, err_);
-                    (void)OCIAttrGet(param, OCI_DTYPE_PARAM, &name, &nameLen,
-                                     OCI_ATTR_NAME, err_);
+                    (void) OCIAttrGet(param, OCI_DTYPE_PARAM, &dtype, nullptr,
+                                      OCI_ATTR_DATA_TYPE, err_);
+                    (void) OCIAttrGet(param, OCI_DTYPE_PARAM, &dsize, nullptr,
+                                      OCI_ATTR_DATA_SIZE, err_);
+                    (void) OCIAttrGet(param, OCI_DTYPE_PARAM, &precision, nullptr,
+                                      OCI_ATTR_PRECISION, err_);
+                    (void) OCIAttrGet(param, OCI_DTYPE_PARAM, &scale, nullptr,
+                                      OCI_ATTR_SCALE, err_);
+                    (void) OCIAttrGet(param, OCI_DTYPE_PARAM, &name, &nameLen,
+                                      OCI_ATTR_NAME, err_);
                     meta.sqlt = static_cast<std::uint16_t>(dtype);
                     meta.size = static_cast<std::uint32_t>(dsize);
                     meta.precision = static_cast<std::int32_t>(precision);
                     meta.scale = static_cast<std::int32_t>(scale);
                     meta.name = name && nameLen
-                                    ? std::string(reinterpret_cast<const char*>(name), nameLen)
+                                    ? std::string(reinterpret_cast<const char *>(name), nameLen)
                                     : "COL" + std::to_string(c + 1);
                     columns_.push_back(std::move(meta));
                 }
@@ -355,12 +312,10 @@ namespace sqlconduit::driver
                 lobs_.assign(columns_.size(), nullptr);
                 defines_.assign(columns_.size(), nullptr);
                 buffers_.resize(columns_.size());
-                for (std::size_t i = 0; i < columns_.size(); ++i)
-                {
-                    const auto& meta = columns_[i];
-                    if (common::oracleIsLob(meta.sqlt))
-                    {
-                        rc = OCIDescriptorAlloc(env_, reinterpret_cast<void**>(&lobs_[i]),
+                for (std::size_t i = 0; i < columns_.size(); ++i) {
+                    const auto &meta = columns_[i];
+                    if (common::oracleIsLob(meta.sqlt)) {
+                        rc = OCIDescriptorAlloc(env_, reinterpret_cast<void **>(&lobs_[i]),
                                                 OCI_DTYPE_LOB, 0, nullptr);
                         if (!ociOk(rc))
                             return oracleError(err_, common::ErrorCode::QueryError,
@@ -369,12 +324,10 @@ namespace sqlconduit::driver
                                             ? static_cast<ub2>(common::kSqltClob)
                                             : static_cast<ub2>(common::kSqltBlob);
                         rc = OCIDefineByPos(stmt_, &defines_[i], err_, static_cast<ub4>(i + 1),
-                                            &lobs_[i], sizeof(OCILobLocator*), dty,
+                                            &lobs_[i], sizeof(OCILobLocator *), dty,
                                             &indicators_[i], &lengths_[i], &returnCodes_[i],
                                             OCI_DEFAULT);
-                    }
-                    else
-                    {
+                    } else {
                         std::uint32_t width = std::max<std::uint32_t>(64u, meta.size * 4u);
                         width = std::min<std::uint32_t>(32768u, width);
                         buffers_[i].assign(width, '\0');
@@ -389,30 +342,25 @@ namespace sqlconduit::driver
                 return common::Status::OK();
             }
 
-            std::vector<std::string> fields() const
-            {
+            std::vector<std::string> fields() const {
                 std::vector<std::string> result;
                 result.reserve(columns_.size());
-                for (const auto& column : columns_) result.push_back(column.name);
+                for (const auto &column: columns_) result.push_back(column.name);
                 return result;
             }
 
-            common::Status fetchOne(common::Row& row, bool& hasRow)
-            {
+            common::Status fetchOne(common::Row &row, bool &hasRow) {
                 hasRow = false;
                 const sword frc = OCIStmtFetch2(stmt_, err_, 1, OCI_FETCH_NEXT, 0, OCI_DEFAULT);
                 if (frc == OCI_NO_DATA) return common::Status::OK();
                 if (!ociOk(frc)) return oracleError(err_, common::ErrorCode::QueryError, "fetch");
-                for (std::size_t i = 0; i < columns_.size(); ++i)
-                {
-                    const auto& meta = columns_[i];
-                    if (indicators_[i] == -1)
-                    {
+                for (std::size_t i = 0; i < columns_.size(); ++i) {
+                    const auto &meta = columns_[i];
+                    if (indicators_[i] == -1) {
                         row.set(meta.name, common::Value{nullptr});
                         continue;
                     }
-                    if (!common::oracleIsLob(meta.sqlt))
-                    {
+                    if (!common::oracleIsLob(meta.sqlt)) {
                         const std::string text(buffers_[i].data(), lengths_[i]);
                         row.set(meta.name, common::oracleValueFromText(
                                     meta.sqlt, text, meta.precision, meta.scale));
@@ -428,11 +376,9 @@ namespace sqlconduit::driver
                             common::ErrorCode::NotSupported,
                             "Oracle: LOB column '" + meta.name + "' exceeds lob_max_bytes=" +
                             std::to_string(lobMaxBytes_));
-                    if (clob)
-                    {
+                    if (clob) {
                         if (length == 0) row.set(meta.name, common::Value{std::string()});
-                        else
-                        {
+                        else {
                             const oraub8 maxBytes = static_cast<oraub8>(lobMaxBytes_);
                             const oraub8 capacity = length > (maxBytes - 1) / 4
                                                         ? maxBytes + 1
@@ -452,12 +398,9 @@ namespace sqlconduit::driver
                             text.resize(static_cast<std::size_t>(bytes));
                             row.set(meta.name, common::Value{std::move(text)});
                         }
-                    }
-                    else
-                    {
+                    } else {
                         common::Blob bytes(static_cast<std::size_t>(length));
-                        if (length > 0)
-                        {
+                        if (length > 0) {
                             oraub8 amount = length;
                             rc = OCILobRead2(svc_, err_, lobs_[i], &amount, nullptr, 1,
                                              bytes.data(), length, OCI_ONE_PIECE, nullptr, nullptr,
@@ -474,22 +417,21 @@ namespace sqlconduit::driver
             }
 
         private:
-            OCIEnv* env_;
-            OCISvcCtx* svc_;
-            OCIError* err_;
-            OCIStmt* stmt_ = nullptr;
+            OCIEnv *env_;
+            OCISvcCtx *svc_;
+            OCIError *err_;
+            OCIStmt *stmt_ = nullptr;
             std::int64_t lobMaxBytes_;
             std::vector<OraColumnMeta> columns_;
-            std::vector<std::vector<char>> buffers_;
+            std::vector<std::vector<char> > buffers_;
             std::vector<sb2> indicators_;
             std::vector<ub2> lengths_;
             std::vector<ub2> returnCodes_;
-            std::vector<OCILobLocator*> lobs_;
-            std::vector<OCIDefine*> defines_;
+            std::vector<OCILobLocator *> lobs_;
+            std::vector<OCIDefine *> defines_;
         };
 
-        std::string trimTrailing(const std::string& s)
-        {
+        std::string trimTrailing(const std::string &s) {
             std::size_t end = s.size();
             while (end > 0 && (s[end - 1] == ' ' || s[end - 1] == '\t')) --end;
             return s.substr(0, end);
@@ -498,35 +440,30 @@ namespace sqlconduit::driver
     }
 
 #ifdef SQLCONDUIT_ENABLE_ORACLE
-    class OracleCursor final : public core::ICursor
-    {
+    class OracleCursor final : public core::ICursor {
     public:
-        OracleCursor(OCIStmt* stmt, OCIError* err,
+        OracleCursor(OCIStmt *stmt, OCIError *err,
                      std::unique_ptr<OracleResultReader> reader,
-                     std::mutex& operationMtx, bool& operationActive,
+                     std::mutex &operationMtx, bool &operationActive,
                      const std::size_t batchSize)
             : stmt_(stmt), err_(err), reader_(std::move(reader)),
               operationMtx_(operationMtx), operationActive_(operationActive),
-              batchSize_(batchSize), fields_(reader_->fields())
-        {
+              batchSize_(batchSize), fields_(reader_->fields()) {
         }
 
-        ~OracleCursor() override { (void)close(); }
+        ~OracleCursor() override { (void) close(); }
 
-        common::Status fetch(const std::size_t n, common::ResultSet& out) override
-        {
+        common::Status fetch(const std::size_t n, common::ResultSet &out) override {
             if (!open_ || eof_) return common::Status::OK();
             ActiveOperation active(operationMtx_, operationActive_);
             if (out.fields().empty()) out.setFields(fields_);
             const std::size_t wanted = n == 0 ? batchSize_ : n;
-            for (std::size_t i = 0; i < wanted; ++i)
-            {
+            for (std::size_t i = 0; i < wanted; ++i) {
                 common::Row row;
                 bool ok = false;
                 const auto status = reader_->fetchOne(row, ok);
                 if (!status.ok()) return status;
-                if (!ok)
-                {
+                if (!ok) {
                     eof_ = true;
                     break;
                 }
@@ -536,8 +473,7 @@ namespace sqlconduit::driver
             return common::Status::OK();
         }
 
-        common::Status fetchRow(common::Row& out, bool& ok) override
-        {
+        common::Status fetchRow(common::Row &out, bool &ok) override {
             ok = false;
             common::ResultSet one;
             const auto status = fetch(1, one);
@@ -547,8 +483,7 @@ namespace sqlconduit::driver
             return common::Status::OK();
         }
 
-        common::Status close() override
-        {
+        common::Status close() override {
             if (!open_) return common::Status::OK();
             reader_.reset();
             const sword rc = OCIStmtRelease(stmt_, err_, nullptr, 0, OCI_DEFAULT);
@@ -565,11 +500,11 @@ namespace sqlconduit::driver
         [[nodiscard]] std::uint64_t rowsFetched() const override { return rowsFetched_; }
 
     private:
-        OCIStmt* stmt_;
-        OCIError* err_;
+        OCIStmt *stmt_;
+        OCIError *err_;
         std::unique_ptr<OracleResultReader> reader_;
-        std::mutex& operationMtx_;
-        bool& operationActive_;
+        std::mutex &operationMtx_;
+        bool &operationActive_;
         std::size_t batchSize_;
         std::vector<std::string> fields_;
         bool open_ = true;
@@ -577,11 +512,9 @@ namespace sqlconduit::driver
         std::uint64_t rowsFetched_ = 0;
     };
 
-    common::Status OracleConnection::connectString(const config::DataSourceConfig& cfg,
-                                                   std::string& out) const
-    {
-        if (const auto it = cfg.extra.find("connection_string"); it != cfg.extra.end())
-        {
+    common::Status OracleConnection::connectString(const config::DataSourceConfig &cfg,
+                                                   std::string &out) const {
+        if (const auto it = cfg.extra.find("connection_string"); it != cfg.extra.end()) {
             if (cfg.tls_enabled)
                 return common::Status::error(
                     common::ErrorCode::ConfigError,
@@ -592,8 +525,7 @@ namespace sqlconduit::driver
             out = it->second;
             return common::Status::OK();
         }
-        if (!cfg.dsn.empty())
-        {
+        if (!cfg.dsn.empty()) {
             if (cfg.tls_enabled)
                 return common::Status::error(common::ErrorCode::ConfigError,
                                              "Oracle TLS options cannot be combined with dsn");
@@ -611,8 +543,7 @@ namespace sqlconduit::driver
                                   ? cfg.database
                                   : cfg.oracle.service_name;
         options.sid = cfg.oracle.sid;
-        if (options.serviceName.empty() && options.sid.empty())
-        {
+        if (options.serviceName.empty() && options.sid.empty()) {
             if (const auto it = cfg.extra.find("service_name"); it != cfg.extra.end())
                 options.serviceName = it->second;
             if (const auto it = cfg.extra.find("sid"); it != cfg.extra.end())
@@ -635,8 +566,7 @@ namespace sqlconduit::driver
     }
 #endif
 
-    common::Status OracleConnection::connect(const config::DataSourceConfig& cfg)
-    {
+    common::Status OracleConnection::connect(const config::DataSourceConfig &cfg) {
         cfg_ = cfg;
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         close();
@@ -644,8 +574,7 @@ namespace sqlconduit::driver
                            ? cfg.oracle.lob_max_bytes
                            : 4194304;
         if (const auto lob = cfg.extra.find("lob_max_bytes");
-            cfg.oracle.lob_max_bytes == 4194304 && lob != cfg.extra.end())
-        {
+            cfg.oracle.lob_max_bytes == 4194304 && lob != cfg.extra.end()) {
             const long long legacy = std::strtoll(lob->second.c_str(), nullptr, 10);
             if (legacy > 0) lobMaxBytes_ = legacy;
         }
@@ -656,9 +585,8 @@ namespace sqlconduit::driver
         if (!ociOk(rc))
             return common::Status::error(common::ErrorCode::ConnectionFailed,
                                          "Oracle: OCIEnvNlsCreate failed");
-        rc = OCIHandleAlloc(env_, reinterpret_cast<void**>(&err_), OCI_HTYPE_ERROR, 0, nullptr);
-        if (!ociOk(rc))
-        {
+        rc = OCIHandleAlloc(env_, reinterpret_cast<void **>(&err_), OCI_HTYPE_ERROR, 0, nullptr);
+        if (!ociOk(rc)) {
             OCIHandleFree(env_, OCI_HTYPE_ENV);
             env_ = nullptr;
             return common::Status::error(common::ErrorCode::ConnectionFailed,
@@ -667,8 +595,7 @@ namespace sqlconduit::driver
 
         std::string db;
         const auto connectStringStatus = connectString(cfg, db);
-        if (!connectStringStatus.ok())
-        {
+        if (!connectStringStatus.ok()) {
             OCIHandleFree(err_, OCI_HTYPE_ERROR);
             err_ = nullptr;
             OCIHandleFree(env_, OCI_HTYPE_ENV);
@@ -678,14 +605,13 @@ namespace sqlconduit::driver
         const std::string user = cfg.user;
         const std::string password = cfg.password;
         rc = OCILogon2(env_, err_, &svc_,
-                       reinterpret_cast<const OraText*>(user.data()),
+                       reinterpret_cast<const OraText *>(user.data()),
                        static_cast<ub4>(user.size()),
-                       reinterpret_cast<const OraText*>(password.data()),
+                       reinterpret_cast<const OraText *>(password.data()),
                        static_cast<ub4>(password.size()),
-                       reinterpret_cast<const OraText*>(db.data()),
+                       reinterpret_cast<const OraText *>(db.data()),
                        static_cast<ub4>(db.size()), OCI_DEFAULT);
-        if (!ociOk(rc))
-        {
+        if (!ociOk(rc)) {
             const auto status = oracleError(err_, common::ErrorCode::ConnectionFailed, "connect");
             OCIHandleFree(err_, OCI_HTYPE_ERROR);
             err_ = nullptr;
@@ -697,22 +623,19 @@ namespace sqlconduit::driver
         }
 
 #ifdef OCI_ATTR_CALL_TIME
-        if (cfg.query_timeout_ms > 0)
-        {
+        if (cfg.query_timeout_ms > 0) {
             ub4 callTime = static_cast<ub4>(cfg.query_timeout_ms);
-            (void)OCIAttrSet(svc_, OCI_HTYPE_SVCCTX, &callTime, 0, OCI_ATTR_CALL_TIME, err_);
+            (void) OCIAttrSet(svc_, OCI_HTYPE_SVCCTX, &callTime, 0, OCI_ATTR_CALL_TIME, err_);
         }
 #endif
 
-        for (const auto& stmt : common::oracleSessionSetupStatements())
-        {
+        for (const auto &stmt: common::oracleSessionSetupStatements()) {
             std::int64_t ignored = 0;
             common::ResultSet ignoredRs;
             std::vector<std::string> ignoredKeys;
             const auto st = runStatement(stmt, common::Params{}, false, ignored, ignoredRs, false,
                                          ignoredKeys, common::RowCallback{}, ignored);
-            if (!st.ok())
-            {
+            if (!st.ok()) {
                 OCILogoff(svc_, err_);
                 svc_ = nullptr;
                 OCIHandleFree(err_, OCI_HTYPE_ERROR);
@@ -732,8 +655,7 @@ namespace sqlconduit::driver
 #endif
     }
 
-    common::Status OracleConnection::ping()
-    {
+    common::Status OracleConnection::ping() {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         if (!open_ || !svc_) return notConnected("ping");
         ActiveOperation active(operationMtx_, operationActive_);
@@ -742,8 +664,7 @@ namespace sqlconduit::driver
         std::vector<std::string> ignoredKeys;
         const auto st = runStatement("SELECT 1 FROM DUAL", common::Params{}, true, ignored, rs,
                                      false, ignoredKeys, common::RowCallback{}, ignored);
-        if (!st.ok())
-        {
+        if (!st.ok()) {
             auto mapped = st;
             mapped.code = common::ErrorCode::PingFailed;
             return mapped;
@@ -754,15 +675,14 @@ namespace sqlconduit::driver
 #endif
     }
 
-    common::Status OracleConnection::runStatement(const std::string& sql,
-                                                  const common::Params& params,
-                                                  const bool isQuery, std::int64_t& affected,
-                                                  common::ResultSet& out, const bool collectKeys,
-                                                  std::vector<std::string>& keyColumns,
-                                                  const common::RowCallback& callback,
-                                                  std::int64_t& streamedRows,
-                                                  const std::string& cacheKey)
-    {
+    common::Status OracleConnection::runStatement(const std::string &sql,
+                                                  const common::Params &params,
+                                                  const bool isQuery, std::int64_t &affected,
+                                                  common::ResultSet &out, const bool collectKeys,
+                                                  std::vector<std::string> &keyColumns,
+                                                  const common::RowCallback &callback,
+                                                  std::int64_t &streamedRows,
+                                                  const std::string &cacheKey) {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         affected = 0;
         streamedRows = 0;
@@ -775,39 +695,38 @@ namespace sqlconduit::driver
         if (found != params.size()) return paramMismatch(params.size(), found);
 
         common::OracleReturning returning;
-        if (collectKeys) (void)common::oracleParseReturningInto(oraSql, returning);
+        if (collectKeys) (void) common::oracleParseReturningInto(oraSql, returning);
 
-        const OraText* keyPtr = cacheKey.empty()
+        const OraText *keyPtr = cacheKey.empty()
                                     ? nullptr
-                                    : reinterpret_cast<const OraText*>(cacheKey.data());
+                                    : reinterpret_cast<const OraText *>(cacheKey.data());
         const ub4 keyLen = static_cast<ub4>(cacheKey.size());
-        OCIStmt* stmt = nullptr;
+        OCIStmt *stmt = nullptr;
         sword rc = OCIStmtPrepare2(svc_, &stmt, err_,
-                                   reinterpret_cast<const OraText*>(oraSql.data()),
+                                   reinterpret_cast<const OraText *>(oraSql.data()),
                                    static_cast<ub4>(oraSql.size()), keyPtr, keyLen, OCI_NTV_SYNTAX,
                                    OCI_DEFAULT);
         if (!ociOk(rc)) return oracleError(err_, common::ErrorCode::QueryError, "prepare");
 
-        struct StatementGuard
-        {
-            OCIStmt* stmt;
-            OCIError* err;
-            const OraText* key;
+        struct StatementGuard {
+            OCIStmt *stmt;
+            OCIError *err;
+            const OraText *key;
             ub4 keyLen;
 
             ~StatementGuard() { if (stmt) OCIStmtRelease(stmt, err, key, keyLen, OCI_DEFAULT); }
         } guard{stmt, err_, keyPtr, keyLen};
 
-        std::vector<std::vector<char>> textBufs;
+        std::vector<std::vector<char> > textBufs;
         std::vector<common::Blob> rawBufs;
         std::vector<sb2> inds;
         std::vector<ub2> rlens;
         std::vector<ub2> rcs;
-        std::vector<OCILobLocator*> lobLocs;
+        std::vector<OCILobLocator *> lobLocs;
         static char kEmpty[1] = {0};
 
         const std::size_t totalBinds = params.size() +
-            (returning.present ? returning.bindCount : 0);
+                                       (returning.present ? returning.bindCount : 0);
         textBufs.reserve(totalBinds + 1);
         rawBufs.reserve(totalBinds + 1);
         inds.reserve(totalBinds + 1);
@@ -817,8 +736,7 @@ namespace sqlconduit::driver
         const LobBindMode lobMode = resolveLobBindMode(cfg_);
         LobBindGuard lobGuard(env_, svc_, err_);
 
-        for (const auto& v : params)
-        {
+        for (const auto &v: params) {
             const auto bind = common::oracleBindValue(v);
             textBufs.emplace_back();
             rawBufs.emplace_back();
@@ -827,19 +745,15 @@ namespace sqlconduit::driver
                 return common::Status::error(common::ErrorCode::NotSupported,
                                              "Oracle: cannot bind value of type " +
                                              common::valueToString(v));
-            if (bind.raw.has_value())
-            {
+            if (bind.raw.has_value()) {
                 if (lobMode == LobBindMode::Lob ||
-                    (lobMode == LobBindMode::Auto && bind.raw->size() > kDirectBindLimit))
-                {
-                    auto* loc = lobGuard.createBlob(*bind.raw);
+                    (lobMode == LobBindMode::Auto && bind.raw->size() > kDirectBindLimit)) {
+                    auto *loc = lobGuard.createBlob(*bind.raw);
                     if (loc == nullptr)
                         return oracleError(err_, common::ErrorCode::QueryError, "lob bind");
                     lobLocs.back() = loc;
                     textBufs.back().assign(1, '\0');
-                }
-                else
-                {
+                } else {
                     if (bind.raw->size() > 32767)
                         return common::Status::error(
                             common::ErrorCode::NotSupported,
@@ -849,40 +763,29 @@ namespace sqlconduit::driver
                     rawBufs.back() = *bind.raw;
                     textBufs.back().assign(1, '\0');
                 }
-            }
-            else if (bind.text.has_value())
-            {
+            } else if (bind.text.has_value()) {
                 textBufs.back().assign(bind.text->begin(), bind.text->end());
                 textBufs.back().push_back('\0');
-            }
-            else
-            {
+            } else {
                 textBufs.back().assign(1, '\0');
             }
-            if (bind.isNull())
-            {
+            if (bind.isNull()) {
                 inds.push_back(-1);
                 rlens.push_back(0);
-            }
-            else if (bind.raw.has_value())
-            {
+            } else if (bind.raw.has_value()) {
                 inds.push_back(0);
                 rlens.push_back(static_cast<ub2>(rawBufs.back().size()));
-            }
-            else
-            {
+            } else {
                 inds.push_back(0);
                 rlens.push_back(static_cast<ub2>(textBufs.back().size()));
             }
             rcs.push_back(0);
         }
 
-        std::vector<std::vector<char>> outBufs;
-        if (returning.present)
-        {
+        std::vector<std::vector<char> > outBufs;
+        if (returning.present) {
             outBufs.reserve(returning.bindCount);
-            for (std::size_t i = 0; i < returning.bindCount; ++i)
-            {
+            for (std::size_t i = 0; i < returning.bindCount; ++i) {
                 outBufs.emplace_back(512, '\0');
                 textBufs.emplace_back(512, '\0');
                 rawBufs.emplace_back();
@@ -893,14 +796,12 @@ namespace sqlconduit::driver
             }
         }
 
-        for (std::size_t i = 0; i < totalBinds; ++i)
-        {
-            OCIBind* bindHandle = nullptr;
-            if (lobLocs[i] != nullptr)
-            {
+        for (std::size_t i = 0; i < totalBinds; ++i) {
+            OCIBind *bindHandle = nullptr;
+            if (lobLocs[i] != nullptr) {
                 const sword brc = OCIBindByPos(
                     stmt, &bindHandle, err_, static_cast<ub4>(i + 1), &lobLocs[i],
-                    static_cast<sb4>(sizeof(OCILobLocator*)),
+                    static_cast<sb4>(sizeof(OCILobLocator *)),
                     static_cast<ub2>(common::kSqltBlob), &inds[i], &rlens[i], &rcs[i], 0, nullptr,
                     OCI_DEFAULT);
                 if (!ociOk(brc)) return oracleError(err_, common::ErrorCode::QueryError, "bind");
@@ -910,11 +811,11 @@ namespace sqlconduit::driver
             const ub2 dty = isRaw
                                 ? static_cast<ub2>(common::kSqltBin)
                                 : static_cast<ub2>(common::kSqltStr);
-            void* valuep = isRaw
-                               ? static_cast<void*>(rawBufs[i].data())
+            void *valuep = isRaw
+                               ? static_cast<void *>(rawBufs[i].data())
                                : (inds[i] == -1
-                                      ? static_cast<void*>(kEmpty)
-                                      : static_cast<void*>(textBufs[i].data()));
+                                      ? static_cast<void *>(kEmpty)
+                                      : static_cast<void *>(textBufs[i].data()));
             const sb4 valueSz = inds[i] == -1
                                     ? 0
                                     : static_cast<sb4>(isRaw
@@ -930,24 +831,21 @@ namespace sqlconduit::driver
         rc = OCIStmtExecute(svc_, stmt, err_, iters, 0, nullptr, nullptr, OCI_DEFAULT);
         if (!ociOk(rc)) return oracleError(err_, common::ErrorCode::QueryError, "execute");
 
-        if (returning.present)
-        {
+        if (returning.present) {
             common::ResultSet keys;
             keys.setFields(returning.columns);
             common::Row row;
             const std::size_t base = params.size();
-            for (std::size_t i = 0; i < returning.bindCount; ++i)
-            {
+            for (std::size_t i = 0; i < returning.bindCount; ++i) {
                 const std::size_t idx = base + i;
-                if (inds[idx] == -1)
-                {
+                if (inds[idx] == -1) {
                     row.set(returning.columns[i], common::Value{nullptr});
                     continue;
                 }
                 const std::string text(textBufs[idx].data(),
                                        static_cast<std::size_t>(rlens[idx]));
                 errno = 0;
-                char* end = nullptr;
+                char *end = nullptr;
                 const long long parsed = std::strtoll(text.c_str(), &end, 10);
                 if (!text.empty() && end == text.c_str() + text.size() && errno != ERANGE)
                     row.set(returning.columns[i],
@@ -959,10 +857,9 @@ namespace sqlconduit::driver
             out = std::move(keys);
         }
 
-        if (!isQuery)
-        {
+        if (!isQuery) {
             ub4 rowCount = 0;
-            (void)OCIAttrGet(stmt, OCI_HTYPE_STMT, &rowCount, nullptr, OCI_ATTR_ROW_COUNT, err_);
+            (void) OCIAttrGet(stmt, OCI_HTYPE_STMT, &rowCount, nullptr, OCI_ATTR_ROW_COUNT, err_);
             affected = static_cast<std::int64_t>(rowCount);
             return common::Status::OK();
         }
@@ -973,10 +870,9 @@ namespace sqlconduit::driver
 
         std::vector<OraColumnMeta> columns;
         columns.reserve(colCount);
-        for (ub4 c = 0; c < colCount; ++c)
-        {
-            OCIParam* param = nullptr;
-            rc = OCIParamGet(stmt, OCI_HTYPE_STMT, err_, reinterpret_cast<void**>(&param),
+        for (ub4 c = 0; c < colCount; ++c) {
+            OCIParam *param = nullptr;
+            rc = OCIParamGet(stmt, OCI_HTYPE_STMT, err_, reinterpret_cast<void **>(&param),
                              c + 1);
             if (!ociOk(rc)) return oracleError(err_, common::ErrorCode::QueryError, "param");
             OraColumnMeta meta;
@@ -984,20 +880,20 @@ namespace sqlconduit::driver
             ub2 dsize = 0;
             sb2 precision = 0;
             sb1 scale = 0;
-            OraText* namePtr = nullptr;
+            OraText *namePtr = nullptr;
             ub4 nameLen = 0;
-            (void)OCIAttrGet(param, OCI_DTYPE_PARAM, &dtype, nullptr, OCI_ATTR_DATA_TYPE, err_);
-            (void)OCIAttrGet(param, OCI_DTYPE_PARAM, &dsize, nullptr, OCI_ATTR_DATA_SIZE, err_);
-            (void)OCIAttrGet(param, OCI_DTYPE_PARAM, &precision, nullptr, OCI_ATTR_PRECISION,
-                             err_);
-            (void)OCIAttrGet(param, OCI_DTYPE_PARAM, &scale, nullptr, OCI_ATTR_SCALE, err_);
-            (void)OCIAttrGet(param, OCI_DTYPE_PARAM, &namePtr, &nameLen, OCI_ATTR_NAME, err_);
+            (void) OCIAttrGet(param, OCI_DTYPE_PARAM, &dtype, nullptr, OCI_ATTR_DATA_TYPE, err_);
+            (void) OCIAttrGet(param, OCI_DTYPE_PARAM, &dsize, nullptr, OCI_ATTR_DATA_SIZE, err_);
+            (void) OCIAttrGet(param, OCI_DTYPE_PARAM, &precision, nullptr, OCI_ATTR_PRECISION,
+                              err_);
+            (void) OCIAttrGet(param, OCI_DTYPE_PARAM, &scale, nullptr, OCI_ATTR_SCALE, err_);
+            (void) OCIAttrGet(param, OCI_DTYPE_PARAM, &namePtr, &nameLen, OCI_ATTR_NAME, err_);
             meta.sqlt = static_cast<std::uint16_t>(dtype);
             meta.size = static_cast<std::uint32_t>(dsize);
             meta.precision = static_cast<std::int32_t>(precision);
             meta.scale = static_cast<std::int32_t>(scale);
             if (namePtr != nullptr && nameLen > 0)
-                meta.name.assign(reinterpret_cast<const char*>(namePtr),
+                meta.name.assign(reinterpret_cast<const char *>(namePtr),
                                  static_cast<std::size_t>(nameLen));
             else
                 meta.name = "COL" + std::to_string(c + 1);
@@ -1006,35 +902,31 @@ namespace sqlconduit::driver
 
         std::vector<std::string> fields;
         fields.reserve(columns.size());
-        for (const auto& col : columns) fields.push_back(col.name);
+        for (const auto &col: columns) fields.push_back(col.name);
         out.setFields(std::move(fields));
 
-        std::vector<std::vector<char>> colBufs;
+        std::vector<std::vector<char> > colBufs;
         std::vector<sb2> colInds(columns.size(), 0);
         std::vector<ub2> colRlens(columns.size(), 0);
         std::vector<ub2> colRcs(columns.size(), 0);
-        std::vector<OCILobLocator*> colLobs(columns.size(), nullptr);
-        std::vector<OCIDefine*> defines(columns.size(), nullptr);
+        std::vector<OCILobLocator *> colLobs(columns.size(), nullptr);
+        std::vector<OCIDefine *> defines(columns.size(), nullptr);
         colBufs.reserve(columns.size());
 
-        struct LobColumnGuard
-        {
-            std::vector<OCILobLocator*>& locators;
+        struct LobColumnGuard {
+            std::vector<OCILobLocator *> &locators;
 
-            ~LobColumnGuard()
-            {
-                for (auto* locator : locators)
+            ~LobColumnGuard() {
+                for (auto *locator: locators)
                     if (locator != nullptr) OCIDescriptorFree(locator, OCI_DTYPE_LOB);
             }
         } lobColumnGuard{colLobs};
 
-        for (std::size_t i = 0; i < columns.size(); ++i)
-        {
-            const auto& meta = columns[i];
-            if (common::oracleIsLob(meta.sqlt))
-            {
-                OCILobLocator* locator = nullptr;
-                rc = OCIDescriptorAlloc(env_, reinterpret_cast<void**>(&locator), OCI_DTYPE_LOB,
+        for (std::size_t i = 0; i < columns.size(); ++i) {
+            const auto &meta = columns[i];
+            if (common::oracleIsLob(meta.sqlt)) {
+                OCILobLocator *locator = nullptr;
+                rc = OCIDescriptorAlloc(env_, reinterpret_cast<void **>(&locator), OCI_DTYPE_LOB,
                                         0, nullptr);
                 if (!ociOk(rc))
                     return oracleError(err_, common::ErrorCode::QueryError, "lob descriptor");
@@ -1043,7 +935,7 @@ namespace sqlconduit::driver
                                     ? static_cast<ub2>(common::kSqltClob)
                                     : static_cast<ub2>(common::kSqltBlob);
                 rc = OCIDefineByPos(stmt, &defines[i], err_, static_cast<ub4>(i + 1), &colLobs[i],
-                                    static_cast<sb4>(sizeof(OCILobLocator*)), dty, &colInds[i],
+                                    static_cast<sb4>(sizeof(OCILobLocator *)), dty, &colInds[i],
                                     &colRlens[i], &colRcs[i], OCI_DEFAULT);
                 if (!ociOk(rc))
                     return oracleError(err_, common::ErrorCode::QueryError, "define lob");
@@ -1061,24 +953,20 @@ namespace sqlconduit::driver
         }
 
         std::size_t bufIndex = 0;
-        while (true)
-        {
+        while (true) {
             const sword frc = OCIStmtFetch2(stmt, err_, 1, OCI_FETCH_NEXT, 0, OCI_DEFAULT);
             if (frc == OCI_NO_DATA) break;
             if (!ociOk(frc)) return oracleError(err_, common::ErrorCode::QueryError, "fetch");
 
             common::Row row;
-            for (std::size_t i = 0; i < columns.size(); ++i)
-            {
-                const auto& meta = columns[i];
-                if (colInds[i] == -1)
-                {
+            for (std::size_t i = 0; i < columns.size(); ++i) {
+                const auto &meta = columns[i];
+                if (colInds[i] == -1) {
                     row.set(meta.name, common::Value{nullptr});
                     if (!common::oracleIsLob(meta.sqlt)) ++bufIndex;
                     continue;
                 }
-                if (common::oracleIsLob(meta.sqlt))
-                {
+                if (common::oracleIsLob(meta.sqlt)) {
                     const bool isClob = meta.sqlt == common::kSqltClob;
                     oraub8 length = 0;
                     rc = OCILobGetLength2(svc_, err_, colLobs[i], &length);
@@ -1090,10 +978,8 @@ namespace sqlconduit::driver
                             "Oracle: LOB column '" + meta.name + "' holds " +
                             std::to_string(static_cast<unsigned long long>(length)) +
                             " bytes, above lob_max_bytes=" + std::to_string(lobMaxBytes_));
-                    if (isClob)
-                    {
-                        if (length == 0)
-                        {
+                    if (isClob) {
+                        if (length == 0) {
                             row.set(meta.name, common::Value{std::string()});
                             continue;
                         }
@@ -1117,11 +1003,8 @@ namespace sqlconduit::driver
                             return oracleError(err_, common::ErrorCode::QueryError, "lob read");
                         text.resize(static_cast<std::size_t>(byteAmount));
                         row.set(meta.name, common::Value{text});
-                    }
-                    else
-                    {
-                        if (length == 0)
-                        {
+                    } else {
+                        if (length == 0) {
                             row.set(meta.name, common::Value{common::Blob{}});
                             continue;
                         }
@@ -1146,15 +1029,13 @@ namespace sqlconduit::driver
             }
             bufIndex = 0;
 
-            if (callback)
-            {
+            if (callback) {
                 ++streamedRows;
                 if (!callback(row)) break;
                 continue;
             }
             if (cfg_.max_result_rows > 0 &&
-                out.rowCount() >= static_cast<std::size_t>(cfg_.max_result_rows))
-            {
+                out.rowCount() >= static_cast<std::size_t>(cfg_.max_result_rows)) {
                 return common::Status::error(
                     common::ErrorCode::QueryError,
                     "Oracle: result set exceeds max_result_rows=" +
@@ -1163,20 +1044,19 @@ namespace sqlconduit::driver
             out.addRow(std::move(row));
         }
 
-        if (!isQuery && !returning.present)
-        {
+        if (!isQuery && !returning.present) {
             ub4 rowCount = 0;
-            (void)OCIAttrGet(stmt, OCI_HTYPE_STMT, &rowCount, nullptr, OCI_ATTR_ROW_COUNT, err_);
+            (void) OCIAttrGet(stmt, OCI_HTYPE_STMT, &rowCount, nullptr, OCI_ATTR_ROW_COUNT, err_);
             affected = static_cast<std::int64_t>(rowCount);
         }
         return common::Status::OK();
 #else
-        (void)sql;
-        (void)params;
-        (void)isQuery;
-        (void)collectKeys;
-        (void)callback;
-        (void)cacheKey;
+        (void) sql;
+        (void) params;
+        (void) isQuery;
+        (void) collectKeys;
+        (void) callback;
+        (void) cacheKey;
         affected = 0;
         streamedRows = 0;
         keyColumns.clear();
@@ -1185,8 +1065,7 @@ namespace sqlconduit::driver
 #endif
     }
 
-    common::Status OracleConnection::query(const std::string& sql, common::ResultSet& out)
-    {
+    common::Status OracleConnection::query(const std::string &sql, common::ResultSet &out) {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         if (!open_ || !svc_) return notConnected("query");
         ActiveOperation active(operationMtx_, operationActive_);
@@ -1195,15 +1074,14 @@ namespace sqlconduit::driver
         return runStatement(sql, common::Params{}, true, ignored, out, false, ignoredKeys,
                             common::RowCallback{}, ignored);
 #else
-        (void)sql;
+        (void) sql;
         out.clear();
         return driverDisabled("query");
 #endif
     }
 
-    common::Status OracleConnection::query(const std::string& sql, const common::Params& params,
-                                           common::ResultSet& out)
-    {
+    common::Status OracleConnection::query(const std::string &sql, const common::Params &params,
+                                           common::ResultSet &out) {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         if (!open_ || !svc_) return notConnected("query");
         ActiveOperation active(operationMtx_, operationActive_);
@@ -1212,15 +1090,14 @@ namespace sqlconduit::driver
         return runStatement(sql, params, true, ignored, out, false, ignoredKeys,
                             common::RowCallback{}, ignored);
 #else
-        (void)sql;
-        (void)params;
+        (void) sql;
+        (void) params;
         out.clear();
         return driverDisabled("query");
 #endif
     }
 
-    common::Status OracleConnection::execute(const std::string& sql, std::int64_t& affected)
-    {
+    common::Status OracleConnection::execute(const std::string &sql, std::int64_t &affected) {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         affected = 0;
         if (!open_ || !svc_) return notConnected("execute");
@@ -1230,15 +1107,14 @@ namespace sqlconduit::driver
         return runStatement(sql, common::Params{}, false, affected, ignored, false, ignoredKeys,
                             common::RowCallback{}, affected);
 #else
-        (void)sql;
+        (void) sql;
         affected = 0;
         return driverDisabled("execute");
 #endif
     }
 
-    common::Status OracleConnection::execute(const std::string& sql, const common::Params& params,
-                                             std::int64_t& affected)
-    {
+    common::Status OracleConnection::execute(const std::string &sql, const common::Params &params,
+                                             std::int64_t &affected) {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         affected = 0;
         if (!open_ || !svc_) return notConnected("execute");
@@ -1248,16 +1124,15 @@ namespace sqlconduit::driver
         return runStatement(sql, params, false, affected, ignored, false, ignoredKeys,
                             common::RowCallback{}, affected);
 #else
-        (void)sql;
-        (void)params;
+        (void) sql;
+        (void) params;
         affected = 0;
         return driverDisabled("execute");
 #endif
     }
 
-    common::Status OracleConnection::execute(const std::string& sql, std::int64_t& affected,
-                                             common::GeneratedKeys& out)
-    {
+    common::Status OracleConnection::execute(const std::string &sql, std::int64_t &affected,
+                                             common::GeneratedKeys &out) {
         out.clear();
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         if (!open_ || !svc_) return notConnected("execute");
@@ -1268,15 +1143,14 @@ namespace sqlconduit::driver
         if (!st.ok()) return st;
         return common::Status::OK();
 #else
-        (void)sql;
+        (void) sql;
         affected = 0;
         return driverDisabled("execute");
 #endif
     }
 
-    common::Status OracleConnection::execute(const std::string& sql, const common::Params& params,
-                                             std::int64_t& affected, common::GeneratedKeys& out)
-    {
+    common::Status OracleConnection::execute(const std::string &sql, const common::Params &params,
+                                             std::int64_t &affected, common::GeneratedKeys &out) {
         out.clear();
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         if (!open_ || !svc_) return notConnected("execute");
@@ -1287,18 +1161,17 @@ namespace sqlconduit::driver
         if (!st.ok()) return st;
         return common::Status::OK();
 #else
-        (void)sql;
-        (void)params;
+        (void) sql;
+        (void) params;
         affected = 0;
         return driverDisabled("execute");
 #endif
     }
 
-    common::Status OracleConnection::queryEach(const std::string& sql,
-                                               const common::Params& params,
-                                               const common::RowCallback& callback,
-                                               std::uint64_t& rows)
-    {
+    common::Status OracleConnection::queryEach(const std::string &sql,
+                                               const common::Params &params,
+                                               const common::RowCallback &callback,
+                                               std::uint64_t &rows) {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         rows = 0;
         if (!open_ || !svc_) return notConnected("stream");
@@ -1312,24 +1185,22 @@ namespace sqlconduit::driver
         rows = static_cast<std::uint64_t>(streamed);
         return st;
 #else
-        (void)sql;
-        (void)params;
-        (void)callback;
+        (void) sql;
+        (void) params;
+        (void) callback;
         rows = 0;
         return driverDisabled("stream");
 #endif
     }
 
-    common::Status OracleConnection::queryAll(const std::string& sql,
-                                              std::vector<common::ResultSet>& out)
-    {
+    common::Status OracleConnection::queryAll(const std::string &sql,
+                                              std::vector<common::ResultSet> &out) {
         return queryAll(sql, common::Params{}, out);
     }
 
-    common::Status OracleConnection::queryAll(const std::string& sql,
-                                              const common::Params& params,
-                                              std::vector<common::ResultSet>& out)
-    {
+    common::Status OracleConnection::queryAll(const std::string &sql,
+                                              const common::Params &params,
+                                              std::vector<common::ResultSet> &out) {
         out.clear();
 #ifdef SQLCONDUIT_ENABLE_ORACLE
 #if defined(OCI_RESULT_TYPE_SELECT) && defined(OCI_ATTR_STMT_TYPE) && defined(OCI_STMT_SELECT)
@@ -1339,21 +1210,19 @@ namespace sqlconduit::driver
         const std::string oraSql = replacePlaceholders(
             sql, [](const std::size_t i) { return ":" + std::to_string(i + 1); }, found);
         if (found != params.size()) return paramMismatch(params.size(), found);
-        OCIStmt* stmt = nullptr;
+        OCIStmt *stmt = nullptr;
         sword rc = OCIStmtPrepare2(svc_, &stmt, err_,
-                                   reinterpret_cast<const OraText*>(oraSql.data()),
+                                   reinterpret_cast<const OraText *>(oraSql.data()),
                                    static_cast<ub4>(oraSql.size()), nullptr, 0, OCI_NTV_SYNTAX,
                                    OCI_DEFAULT);
         if (!ociOk(rc))
             return oracleError(err_, common::ErrorCode::QueryError,
                                "queryAll prepare");
-        struct QueryAllGuard
-        {
-            OCIStmt* stmt;
-            OCIError* err;
+        struct QueryAllGuard {
+            OCIStmt *stmt;
+            OCIError *err;
 
-            ~QueryAllGuard()
-            {
+            ~QueryAllGuard() {
                 if (stmt) OCIStmtRelease(stmt, err, nullptr, 0, OCI_DEFAULT);
             }
         } guard{stmt, err_};
@@ -1372,13 +1241,11 @@ namespace sqlconduit::driver
             return oracleError(err_, common::ErrorCode::QueryError,
                                "queryAll execute");
 
-        const auto readSet = [&](OCIStmt* result, common::ResultSet& set) -> common::Status
-        {
+        const auto readSet = [&](OCIStmt *result, common::ResultSet &set) -> common::Status {
             OracleResultReader reader(env_, svc_, err_, lobMaxBytes_);
             if (const auto status = reader.setup(result); !status.ok()) return status;
             set.setFields(reader.fields());
-            while (true)
-            {
+            while (true) {
                 common::Row row;
                 bool hasRow = false;
                 if (const auto status = reader.fetchOne(row, hasRow); !status.ok()) return status;
@@ -1394,16 +1261,14 @@ namespace sqlconduit::driver
             return common::Status::OK();
         };
 
-        if (statementType == OCI_STMT_SELECT)
-        {
+        if (statementType == OCI_STMT_SELECT) {
             common::ResultSet set;
             if (const auto status = readSet(stmt, set); !status.ok()) return status;
             out.push_back(std::move(set));
             return common::Status::OK();
         }
-        while (true)
-        {
-            void* result = nullptr;
+        while (true) {
+            void *result = nullptr;
             ub4 resultType = 0;
             rc = OCIStmtGetNextResult(stmt, err_, &result, &resultType, OCI_DEFAULT);
             if (rc == OCI_NO_DATA) break;
@@ -1413,7 +1278,7 @@ namespace sqlconduit::driver
             if (resultType != OCI_RESULT_TYPE_SELECT || result == nullptr)
                 return common::Status::error(common::ErrorCode::NotSupported,
                                              "Oracle: unsupported implicit result type");
-            auto* child = static_cast<OCIStmt*>(result);
+            auto *child = static_cast<OCIStmt *>(result);
             common::ResultSet set;
             const auto status = readSet(child, set);
             if (!status.ok()) return status;
@@ -1424,70 +1289,56 @@ namespace sqlconduit::driver
         return core::IDatabaseConnection::queryAll(sql, params, out);
 #endif
 #else
-        (void)sql;
-        (void)params;
+        (void) sql;
+        (void) params;
         return driverDisabled("queryAll");
 #endif
     }
 
-    common::Status OracleConnection::call(const std::string& sql,
-                                          const common::CallParams& params,
-                                          common::CallOutput& out)
-    {
+    common::Status OracleConnection::call(const std::string &sql,
+                                          const common::CallParams &params,
+                                          common::CallOutput &out) {
         out.clear();
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         if (!open_ || !svc_) return notConnected("call");
         ActiveOperation active(operationMtx_, operationActive_);
         common::CallParams bindings;
         std::string expansionError;
-        const auto validTypeName = [](const std::string& name)
-        {
+        const auto validTypeName = [](const std::string &name) {
             if (name.empty()) return false;
             bool atStart = true;
-            for (const unsigned char c : name)
-            {
-                if (c == '.')
-                {
+            for (const unsigned char c: name) {
+                if (c == '.') {
                     if (atStart) return false;
                     atStart = true;
-                }
-                else if (atStart)
-                {
+                } else if (atStart) {
                     if (!(std::isalpha(c) || c == '_')) return false;
                     atStart = false;
-                }
-                else if (!(std::isalnum(c) || c == '_' || c == '$' || c == '#')) return false;
+                } else if (!(std::isalnum(c) || c == '_' || c == '$' || c == '#')) return false;
             }
             return !atStart;
         };
-        std::function<std::string(const common::Value&)> expandInput;
-        expandInput = [&](const common::Value& value) -> std::string
-        {
-            if (const auto* array = std::get_if<common::TypedArray>(&value))
-            {
-                if (!validTypeName(array->typeName))
-                {
+        std::function<std::string(const common::Value &)> expandInput;
+        expandInput = [&](const common::Value &value) -> std::string {
+            if (const auto *array = std::get_if<common::TypedArray>(&value)) {
+                if (!validTypeName(array->typeName)) {
                     expansionError = "Oracle: invalid or missing named collection typeName";
                     return {};
                 }
                 std::string expression = array->typeName + "(";
-                for (std::size_t i = 0; i < array->items.size(); ++i)
-                {
+                for (std::size_t i = 0; i < array->items.size(); ++i) {
                     if (i) expression += ", ";
                     expression += expandInput(array->items[i]);
                 }
                 return expression + ")";
             }
-            if (const auto* object = std::get_if<common::TypedComposite>(&value))
-            {
-                if (!validTypeName(object->typeName))
-                {
+            if (const auto *object = std::get_if<common::TypedComposite>(&value)) {
+                if (!validTypeName(object->typeName)) {
                     expansionError = "Oracle: invalid or missing named object typeName";
                     return {};
                 }
                 std::string expression = object->typeName + "(";
-                for (std::size_t i = 0; i < object->fields.size(); ++i)
-                {
+                for (std::size_t i = 0; i < object->fields.size(); ++i) {
                     if (i) expression += ", ";
                     expression += expandInput(object->fields[i].second);
                 }
@@ -1497,12 +1348,11 @@ namespace sqlconduit::driver
             return ":" + std::to_string(bindings.size());
         };
         std::size_t found = 0;
-        const std::string oraSql = replacePlaceholders(sql, [&](const std::size_t i)
-        {
-            const auto& param = params[i];
+        const std::string oraSql = replacePlaceholders(sql, [&](const std::size_t i) {
+            const auto &param = params[i];
             if (param.direction == common::ParamDirection::In &&
                 (std::holds_alternative<common::TypedArray>(param.value) ||
-                    std::holds_alternative<common::TypedComposite>(param.value)))
+                 std::holds_alternative<common::TypedComposite>(param.value)))
                 return expandInput(param.value);
             bindings.push_back(param);
             return ":" + std::to_string(bindings.size());
@@ -1511,40 +1361,35 @@ namespace sqlconduit::driver
         if (!expansionError.empty())
             return common::Status::error(common::ErrorCode::ConfigError, expansionError);
 
-        OCIStmt* stmt = nullptr;
+        OCIStmt *stmt = nullptr;
         sword rc = OCIStmtPrepare2(svc_, &stmt, err_,
-                                   reinterpret_cast<const OraText*>(oraSql.data()),
+                                   reinterpret_cast<const OraText *>(oraSql.data()),
                                    static_cast<ub4>(oraSql.size()), nullptr, 0, OCI_NTV_SYNTAX,
                                    OCI_DEFAULT);
         if (!ociOk(rc)) return oracleError(err_, common::ErrorCode::QueryError, "call prepare");
-        struct StatementGuard
-        {
-            OCIStmt* stmt;
-            OCIError* err;
+        struct StatementGuard {
+            OCIStmt *stmt;
+            OCIError *err;
 
-            ~StatementGuard()
-            {
+            ~StatementGuard() {
                 if (stmt) OCIStmtRelease(stmt, err, nullptr, 0, OCI_DEFAULT);
             }
         } guard{stmt, err_};
 
         OracleInputStorage input(env_, svc_, err_, bindings.size());
-        std::vector<std::vector<char>> output(bindings.size());
-        std::vector<OCIStmt*> cursors(bindings.size(), nullptr);
-        struct CursorHandleGuard
-        {
-            std::vector<OCIStmt*>& handles;
+        std::vector<std::vector<char> > output(bindings.size());
+        std::vector<OCIStmt *> cursors(bindings.size(), nullptr);
+        struct CursorHandleGuard {
+            std::vector<OCIStmt *> &handles;
 
-            ~CursorHandleGuard()
-            {
-                for (auto* handle : handles)
+            ~CursorHandleGuard() {
+                for (auto *handle: handles)
                     if (handle) OCIHandleFree(handle, OCI_HTYPE_STMT);
             }
         } cursorGuard{cursors};
         std::vector<common::ValueType> outputTypes(bindings.size(), common::ValueType::Auto);
 
-        const auto inferType = [](const common::Value& value)
-        {
+        const auto inferType = [](const common::Value &value) {
             if (std::holds_alternative<bool>(value)) return common::ValueType::Bool;
             if (std::holds_alternative<std::int64_t>(value)) return common::ValueType::Int64;
             if (std::holds_alternative<std::uint64_t>(value)) return common::ValueType::UInt64;
@@ -1568,14 +1413,12 @@ namespace sqlconduit::driver
 
         static char kEmpty[1] = {0};
         const LobBindMode lobMode = resolveLobBindMode(cfg_);
-        for (std::size_t i = 0; i < bindings.size(); ++i)
-        {
-            const auto& param = bindings[i];
+        for (std::size_t i = 0; i < bindings.size(); ++i) {
+            const auto &param = bindings[i];
             const bool inputDirection = param.direction != common::ParamDirection::Out;
             const bool outputDirection = param.direction != common::ParamDirection::In;
             common::ValueType type = param.type;
-            if (type == common::ValueType::Auto)
-            {
+            if (type == common::ValueType::Auto) {
                 if (!inputDirection || std::holds_alternative<std::nullptr_t>(param.value))
                     return common::Status::error(
                         common::ErrorCode::ConfigError,
@@ -1584,7 +1427,7 @@ namespace sqlconduit::driver
             }
             outputTypes[i] = type;
             if ((type == common::ValueType::TypedArray ||
-                type == common::ValueType::TypedComposite) && param.typeName.empty())
+                 type == common::ValueType::TypedComposite) && param.typeName.empty())
                 return common::Status::error(common::ErrorCode::ConfigError,
                                              "Oracle: named object parameters require typeName");
             if (type == common::ValueType::TypedArray ||
@@ -1594,13 +1437,12 @@ namespace sqlconduit::driver
                     "Oracle: OCI named object binding is not available yet; use the explicit "
                     "typeName metadata with a driver extension");
 
-            OCIBind* bind = nullptr;
-            if (type == common::ValueType::RefCursor)
-            {
+            OCIBind *bind = nullptr;
+            if (type == common::ValueType::RefCursor) {
                 if (!outputDirection)
                     return common::Status::error(common::ErrorCode::ConfigError,
                                                  "Oracle: REF CURSOR must be OUT or INOUT");
-                rc = OCIHandleAlloc(env_, reinterpret_cast<void**>(&cursors[i]),
+                rc = OCIHandleAlloc(env_, reinterpret_cast<void **>(&cursors[i]),
                                     OCI_HTYPE_STMT, 0, nullptr);
                 if (!ociOk(rc))
                     return oracleError(err_, common::ErrorCode::QueryError,
@@ -1608,9 +1450,7 @@ namespace sqlconduit::driver
                 rc = OCIBindByPos(stmt, &bind, err_, static_cast<ub4>(i + 1), &cursors[i], 0,
                                   static_cast<ub2>(common::kSqltRset), nullptr, nullptr, nullptr,
                                   0, nullptr, OCI_DEFAULT);
-            }
-            else if (outputDirection)
-            {
+            } else if (outputDirection) {
                 if (type == common::ValueType::Blob)
                     return common::Status::error(common::ErrorCode::NotSupported,
                                                  "Oracle: BLOB OUT parameters are not supported");
@@ -1619,53 +1459,44 @@ namespace sqlconduit::driver
                     return common::Status::error(common::ErrorCode::ConfigError,
                                                  "Oracle: OUT maxBytes must be <= 65534");
                 output[i].assign(capacity, '\0');
-                if (inputDirection)
-                {
+                if (inputDirection) {
                     const auto value = common::oracleBindValue(param.value);
                     if (value.unsupported || value.raw)
                         return common::Status::error(common::ErrorCode::NotSupported,
                                                      "Oracle: unsupported INOUT parameter type");
-                    if (value.text)
-                    {
+                    if (value.text) {
                         if (value.text->size() >= output[i].size())
                             return common::Status::error(
                                 common::ErrorCode::ConfigError,
                                 "Oracle: INOUT value exceeds maxBytes");
                         std::copy(value.text->begin(), value.text->end(), output[i].begin());
                         input.lengths[i] = static_cast<ub2>(value.text->size());
-                    }
-                    else input.indicators[i] = -1;
+                    } else input.indicators[i] = -1;
                 }
                 rc = OCIBindByPos(stmt, &bind, err_, static_cast<ub4>(i + 1), output[i].data(),
                                   static_cast<sb4>(output[i].size()),
                                   static_cast<ub2>(common::kSqltStr), &input.indicators[i],
                                   &input.lengths[i], &input.returnCodes[i], 0, nullptr,
                                   OCI_DEFAULT);
-            }
-            else
-            {
+            } else {
                 const auto value = common::oracleBindValue(param.value);
                 if (value.unsupported)
                     return common::Status::error(common::ErrorCode::NotSupported,
                                                  "Oracle: unsupported input parameter type");
-                void* data = kEmpty;
+                void *data = kEmpty;
                 sb4 size = 0;
                 ub2 sqlt = static_cast<ub2>(common::kSqltStr);
-                if (value.raw)
-                {
+                if (value.raw) {
                     if (lobMode == LobBindMode::Lob ||
-                        (lobMode == LobBindMode::Auto && value.raw->size() > kDirectBindLimit))
-                    {
+                        (lobMode == LobBindMode::Auto && value.raw->size() > kDirectBindLimit)) {
                         input.lobs[i] = input.lobGuard.createBlob(*value.raw);
                         if (!input.lobs[i])
                             return oracleError(err_, common::ErrorCode::QueryError,
                                                "call LOB bind");
                         data = &input.lobs[i];
-                        size = static_cast<sb4>(sizeof(OCILobLocator*));
+                        size = static_cast<sb4>(sizeof(OCILobLocator *));
                         sqlt = static_cast<ub2>(common::kSqltBlob);
-                    }
-                    else
-                    {
+                    } else {
                         if (value.raw->size() > 32767)
                             return common::Status::error(
                                 common::ErrorCode::NotSupported,
@@ -1675,16 +1506,13 @@ namespace sqlconduit::driver
                         size = static_cast<sb4>(input.raw[i].size());
                         sqlt = static_cast<ub2>(common::kSqltBin);
                     }
-                }
-                else if (value.text)
-                {
+                } else if (value.text) {
                     input.text[i].assign(value.text->begin(), value.text->end());
                     input.text[i].push_back('\0');
                     data = input.text[i].data();
                     size = static_cast<sb4>(input.text[i].size());
                     input.lengths[i] = static_cast<ub2>(input.text[i].size());
-                }
-                else input.indicators[i] = -1;
+                } else input.indicators[i] = -1;
                 rc = OCIBindByPos(stmt, &bind, err_, static_cast<ub4>(i + 1), data, size, sqlt,
                                   &input.indicators[i], &input.lengths[i], &input.returnCodes[i],
                                   0, nullptr, OCI_DEFAULT);
@@ -1698,61 +1526,50 @@ namespace sqlconduit::driver
         if (ociOk(OCIAttrGet(stmt, OCI_HTYPE_STMT, &affected, nullptr, OCI_ATTR_ROW_COUNT, err_)))
             out.affected = static_cast<std::int64_t>(affected);
 
-        const auto textValue = [](const common::ValueType type, const std::string& text) -> common::Value
-        {
-            try
-            {
-                switch (type)
-                {
-                case common::ValueType::Bool: return common::Value{text == "1" || text == "true" || text == "TRUE"};
-                case common::ValueType::Int64: return common::Value{static_cast<std::int64_t>(std::stoll(text))};
-                case common::ValueType::UInt64: return common::Value{static_cast<std::uint64_t>(std::stoull(text))};
-                case common::ValueType::Double: return common::Value{std::stod(text)};
-                case common::ValueType::Decimal: return common::Value{common::Decimal{text}};
-                case common::ValueType::Date: return common::Value{common::Date{text}};
-                case common::ValueType::Time: return common::Value{common::Time{text}};
-                case common::ValueType::Timestamp:
-                    {
+        const auto textValue = [](const common::ValueType type, const std::string &text) -> common::Value {
+            try {
+                switch (type) {
+                    case common::ValueType::Bool: return common::Value{text == "1" || text == "true" || text == "TRUE"};
+                    case common::ValueType::Int64: return common::Value{static_cast<std::int64_t>(std::stoll(text))};
+                    case common::ValueType::UInt64: return common::Value{static_cast<std::uint64_t>(std::stoull(text))};
+                    case common::ValueType::Double: return common::Value{std::stod(text)};
+                    case common::ValueType::Decimal: return common::Value{common::Decimal{text}};
+                    case common::ValueType::Date: return common::Value{common::Date{text}};
+                    case common::ValueType::Time: return common::Value{common::Time{text}};
+                    case common::ValueType::Timestamp: {
                         common::Timestamp timestamp{};
                         if (common::oracleParseTimestamp(text, timestamp)) return common::Value{timestamp};
                         return common::Value{text};
                     }
-                case common::ValueType::Uuid: return common::Value{common::Uuid{text}};
-                case common::ValueType::Json: return common::Value{common::Json{text}};
-                case common::ValueType::IntervalYearMonth:
-                    return common::Value{common::IntervalYearMonth{text}};
-                case common::ValueType::IntervalDaySecond:
-                    return common::Value{common::IntervalDaySecond{text}};
-                default: return common::Value{text};
+                    case common::ValueType::Uuid: return common::Value{common::Uuid{text}};
+                    case common::ValueType::Json: return common::Value{common::Json{text}};
+                    case common::ValueType::IntervalYearMonth:
+                        return common::Value{common::IntervalYearMonth{text}};
+                    case common::ValueType::IntervalDaySecond:
+                        return common::Value{common::IntervalDaySecond{text}};
+                    default: return common::Value{text};
                 }
-            }
-            catch (...)
-            {
+            } catch (...) {
                 return common::Value{text};
             }
         };
 
-        for (std::size_t i = 0; i < bindings.size(); ++i)
-        {
+        for (std::size_t i = 0; i < bindings.size(); ++i) {
             if (bindings[i].direction == common::ParamDirection::In) continue;
-            if (outputTypes[i] == common::ValueType::RefCursor)
-            {
+            if (outputTypes[i] == common::ValueType::RefCursor) {
                 if (!cursors[i]) continue;
                 common::ResultSet set;
                 OracleResultReader reader(env_, svc_, err_, lobMaxBytes_);
                 auto status = reader.setup(cursors[i]);
-                if (status.ok())
-                {
+                if (status.ok()) {
                     set.setFields(reader.fields());
-                    while (true)
-                    {
+                    while (true) {
                         common::Row row;
                         bool hasRow = false;
                         status = reader.fetchOne(row, hasRow);
                         if (!status.ok() || !hasRow) break;
                         if (cfg_.max_result_rows > 0 &&
-                            set.rowCount() >= static_cast<std::size_t>(cfg_.max_result_rows))
-                        {
+                            set.rowCount() >= static_cast<std::size_t>(cfg_.max_result_rows)) {
                             status = common::Status::error(
                                 common::ErrorCode::QueryError,
                                 "Oracle: REF CURSOR exceeds max_result_rows=" +
@@ -1783,14 +1600,13 @@ namespace sqlconduit::driver
         txOpen_ = true;
         return common::Status::OK();
 #else
-        (void)sql;
-        (void)params;
+        (void) sql;
+        (void) params;
         return driverDisabled("call");
 #endif
     }
 
-    bool OracleConnection::supportsPrepared() const
-    {
+    bool OracleConnection::supportsPrepared() const {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         return true;
 #else
@@ -1798,10 +1614,9 @@ namespace sqlconduit::driver
 #endif
     }
 
-    common::Status OracleConnection::prepare(const std::string& sql,
-                                             const common::Params& typesSample,
-                                             core::PreparedStatementHandle& out)
-    {
+    common::Status OracleConnection::prepare(const std::string &sql,
+                                             const common::Params &typesSample,
+                                             core::PreparedStatementHandle &out) {
         out = core::PreparedStatementHandle{};
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         if (!open_ || !svc_) return notConnected("prepare");
@@ -1811,8 +1626,7 @@ namespace sqlconduit::driver
         if (found != typesSample.size()) return paramMismatch(typesSample.size(), found);
 
         const std::string key = sql + common::paramTypeSignature(typesSample);
-        if (const auto it = preparedCache_.find(key); it != preparedCache_.end())
-        {
+        if (const auto it = preparedCache_.find(key); it != preparedCache_.end()) {
             preparedLru_.remove(key);
             preparedLru_.push_back(key);
             out = it->second;
@@ -1820,28 +1634,26 @@ namespace sqlconduit::driver
         }
 
         const std::string cacheKey = "sqlconduit_ps_" + std::to_string(++preparedSeq_);
-        OCIStmt* stmt = nullptr;
+        OCIStmt *stmt = nullptr;
         const sword rc = OCIStmtPrepare2(svc_, &stmt, err_,
-                                         reinterpret_cast<const OraText*>(oraSql.data()),
+                                         reinterpret_cast<const OraText *>(oraSql.data()),
                                          static_cast<ub4>(oraSql.size()),
-                                         reinterpret_cast<const OraText*>(cacheKey.data()),
+                                         reinterpret_cast<const OraText *>(cacheKey.data()),
                                          static_cast<ub4>(cacheKey.size()), OCI_NTV_SYNTAX,
                                          OCI_DEFAULT);
         if (!ociOk(rc)) return oracleError(err_, common::ErrorCode::QueryError, "prepare");
-        (void)OCIStmtRelease(stmt, err_, reinterpret_cast<const OraText*>(cacheKey.data()),
-                             static_cast<ub4>(cacheKey.size()), OCI_DEFAULT);
+        (void) OCIStmtRelease(stmt, err_, reinterpret_cast<const OraText *>(cacheKey.data()),
+                              static_cast<ub4>(cacheKey.size()), OCI_DEFAULT);
 
         const core::PreparedStatementHandle h =
-            core::PreparedStatementHandle::make(preparedSeq_, nullptr);
+                core::PreparedStatementHandle::make(preparedSeq_, nullptr);
         preparedCache_[key] = h;
         // Keep the caller-facing SQL here. runStatement() owns placeholder rewriting and must see
         // the original question marks again when a cached statement is executed.
         preparedSql_[preparedSeq_] = sql;
         preparedLru_.push_back(key);
-        if (preparedLimit_ > 0)
-        {
-            while (preparedCache_.size() > static_cast<std::size_t>(preparedLimit_))
-            {
+        if (preparedLimit_ > 0) {
+            while (preparedCache_.size() > static_cast<std::size_t>(preparedLimit_)) {
                 const std::string oldKey = preparedLru_.front();
                 preparedLru_.pop_front();
                 const auto old = preparedCache_.find(oldKey);
@@ -1853,16 +1665,15 @@ namespace sqlconduit::driver
         out = h;
         return common::Status::OK();
 #else
-        (void)sql;
-        (void)typesSample;
+        (void) sql;
+        (void) typesSample;
         return driverDisabled("prepare");
 #endif
     }
 
-    common::Status OracleConnection::executePrepared(const core::PreparedStatementHandle& h,
-                                                     const common::Params& params,
-                                                     common::ResultSet& out)
-    {
+    common::Status OracleConnection::executePrepared(const core::PreparedStatementHandle &h,
+                                                     const common::Params &params,
+                                                     common::ResultSet &out) {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         out.clear();
         if (!open_ || !svc_) return notConnected("executePrepared");
@@ -1877,17 +1688,16 @@ namespace sqlconduit::driver
         return runStatement(it->second, params, true, affected, out, false, ignoredKeys,
                             common::RowCallback{}, streamed, "sqlconduit_ps_" + std::to_string(h.id()));
 #else
-        (void)h;
-        (void)params;
+        (void) h;
+        (void) params;
         out.clear();
         return driverDisabled("executePrepared");
 #endif
     }
 
-    common::Status OracleConnection::executePrepared(const core::PreparedStatementHandle& h,
-                                                     const common::Params& params,
-                                                     std::int64_t& affected)
-    {
+    common::Status OracleConnection::executePrepared(const core::PreparedStatementHandle &h,
+                                                     const common::Params &params,
+                                                     std::int64_t &affected) {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         affected = 0;
         if (!open_ || !svc_) return notConnected("executePrepared");
@@ -1902,61 +1712,56 @@ namespace sqlconduit::driver
         return runStatement(it->second, params, false, affected, ignored, false, ignoredKeys,
                             common::RowCallback{}, streamed, "sqlconduit_ps_" + std::to_string(h.id()));
 #else
-        (void)h;
-        (void)params;
+        (void) h;
+        (void) params;
         affected = 0;
         return driverDisabled("executePrepared");
 #endif
     }
 
-    void OracleConnection::dropCachedStatement(const std::uint64_t id)
-    {
+    void OracleConnection::dropCachedStatement(const std::uint64_t id) {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         const auto it = preparedSql_.find(id);
         if (it == preparedSql_.end()) return;
         const std::string cacheKey = "sqlconduit_ps_" + std::to_string(id);
-        const OraText* keyPtr = reinterpret_cast<const OraText*>(cacheKey.data());
+        const OraText *keyPtr = reinterpret_cast<const OraText *>(cacheKey.data());
         const ub4 keyLen = static_cast<ub4>(cacheKey.size());
-        if (svc_ && err_)
-        {
-            OCIStmt* stmt = nullptr;
+        if (svc_ && err_) {
+            OCIStmt *stmt = nullptr;
             std::size_t ignored = 0;
             const std::string oraSql = replacePlaceholders(
                 it->second, [](const std::size_t i) { return ":" + std::to_string(i + 1); },
                 ignored);
             const sword rc = OCIStmtPrepare2(svc_, &stmt, err_,
-                                             reinterpret_cast<const OraText*>(oraSql.data()),
+                                             reinterpret_cast<const OraText *>(oraSql.data()),
                                              static_cast<ub4>(oraSql.size()), keyPtr, keyLen,
                                              OCI_NTV_SYNTAX, OCI_DEFAULT);
             if (ociOk(rc) && stmt != nullptr)
-                (void)OCIStmtRelease(stmt, err_, keyPtr, keyLen, OCI_STRLS_CACHE_DELETE);
+                (void) OCIStmtRelease(stmt, err_, keyPtr, keyLen, OCI_STRLS_CACHE_DELETE);
         }
         preparedSql_.erase(it);
 #else
-        (void)id;
+        (void) id;
 #endif
     }
 
-    void OracleConnection::closeAllPrepared()
-    {
+    void OracleConnection::closeAllPrepared() {
         std::vector<std::uint64_t> ids;
         ids.reserve(preparedSql_.size());
-        for (const auto& entry : preparedSql_) ids.push_back(entry.first);
-        for (const std::uint64_t id : ids) dropCachedStatement(id);
+        for (const auto &entry: preparedSql_) ids.push_back(entry.first);
+        for (const std::uint64_t id: ids) dropCachedStatement(id);
         preparedSql_.clear();
         preparedCache_.clear();
         preparedLru_.clear();
     }
 
-    void OracleConnection::setPreparedCacheLimit(const int maxPerConnection)
-    {
+    void OracleConnection::setPreparedCacheLimit(const int maxPerConnection) {
         preparedLimit_ = maxPerConnection;
     }
 
-    common::Status OracleConnection::executeBatch(const std::string& sql,
-                                                  const common::ParamBatch& batch,
-                                                  common::BatchResult& out)
-    {
+    common::Status OracleConnection::executeBatch(const std::string &sql,
+                                                  const common::ParamBatch &batch,
+                                                  common::BatchResult &out) {
         out.clear();
 #ifdef SQLCONDUIT_ENABLE_ORACLE
 #if defined(OCI_ATTR_DML_ROW_COUNT_ARRAY) && defined(OCI_BATCH_ERRORS) && \
@@ -1975,12 +1780,11 @@ namespace sqlconduit::driver
             return core::IDatabaseConnection::executeBatch(sql, batch, out);
         if (batch.front().size() != placeholderCount)
             return paramMismatch(batch.front().size(), placeholderCount);
-        for (const auto& row : batch)
+        for (const auto &row: batch)
             if (row.size() != placeholderCount)
                 return paramMismatch(row.size(), placeholderCount);
 
-        struct Column
-        {
+        struct Column {
             std::size_t stride = 1;
             std::vector<char> values;
             std::vector<sb2> indicators;
@@ -1988,10 +1792,8 @@ namespace sqlconduit::driver
             std::vector<ub2> returnCodes;
         };
         std::vector<Column> columns(placeholderCount);
-        for (std::size_t c = 0; c < placeholderCount; ++c)
-        {
-            for (const auto& row : batch)
-            {
+        for (std::size_t c = 0; c < placeholderCount; ++c) {
+            for (const auto &row: batch) {
                 const auto value = common::oracleBindValue(row[c]);
                 if (value.unsupported || value.raw)
                     return core::IDatabaseConnection::executeBatch(sql, batch, out);
@@ -2001,16 +1803,14 @@ namespace sqlconduit::driver
                     columns[c].stride = std::max(columns[c].stride,
                                                  value.text->size() + 1);
             }
-            auto& column = columns[c];
+            auto &column = columns[c];
             column.values.assign(column.stride * batch.size(), '\0');
             column.indicators.assign(batch.size(), 0);
             column.lengths.assign(batch.size(), 0);
             column.returnCodes.assign(batch.size(), 0);
-            for (std::size_t r = 0; r < batch.size(); ++r)
-            {
+            for (std::size_t r = 0; r < batch.size(); ++r) {
                 const auto value = common::oracleBindValue(batch[r][c]);
-                if (!value.text)
-                {
+                if (!value.text) {
                     column.indicators[r] = -1;
                     continue;
                 }
@@ -2021,40 +1821,35 @@ namespace sqlconduit::driver
         }
 
         const bool ownTransaction = !inTransaction();
-        if (ownTransaction)
-        {
+        if (ownTransaction) {
             const auto status = begin();
             if (!status.ok()) return status;
         }
         ActiveOperation active(operationMtx_, operationActive_);
-        OCIStmt* stmt = nullptr;
+        OCIStmt *stmt = nullptr;
         sword rc = OCIStmtPrepare2(svc_, &stmt, err_,
-                                   reinterpret_cast<const OraText*>(oraSql.data()),
+                                   reinterpret_cast<const OraText *>(oraSql.data()),
                                    static_cast<ub4>(oraSql.size()), nullptr, 0, OCI_NTV_SYNTAX,
                                    OCI_DEFAULT);
-        struct BatchStatementGuard
-        {
-            OCIStmt*& stmt;
-            OCIError* err;
+        struct BatchStatementGuard {
+            OCIStmt *&stmt;
+            OCIError *err;
 
-            ~BatchStatementGuard()
-            {
+            ~BatchStatementGuard() {
                 if (stmt) OCIStmtRelease(stmt, err, nullptr, 0, OCI_DEFAULT);
             }
         } guard{stmt, err_};
-        auto fail = [&](common::Status status)
-        {
-            if (ownTransaction) (void)rollback();
+        auto fail = [&](common::Status status) {
+            if (ownTransaction) (void) rollback();
             out.clear();
             return status;
         };
         if (!ociOk(rc))
             return fail(oracleError(err_, common::ErrorCode::QueryError,
                                     "batch prepare"));
-        for (std::size_t c = 0; c < columns.size(); ++c)
-        {
-            auto& column = columns[c];
-            OCIBind* bind = nullptr;
+        for (std::size_t c = 0; c < columns.size(); ++c) {
+            auto &column = columns[c];
+            OCIBind *bind = nullptr;
             rc = OCIBindByPos(stmt, &bind, err_, static_cast<ub4>(c + 1),
                               column.values.data(), static_cast<sb4>(column.stride),
                               static_cast<ub2>(common::kSqltStr), column.indicators.data(),
@@ -2078,11 +1873,11 @@ namespace sqlconduit::driver
                             executeMode);
         ub4 errorCount = 0;
         if (ownTransaction)
-            (void)OCIAttrGet(stmt, OCI_HTYPE_STMT, &errorCount, nullptr,
-                             OCI_ATTR_NUM_DML_ERRORS, err_);
+            (void) OCIAttrGet(stmt, OCI_HTYPE_STMT, &errorCount, nullptr,
+                              OCI_ATTR_NUM_DML_ERRORS, err_);
         if (!ociOk(rc) || errorCount != 0)
             return fail(oracleError(err_, common::ErrorCode::QueryError, "array DML"));
-        ub8* rowCounts = nullptr;
+        ub8 *rowCounts = nullptr;
         ub4 rowCountBytes = 0;
         rc = OCIAttrGet(stmt, OCI_HTYPE_STMT, &rowCounts, &rowCountBytes,
                         OCI_ATTR_DML_ROW_COUNT_ARRAY, err_);
@@ -2093,11 +1888,9 @@ namespace sqlconduit::driver
         out.keys.resize(batch.size());
         for (std::size_t i = 0; i < batch.size(); ++i)
             out.affected.push_back(static_cast<std::int64_t>(rowCounts[i]));
-        if (ownTransaction)
-        {
+        if (ownTransaction) {
             const auto status = commit();
-            if (!status.ok())
-            {
+            if (!status.ok()) {
                 out.clear();
                 return status;
             }
@@ -2107,17 +1900,16 @@ namespace sqlconduit::driver
         return core::IDatabaseConnection::executeBatch(sql, batch, out);
 #endif
 #else
-        (void)sql;
-        (void)batch;
+        (void) sql;
+        (void) batch;
         return driverDisabled("batch");
 #endif
     }
 
-    common::Status OracleConnection::openCursor(const std::string& sql,
-                                                const common::Params& params,
-                                                const core::CursorOptions& opts,
-                                                std::unique_ptr<core::ICursor>& out)
-    {
+    common::Status OracleConnection::openCursor(const std::string &sql,
+                                                const common::Params &params,
+                                                const core::CursorOptions &opts,
+                                                std::unique_ptr<core::ICursor> &out) {
         out.reset();
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         if (!open_ || !svc_) return notConnected("cursor");
@@ -2130,82 +1922,67 @@ namespace sqlconduit::driver
             sql, [](const std::size_t i) { return ":" + std::to_string(i + 1); }, found);
         if (found != params.size()) return paramMismatch(params.size(), found);
 
-        OCIStmt* stmt = nullptr;
+        OCIStmt *stmt = nullptr;
         sword rc = OCIStmtPrepare2(svc_, &stmt, err_,
-                                   reinterpret_cast<const OraText*>(oraSql.data()),
+                                   reinterpret_cast<const OraText *>(oraSql.data()),
                                    static_cast<ub4>(oraSql.size()), nullptr, 0, OCI_NTV_SYNTAX,
                                    OCI_DEFAULT);
         if (!ociOk(rc)) return oracleError(err_, common::ErrorCode::CursorError, "cursor prepare");
-        const auto releaseOnError = [&]
-        {
-            if (stmt != nullptr)
-            {
-                (void)OCIStmtRelease(stmt, err_, nullptr, 0, OCI_DEFAULT);
+        const auto releaseOnError = [&] {
+            if (stmt != nullptr) {
+                (void) OCIStmtRelease(stmt, err_, nullptr, 0, OCI_DEFAULT);
                 stmt = nullptr;
             }
         };
 
-        std::vector<std::vector<char>> textBuffers(params.size());
+        std::vector<std::vector<char> > textBuffers(params.size());
         std::vector<common::Blob> rawBuffers(params.size());
-        std::vector<OCILobLocator*> lobLocators(params.size(), nullptr);
+        std::vector<OCILobLocator *> lobLocators(params.size(), nullptr);
         std::vector<sb2> indicators(params.size(), 0);
         std::vector<ub2> lengths(params.size(), 0);
         std::vector<ub2> returnCodes(params.size(), 0);
         LobBindGuard lobGuard(env_, svc_, err_);
         static char kEmpty[1] = {0};
         const LobBindMode lobMode = resolveLobBindMode(cfg_);
-        for (std::size_t i = 0; i < params.size(); ++i)
-        {
+        for (std::size_t i = 0; i < params.size(); ++i) {
             const auto value = common::oracleBindValue(params[i]);
-            if (value.unsupported)
-            {
+            if (value.unsupported) {
                 releaseOnError();
                 return common::Status::error(common::ErrorCode::NotSupported,
                                              "Oracle: unsupported cursor parameter type");
             }
-            if (value.raw)
-            {
+            if (value.raw) {
                 if (lobMode == LobBindMode::Lob ||
-                    (lobMode == LobBindMode::Auto && value.raw->size() > kDirectBindLimit))
-                {
+                    (lobMode == LobBindMode::Auto && value.raw->size() > kDirectBindLimit)) {
                     lobLocators[i] = lobGuard.createBlob(*value.raw);
-                    if (!lobLocators[i])
-                    {
+                    if (!lobLocators[i]) {
                         const auto status = oracleError(err_, common::ErrorCode::CursorError,
                                                         "cursor lob bind");
                         releaseOnError();
                         return status;
                     }
-                }
-                else rawBuffers[i] = *value.raw;
+                } else rawBuffers[i] = *value.raw;
                 lengths[i] = static_cast<ub2>(rawBuffers[i].size());
-            }
-            else if (value.text)
-            {
+            } else if (value.text) {
                 textBuffers[i].assign(value.text->begin(), value.text->end());
                 textBuffers[i].push_back('\0');
                 lengths[i] = static_cast<ub2>(textBuffers[i].size());
-            }
-            else
-            {
+            } else {
                 indicators[i] = -1;
             }
-            OCIBind* bind = nullptr;
-            if (lobLocators[i])
-            {
+            OCIBind *bind = nullptr;
+            if (lobLocators[i]) {
                 rc = OCIBindByPos(stmt, &bind, err_, static_cast<ub4>(i + 1), &lobLocators[i],
-                                  sizeof(OCILobLocator*), static_cast<ub2>(common::kSqltBlob),
+                                  sizeof(OCILobLocator *), static_cast<ub2>(common::kSqltBlob),
                                   &indicators[i], &lengths[i], &returnCodes[i], 0, nullptr,
                                   OCI_DEFAULT);
-            }
-            else
-            {
+            } else {
                 const bool raw = !rawBuffers[i].empty();
-                void* data = raw
-                                 ? static_cast<void*>(rawBuffers[i].data())
+                void *data = raw
+                                 ? static_cast<void *>(rawBuffers[i].data())
                                  : indicators[i] == -1
-                                 ? static_cast<void*>(kEmpty)
-                                 : static_cast<void*>(textBuffers[i].data());
+                                       ? static_cast<void *>(kEmpty)
+                                       : static_cast<void *>(textBuffers[i].data());
                 const sb4 size = indicators[i] == -1
                                      ? 0
                                      : static_cast<sb4>(
@@ -2217,8 +1994,7 @@ namespace sqlconduit::driver
                                   &indicators[i], &lengths[i], &returnCodes[i], 0, nullptr,
                                   OCI_DEFAULT);
             }
-            if (!ociOk(rc))
-            {
+            if (!ociOk(rc)) {
                 const auto status = oracleError(err_, common::ErrorCode::CursorError,
                                                 "cursor bind");
                 releaseOnError();
@@ -2226,16 +2002,14 @@ namespace sqlconduit::driver
             }
         }
         rc = OCIStmtExecute(svc_, stmt, err_, 0, 0, nullptr, nullptr, OCI_DEFAULT);
-        if (!ociOk(rc))
-        {
+        if (!ociOk(rc)) {
             const auto status = oracleError(err_, common::ErrorCode::CursorError,
                                             "cursor execute");
             releaseOnError();
             return status;
         }
         auto reader = std::make_unique<OracleResultReader>(env_, svc_, err_, lobMaxBytes_);
-        if (const auto status = reader->setup(stmt); !status.ok())
-        {
+        if (const auto status = reader->setup(stmt); !status.ok()) {
             releaseOnError();
             return status;
         }
@@ -2245,29 +2019,26 @@ namespace sqlconduit::driver
         stmt = nullptr;
         return common::Status::OK();
 #else
-        (void)sql;
-        (void)params;
-        (void)opts;
+        (void) sql;
+        (void) params;
+        (void) opts;
         return driverDisabled("cursor");
 #endif
     }
 
-    std::string OracleConnection::escapeLiteral(const common::Value& v) const
-    {
-        if (const auto* p = std::get_if<bool>(&v)) return *p ? "1" : "0";
-        if (const auto* p = std::get_if<common::Date>(&v))
+    std::string OracleConnection::escapeLiteral(const common::Value &v) const {
+        if (const auto *p = std::get_if<bool>(&v)) return *p ? "1" : "0";
+        if (const auto *p = std::get_if<common::Date>(&v))
             return "DATE '" + quotedLiteral(p->value) + "'";
-        if (const auto* p = std::get_if<common::Time>(&v))
+        if (const auto *p = std::get_if<common::Time>(&v))
             return "TIMESTAMP '1970-01-01 " + p->value + "'";
-        if (const auto* p = std::get_if<common::Timestamp>(&v))
+        if (const auto *p = std::get_if<common::Timestamp>(&v))
             return "TIMESTAMP '" + common::timestampToStringMs(*p) + "'";
-        if (const auto* p = std::get_if<common::Blob>(&v))
-        {
-            static const char* kHex = "0123456789ABCDEF";
+        if (const auto *p = std::get_if<common::Blob>(&v)) {
+            static const char *kHex = "0123456789ABCDEF";
             std::string hex;
             hex.reserve(p->size() * 2);
-            for (const std::uint8_t byte : *p)
-            {
+            for (const std::uint8_t byte: *p) {
                 hex.push_back(kHex[(byte >> 4) & 0x0F]);
                 hex.push_back(kHex[byte & 0x0F]);
             }
@@ -2276,8 +2047,7 @@ namespace sqlconduit::driver
         return common::escapeLiteralGeneric(v);
     }
 
-    common::Status OracleConnection::begin()
-    {
+    common::Status OracleConnection::begin() {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         if (!open_ || !svc_) return notConnected("begin");
         txOpen_ = true;
@@ -2287,8 +2057,7 @@ namespace sqlconduit::driver
 #endif
     }
 
-    common::Status OracleConnection::begin(const common::TransactionOptions& options)
-    {
+    common::Status OracleConnection::begin(const common::TransactionOptions &options) {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         if (!open_ || !svc_) return notConnected("begin");
         if (options.isolation == common::IsolationLevel::ReadUncommitted ||
@@ -2303,15 +2072,13 @@ namespace sqlconduit::driver
             sql = "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE";
         else if (options.isolation == common::IsolationLevel::ReadCommitted)
             sql = "SET TRANSACTION ISOLATION LEVEL READ COMMITTED";
-        if (!sql.empty())
-        {
+        if (!sql.empty()) {
             std::int64_t ignored = 0;
             common::ResultSet ignoredRs;
             std::vector<std::string> ignoredKeys;
             const auto st = runStatement(sql, common::Params{}, false, ignored, ignoredRs, false,
                                          ignoredKeys, common::RowCallback{}, ignored);
-            if (!st.ok())
-            {
+            if (!st.ok()) {
                 auto mapped = st;
                 mapped.code = common::ErrorCode::TxError;
                 return mapped;
@@ -2320,13 +2087,12 @@ namespace sqlconduit::driver
         txOpen_ = true;
         return common::Status::OK();
 #else
-        (void)options;
+        (void) options;
         return driverDisabled("begin");
 #endif
     }
 
-    common::Status OracleConnection::commit()
-    {
+    common::Status OracleConnection::commit() {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         if (!open_ || !svc_) return notConnected("commit");
         ActiveOperation active(operationMtx_, operationActive_);
@@ -2339,8 +2105,7 @@ namespace sqlconduit::driver
 #endif
     }
 
-    common::Status OracleConnection::rollback()
-    {
+    common::Status OracleConnection::rollback() {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         if (!open_ || !svc_) return notConnected("rollback");
         ActiveOperation active(operationMtx_, operationActive_);
@@ -2353,8 +2118,7 @@ namespace sqlconduit::driver
 #endif
     }
 
-    common::Status OracleConnection::savepoint(const std::string& name)
-    {
+    common::Status OracleConnection::savepoint(const std::string &name) {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         if (!open_ || !svc_) return notConnected("savepoint");
         if (!txOpen_ || !validSavepointName(name))
@@ -2365,21 +2129,19 @@ namespace sqlconduit::driver
         std::vector<std::string> ignoredKeys;
         const auto st = runStatement("SAVEPOINT " + name, common::Params{}, false, ignored,
                                      ignoredRs, false, ignoredKeys, common::RowCallback{}, ignored);
-        if (!st.ok())
-        {
+        if (!st.ok()) {
             auto mapped = st;
             mapped.code = common::ErrorCode::TxError;
             return mapped;
         }
         return common::Status::OK();
 #else
-        (void)name;
+        (void) name;
         return driverDisabled("savepoint");
 #endif
     }
 
-    common::Status OracleConnection::releaseSavepoint(const std::string& name)
-    {
+    common::Status OracleConnection::releaseSavepoint(const std::string &name) {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         if (!open_ || !svc_) return notConnected("releaseSavepoint");
         if (!txOpen_ || !validSavepointName(name))
@@ -2387,13 +2149,12 @@ namespace sqlconduit::driver
                                          "Oracle: invalid savepoint or no active transaction");
         return common::Status::OK();
 #else
-        (void)name;
+        (void) name;
         return driverDisabled("releaseSavepoint");
 #endif
     }
 
-    common::Status OracleConnection::rollbackToSavepoint(const std::string& name)
-    {
+    common::Status OracleConnection::rollbackToSavepoint(const std::string &name) {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         if (!open_ || !svc_) return notConnected("rollbackToSavepoint");
         if (!txOpen_ || !validSavepointName(name))
@@ -2405,31 +2166,26 @@ namespace sqlconduit::driver
         const auto st = runStatement("ROLLBACK TO SAVEPOINT " + name, common::Params{}, false,
                                      ignored, ignoredRs, false, ignoredKeys,
                                      common::RowCallback{}, ignored);
-        if (!st.ok())
-        {
+        if (!st.ok()) {
             auto mapped = st;
             mapped.code = common::ErrorCode::TxError;
             return mapped;
         }
         return common::Status::OK();
 #else
-        (void)name;
+        (void) name;
         return driverDisabled("rollbackToSavepoint");
 #endif
     }
 
-    common::Status OracleConnection::cancel()
-    {
+    common::Status OracleConnection::cancel() {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
-        try
-        {
+        try {
             if (!open_ || !svc_) return notConnected("cancel");
             const sword rc = OCIBreak(svc_, err_);
             if (!ociOk(rc)) return oracleError(err_, common::ErrorCode::Cancelled, "cancel");
             return common::Status::OK();
-        }
-        catch (...)
-        {
+        } catch (...) {
             return common::Status::error(common::ErrorCode::Cancelled,
                                          "Oracle: cancel threw an exception");
         }
@@ -2438,14 +2194,12 @@ namespace sqlconduit::driver
 #endif
     }
 
-    void OracleConnection::close()
-    {
+    void OracleConnection::close() {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         closeAllPrepared();
-        if (svc_ && err_)
-        {
-            if (txOpen_) (void)OCITransRollback(svc_, err_, OCI_DEFAULT);
-            (void)OCILogoff(svc_, err_);
+        if (svc_ && err_) {
+            if (txOpen_) (void) OCITransRollback(svc_, err_, OCI_DEFAULT);
+            (void) OCILogoff(svc_, err_);
         }
         txOpen_ = false;
         operationActive_ = false;
@@ -2458,10 +2212,8 @@ namespace sqlconduit::driver
         open_ = false;
     }
 
-    void registerOracleDriver()
-    {
-        DriverRegistry::instance().registerDriver("oracle", []
-        {
+    void registerOracleDriver() {
+        DriverRegistry::instance().registerDriver("oracle", [] {
             return std::unique_ptr<IDriver>(new OracleDriver());
         });
     }

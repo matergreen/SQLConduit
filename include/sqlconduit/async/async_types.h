@@ -3,119 +3,60 @@
 
 #include "sqlconduit/common/types.h"
 
-#include <chrono>
-#include <functional>
-#include <memory>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
 
-namespace sqlconduit::async
-{
-    struct QueryResult
-    {
+namespace sqlconduit::async {
+    struct QueryResult {
         common::Status status;
         common::ResultSet rows;
     };
 
-    struct MultiQueryResult
-    {
+    struct MultiQueryResult {
         common::Status status;
         std::vector<common::ResultSet> sets;
 
-        [[nodiscard]] std::size_t rowCount() const
-        {
+        [[nodiscard]] std::size_t rowCount() const {
             std::size_t n = 0;
-            for (const auto& s : sets) n += s.rowCount();
+            for (const auto &s: sets) n += s.rowCount();
             return n;
         }
     };
 
-    struct ExecResult
-    {
+    struct ExecResult {
         common::Status status;
         std::int64_t affected = 0;
     };
 
-    struct ExecKeysResult
-    {
+    struct ExecKeysResult {
         common::Status status;
         std::int64_t affected = 0;
         common::GeneratedKeys keys;
     };
 
-    struct EachResult
-    {
+    struct EachResult {
         common::Status status;
         std::uint64_t rows = 0;
     };
 
-    struct BatchResult
-    {
+    struct BatchResult {
         common::Status status;
         common::BatchResult batch;
     };
 
-    struct OpResult
-    {
+    struct OpResult {
         common::Status status;
     };
 
-    using QueryCallback = std::function<void(QueryResult&&)>;
-    using MultiQueryCallback = std::function<void(MultiQueryResult&&)>;
-    using ExecCallback = std::function<void(ExecResult&&)>;
-    using ExecKeysCallback = std::function<void(ExecKeysResult&&)>;
-    using EachCallback = std::function<void(EachResult&&)>;
-    using BatchCallback = std::function<void(BatchResult&&)>;
-    using OpCallback = std::function<void(OpResult&&)>;
-
-    struct Options
-    {
-        std::chrono::milliseconds borrowTimeout{-1};
-        std::chrono::milliseconds timeout{0};
-    };
-
-    namespace detail
-    {
-        struct OpState;
-        class AsyncEngine;
-    }
-
-    class Handle
-    {
-    public:
-        Handle() = default;
-
-        [[nodiscard]] bool valid() const { return s_ != nullptr || control_ != nullptr; }
-
-        enum class State { Queued, Running, Done };
-
-        static Handle controlled(std::function<State()> state,
-                                 std::function<common::Status()> cancel)
-        {
-            Handle h;
-            h.control_ = std::make_shared<Control>();
-            h.control_->state = std::move(state);
-            h.control_->cancel = std::move(cancel);
-            return h;
-        }
-
-        [[nodiscard]] State state() const;
-
-        common::Status cancel() const;
-
-    private:
-        friend class detail::AsyncEngine;
-
-        explicit Handle(std::shared_ptr<detail::OpState> s) : s_(std::move(s))
-        {
-        }
-
-        struct Control
-        {
-            std::function<State()> state;
-            std::function<common::Status()> cancel;
-        };
-
-        std::shared_ptr<detail::OpState> s_;
-        std::shared_ptr<Control> control_;
+    struct ExecutorStats {
+        std::size_t threads = 0;
+        std::size_t queueDepth = 0;
+        std::size_t active = 0;
+        std::uint64_t submitted = 0;
+        std::uint64_t completed = 0;
+        std::uint64_t rejected = 0;
+        std::uint64_t delayedPending = 0;
     };
 }
 

@@ -127,6 +127,8 @@ jobs:
         if: runner.os == 'Windows' && matrix.tests
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $prefix = Join-Path $PWD 'smoke-prefix'
           cmake --install build --config Release --prefix $prefix
           cmake -S tests/consumer -B smoke-find-package -A x64 `

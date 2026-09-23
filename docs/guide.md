@@ -1857,6 +1857,7 @@ g++ main.cpp $(pkg-config --cflags sqlconduit) \
 | `datasources[].type` | `mysql` / `postgres` / `oracle` / `odbc` / 自定义 |
 | `datasources[].host/port/user/password/database` | 连接参数 |
 | `datasources[].dsn` | ODBC 数据源名 |
+| `datasources[].extra.unicode_binding` | ODBC 字符串绑定策略：`auto`（默认，FreeTDS 使用 UTF-8 C 缓冲区，其他驱动使用 `SQL_C_WCHAR`）、`wide` 或 `utf8`；无法解析为 UTF-8 的字符串保持旧行为，按窄字符绑定 |
 | `datasources[].password_env` | 从环境变量读取密码，优先于明文 `password` |
 | `datasources[].oracle.service_name` / `sid` | Oracle 服务名或 SID（二选一） |
 | `datasources[].oracle.wallet_location` / `server_cert_dn` | Oracle TCPS wallet 与可选服务端证书 DN |

@@ -76,6 +76,11 @@ namespace {
 
     std::int64_t asInt(const Value &v) { return std::get<std::int64_t>(v); }
 
+    const std::string &asString(const Value &v) {
+        if (const auto *s = std::get_if<std::string>(&v)) return *s;
+        throw std::runtime_error("expected string result value");
+    }
+
     struct Fixture {
         std::string table;
         std::string configPath;
@@ -375,6 +380,53 @@ namespace {
         requireOk(g_client.execute("DROP PROCEDURE IF EXISTS sqlconduit_it_multi", d),
                   "drop proc multi");
     }
+
+    void testMissingCoverage(Fixture &f) {
+        // Non-ASCII UTF-8 round trip (MySQL default charset is utf8mb4).
+        const std::string cjk = "中文往返测试";
+        std::int64_t affected = 0;
+        requireOk(g_client.execute(
+                          "INSERT INTO " + f.table
+                          + " (name,qty,unsigned_value,created_at) VALUES (?,1,1,NOW(6))",
+                          Params{std::string(cjk)}, affected), "insert non-ascii name");
+        ResultSet cjkRow;
+        requireOk(g_client.query("SELECT name FROM " + f.table + " WHERE name=?",
+                                 Params{std::string(cjk)}, cjkRow), "select non-ascii name");
+        require(cjkRow.rowCount() == 1 && asString(cjkRow.rows()[0].at("name")) == cjk,
+                "UTF-8 round trip failed");
+
+        // Bad SQL must be classified as QueryError (not silently swallowed).
+        ResultSet ignored;
+        const Status bad = g_client.query("SELECT * FROM sqlconduit_it_no_such_table_xyz", ignored);
+        require(!bad.ok() && bad.code == ErrorCode::QueryError,
+                "bad SQL should be classified as QueryError, got " +
+                std::string(sqlconduit::common::errorCodeToString(bad.code)));
+
+        requireOk(g_client.transaction([&](sqlconduit::core::Session &session) {
+            std::int64_t changed = 0;
+            auto st = session.execute(
+                "INSERT INTO " + f.table
+                + " (name,qty,unsigned_value,created_at) VALUES ('sp-keep',1,1,NOW(6))", changed);
+            if (!st.ok()) return st;
+            st = session.savepoint("sp1");
+            if (!st.ok()) return st;
+            st = session.execute(
+                "INSERT INTO " + f.table
+                + " (name,qty,unsigned_value,created_at) VALUES ('sp-temp',1,1,NOW(6))", changed);
+            if (!st.ok()) return st;
+            st = session.rollbackToSavepoint("sp1");
+            if (!st.ok()) return st;
+            return session.releaseSavepoint("sp1");
+        }), "savepoint commit");
+        ResultSet savepointRows;
+        requireOk(g_client.query("SELECT COUNT(*) n FROM " + f.table
+                                 + " WHERE name='sp-keep'", savepointRows), "sp keep count");
+        require(asInt(savepointRows.rows()[0].at("n")) == 1, "savepoint kept row missing");
+        requireOk(g_client.query("SELECT COUNT(*) n FROM " + f.table
+                                 + " WHERE name='sp-temp'", savepointRows), "sp temp count");
+        require(asInt(savepointRows.rows()[0].at("n")) == 0,
+                "savepoint rollback did not undo the row");
+    }
 }
 
 int main() {
@@ -386,6 +438,7 @@ int main() {
         testEntityMapping(fixture);
         testScriptExecution(fixture);
         testRoutinesAndCall(fixture);
+        testMissingCoverage(fixture);
         std::cout << "MySQL integration test passed (" << checks << " checks)\n";
         return 0;
     } catch (const std::exception &error) {

@@ -413,6 +413,7 @@ namespace sqlconduit::core {
     }
 
     common::Status Session::query(const std::string &sql, common::ResultSet &out) const {
+        out.clear();
         if (const auto a = auditStatement(sql, common::OperationType::Query); !a.ok()) return a;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(services_->interceptors, dataSource_, sql, common::OperationType::Query, ctx);
@@ -440,6 +441,7 @@ namespace sqlconduit::core {
 
     common::Status Session::query(const std::string &sql, const common::Params &params,
                                   common::ResultSet &out) const {
+        out.clear();
         if (const auto a = auditStatement(sql, common::OperationType::Query); !a.ok()) return a;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(services_->interceptors, dataSource_, sql, common::OperationType::Query, ctx);
@@ -689,6 +691,7 @@ namespace sqlconduit::core {
 
     common::Status Session::query(const std::string &sql, const common::StreamParams &params,
                                   common::ResultSet &out) const {
+        out.clear();
         if (const auto a = auditStatement(sql, common::OperationType::Query); !a.ok()) return a;
         common::SqlContext ctx = common::ContextScope::current();
         detail::runOnRoute(services_->interceptors, dataSource_, sql, common::OperationType::Query, ctx);

@@ -1872,6 +1872,7 @@ sequences, flow sequences, single/double quotes, and trailing comments.
 | `datasources[].type` | `mysql` / `postgres` / `oracle` / `odbc` / custom |
 | `datasources[].host/port/user/password/database` | Connection parameters |
 | `datasources[].dsn` | ODBC data source name |
+| `datasources[].extra.unicode_binding` | ODBC string binding: `auto` (default; UTF-8 C buffers for FreeTDS and `SQL_C_WCHAR` for other drivers), `wide`, or `utf8`; strings that are not valid UTF-8 retain legacy narrow binding |
 | `datasources[].password_env` | Read password from an environment variable, takes precedence over plaintext `password` |
 | `datasources[].query_timeout_ms` | Per-statement execution deadline |
 | `datasources[].max_result_rows` | Max rows `query()` may materialize at once; over the limit errors and suggests `queryEach()` (0 = unlimited) |

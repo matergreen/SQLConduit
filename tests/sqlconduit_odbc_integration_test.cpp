@@ -77,6 +77,11 @@ namespace {
 
     std::int64_t asInt(const Value &v) { return std::get<std::int64_t>(v); }
 
+    const std::string &asString(const Value &v) {
+        if (const auto *s = std::get_if<std::string>(&v)) return *s;
+        throw std::runtime_error("expected string result value");
+    }
+
     struct Fixture {
         std::string table;
         std::string configPath;
@@ -362,6 +367,80 @@ namespace {
         requireOk(g_client.execute("DROP FUNCTION sqlconduit_it_add", d), "drop fn add");
         requireOk(g_client.execute("DROP PROCEDURE sqlconduit_it_rows", d), "drop procedure rows");
     }
+
+    void testSymmetryGaps(Fixture &f) {
+        // Non-ASCII NVARCHAR round trip on a dedicated table (VARCHAR depends on collation).
+        const std::string uni = f.table + "_uni";
+        std::int64_t affected = 0;
+        requireOk(g_client.execute(
+                          "CREATE TABLE " + uni + " (id BIGINT IDENTITY(1,1) PRIMARY KEY, "
+                          "name NVARCHAR(100) NOT NULL)", affected), "create unicode table");
+        const std::string cjk = "中文往返测试";
+        requireOk(g_client.execute(
+                          "INSERT INTO " + uni + " (name) VALUES (?)", Params{cjk}, affected),
+                  "insert unicode name");
+        const Status rejected = g_client.execute(
+            "INSERT INTO " + uni + " (name) VALUES (?)", Params{std::string(1000, 'x')}, affected);
+        require(!rejected.ok() && rejected.code == ErrorCode::QueryError,
+                "oversized unicode parameter should fail as QueryError");
+        const std::string recovered = "prepared-恢复";
+        requireOk(g_client.execute(
+                          "INSERT INTO " + uni + " (name) VALUES (?)", Params{recovered}, affected),
+                  "reuse prepared insert after failure");
+        ResultSet cjkRow;
+        requireOk(g_client.query("SELECT name FROM " + uni + " ORDER BY id", cjkRow),
+                  "select unicode names");
+        const std::string firstName = cjkRow.rowCount() > 0
+                                          ? asString(cjkRow.rows()[0].at("name")) : "<missing>";
+        const std::string secondName = cjkRow.rowCount() > 1
+                                           ? asString(cjkRow.rows()[1].at("name")) : "<missing>";
+        require(cjkRow.rowCount() == 2 && firstName == cjk && secondName == recovered,
+                "NVARCHAR UTF-16 round trip failed: rows=" +
+                std::to_string(cjkRow.rowCount()) + " first=[" + firstName +
+                "] second=[" + secondName + "]");
+        requireOk(g_client.execute("DROP TABLE IF EXISTS " + uni, affected), "drop unicode table");
+
+        // Transaction savepoint (SQL Server savepoint style configured on the datasource).
+        requireOk(g_client.transaction([&](sqlconduit::core::Session &session) {
+            std::int64_t aff = 0;
+            ResultSet sessionBefore;
+            auto st = session.query("SELECT @@SPID spid, @@TRANCOUNT trancount", sessionBefore);
+            if (!st.ok()) return st;
+            const auto spid = asInt(sessionBefore.rows()[0].at("spid"));
+            if (asInt(sessionBefore.rows()[0].at("trancount")) != 1)
+                return Status::error(ErrorCode::TxError, "transaction was not active on session connection");
+            st = session.execute("INSERT INTO " + f.table + " (name,qty) VALUES ('sp-keep',1)", aff);
+            if (!st.ok()) return st;
+            st = session.savepoint("sp1");
+            if (!st.ok()) return st;
+            st = session.execute("INSERT INTO " + f.table + " (name,qty) VALUES ('sp-temp',1)", aff);
+            if (!st.ok()) return st;
+            st = session.rollbackToSavepoint("sp1");
+            if (!st.ok()) return st;
+            ResultSet sessionAfter;
+            st = session.query("SELECT @@SPID spid, @@TRANCOUNT trancount", sessionAfter);
+            if (!st.ok()) return st;
+            if (asInt(sessionAfter.rows()[0].at("spid")) != spid ||
+                asInt(sessionAfter.rows()[0].at("trancount")) != 1)
+                return Status::error(ErrorCode::TxError,
+                                     "session query did not stay on the transaction connection");
+            return session.releaseSavepoint("sp1");
+        }), "savepoint commit");
+        ResultSet sp;
+        requireOk(g_client.query("SELECT COUNT(*) n FROM " + f.table + " WHERE name='sp-keep'", sp),
+                  "sp keep count");
+        require(asInt(sp.rows()[0].at("n")) == 1, "savepoint kept row missing");
+        requireOk(g_client.query("SELECT COUNT(*) n FROM " + f.table + " WHERE name='sp-temp'", sp),
+                  "sp temp count");
+        require(asInt(sp.rows()[0].at("n")) == 0, "savepoint rollback did not undo the row");
+
+        // Bad SQL must be classified as QueryError (not silently swallowed).
+        ResultSet ignored;
+        const Status bad = g_client.query("SELECT * FROM sqlconduit_it_no_such_table_xyz", ignored);
+        require(!bad.ok() && bad.code == ErrorCode::QueryError,
+                "bad SQL should be classified as QueryError, got " +
+                std::string(sqlconduit::common::errorCodeToString(bad.code)));
+    }
 }
 
 int main() {
@@ -373,6 +452,7 @@ int main() {
         testEntityMapping(fixture);
         testScriptExecution(fixture);
         testRoutinesAndCall(fixture);
+        testSymmetryGaps(fixture);
         std::cout << "ODBC SQL Server integration test passed (" << checks << " checks)\n";
         return 0;
     } catch (const std::exception &error) {

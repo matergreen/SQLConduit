@@ -677,6 +677,28 @@ namespace {
 
         requireOk(g_client.execute("DELETE FROM " + typed, affected), "clean typed table");
     }
+
+    void testSymmetryGaps(Fixture &f) {
+        // Non-ASCII TEXT round trip (UTF-8 is the default PG server encoding).
+        const std::string cjk = "中文往返测试";
+        std::int64_t affected = 0;
+        requireOk(g_client.execute(
+                          "INSERT INTO " + f.table
+                          + " (name,qty,price,active,created_at) VALUES (?,1,1,true,now())",
+                          Params{std::string(cjk)}, affected), "insert non-ascii name");
+        ResultSet cjkRow;
+        requireOk(g_client.query("SELECT name FROM " + f.table + " WHERE name=?",
+                                 Params{std::string(cjk)}, cjkRow), "select non-ascii name");
+        require(cjkRow.rowCount() == 1 && asString(cjkRow.rows()[0].at("name")) == cjk,
+                "UTF-8 round trip failed");
+
+        // Bad SQL must be classified as QueryError (not silently swallowed).
+        ResultSet ignored;
+        const Status bad = g_client.query("SELECT * FROM sqlconduit_it_no_such_table_xyz", ignored);
+        require(!bad.ok() && bad.code == ErrorCode::QueryError,
+                "bad SQL should be classified as QueryError, got " +
+                std::string(sqlconduit::common::errorCodeToString(bad.code)));
+    }
 }
 
 int main() {
@@ -692,6 +714,7 @@ int main() {
         testScriptExecution(fixture);
         testRoutinesAndCall(fixture);
         testArrayCompositeGeometry(fixture);
+        testSymmetryGaps(fixture);
         std::cout << "PostgreSQL integration test passed (" << gChecks << " checks)\n";
         return 0;
     } catch (const std::exception &error) {

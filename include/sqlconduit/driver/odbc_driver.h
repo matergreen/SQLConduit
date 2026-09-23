@@ -103,6 +103,7 @@ namespace sqlconduit::driver {
         void *activeStmt_ = nullptr;
         std::mutex activeStmtMtx_;
         std::uint64_t defaultIsolation_ = 0;
+        bool utf8NarrowBinding_ = false;
 
         std::unordered_map<std::string, core::PreparedStatementHandle> preparedCache_;
         std::unordered_map<std::uint64_t, std::string> preparedKeys_;

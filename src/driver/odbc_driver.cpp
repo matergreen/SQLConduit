@@ -2,6 +2,7 @@
 #include "sqlconduit/driver/driver_registry.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -9,6 +10,9 @@
 #include <vector>
 
 #ifdef SQLCONDUIT_ENABLE_ODBC
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include <sql.h>
 #include <sqlext.h>
 #endif
@@ -80,7 +84,7 @@ namespace sqlconduit::driver {
             explicit StmtGuard(SQLHSTMT stmt = SQL_NULL_HSTMT) : stmt_(stmt) {
             }
 
-            ~StmtGuard() { if (stmt_ != SQL_NULL_HSTMT) SQLFreeHandle(SQL_HANDLE_STMT, stmt_); }
+            ~StmtGuard() { release(); }
 
             StmtGuard(const StmtGuard &) = delete;
 
@@ -92,7 +96,7 @@ namespace sqlconduit::driver {
 
             StmtGuard &operator=(StmtGuard &&other) noexcept {
                 if (this != &other) {
-                    if (stmt_ != SQL_NULL_HSTMT) SQLFreeHandle(SQL_HANDLE_STMT, stmt_);
+                    release();
                     stmt_ = other.stmt_;
                     other.stmt_ = SQL_NULL_HSTMT;
                 }
@@ -100,6 +104,33 @@ namespace sqlconduit::driver {
             }
 
             SQLHSTMT get() const { return stmt_; }
+
+        private:
+            void release() {
+                if (stmt_ == SQL_NULL_HSTMT) return;
+                SQLFreeStmt(stmt_, SQL_CLOSE);
+                SQLFreeStmt(stmt_, SQL_RESET_PARAMS);
+                SQLFreeHandle(SQL_HANDLE_STMT, stmt_);
+                stmt_ = SQL_NULL_HSTMT;
+            }
+
+            SQLHSTMT stmt_;
+        };
+
+        class PreparedStmtReset {
+        public:
+            explicit PreparedStmtReset(SQLHSTMT stmt) : stmt_(stmt) {
+            }
+
+            ~PreparedStmtReset() {
+                if (stmt_ == SQL_NULL_HSTMT) return;
+                SQLFreeStmt(stmt_, SQL_CLOSE);
+                SQLFreeStmt(stmt_, SQL_RESET_PARAMS);
+            }
+
+            PreparedStmtReset(const PreparedStmtReset &) = delete;
+
+            PreparedStmtReset &operator=(const PreparedStmtReset &) = delete;
 
         private:
             SQLHSTMT stmt_;
@@ -361,11 +392,63 @@ namespace sqlconduit::driver {
             std::uint64_t unsignedInteger = 0;
             double real = 0.0;
             std::string text;
+            std::vector<SQLWCHAR> wideText;
             common::Blob blob;
         };
 
+        bool utf8ToSqlWide(const std::string &text, std::vector<SQLWCHAR> &out) {
+            out.clear();
+            out.reserve(text.size() + 1);
+            for (std::size_t i = 0; i < text.size();) {
+                const auto first = static_cast<unsigned char>(text[i]);
+                std::uint32_t codePoint = 0;
+                std::size_t extra = 0;
+                if (first <= 0x7f) {
+                    codePoint = first;
+                } else if ((first & 0xe0) == 0xc0) {
+                    codePoint = first & 0x1f;
+                    extra = 1;
+                } else if ((first & 0xf0) == 0xe0) {
+                    codePoint = first & 0x0f;
+                    extra = 2;
+                } else if ((first & 0xf8) == 0xf0) {
+                    codePoint = first & 0x07;
+                    extra = 3;
+                } else {
+                    return false;
+                }
+                if (i + extra >= text.size()) return false;
+                for (std::size_t j = 1; j <= extra; ++j) {
+                    const auto next = static_cast<unsigned char>(text[i + j]);
+                    if ((next & 0xc0) != 0x80) return false;
+                    codePoint = (codePoint << 6) | (next & 0x3f);
+                }
+                if ((extra == 1 && codePoint < 0x80) ||
+                    (extra == 2 && codePoint < 0x800) ||
+                    (extra == 3 && codePoint < 0x10000) ||
+                    codePoint > 0x10ffff ||
+                    (codePoint >= 0xd800 && codePoint <= 0xdfff))
+                    return false;
+                if constexpr (sizeof(SQLWCHAR) == 2) {
+                    if (codePoint <= 0xffff) {
+                        out.push_back(static_cast<SQLWCHAR>(codePoint));
+                    } else {
+                        codePoint -= 0x10000;
+                        out.push_back(static_cast<SQLWCHAR>(0xd800 + (codePoint >> 10)));
+                        out.push_back(static_cast<SQLWCHAR>(0xdc00 + (codePoint & 0x3ff)));
+                    }
+                } else {
+                    out.push_back(static_cast<SQLWCHAR>(codePoint));
+                }
+                i += extra + 1;
+            }
+            out.push_back(0);
+            return true;
+        }
+
         common::Status bindParameters(SQLHSTMT stmt, const common::Params &params,
-                                      std::vector<ParamBinding> &storage) {
+                                      std::vector<ParamBinding> &storage,
+                                      const bool utf8NarrowBinding) {
             storage.resize(params.size());
             for (std::size_t i = 0; i < params.size(); ++i) {
                 const auto &value = params[i];
@@ -485,11 +568,33 @@ namespace sqlconduit::driver {
                     data = slot.blob.empty() ? nullptr : slot.blob.data();
                     bufferLength = static_cast<SQLLEN>(slot.blob.size());
                 } else if (const auto *v = std::get_if<std::string>(&value)) {
-                    slot.text = *v;
-                    slot.indicator = static_cast<SQLLEN>(slot.text.size());
-                    columnSize = static_cast<SQLULEN>(std::max<std::size_t>(1, slot.text.size()));
-                    data = const_cast<char *>(slot.text.data());
-                    bufferLength = static_cast<SQLLEN>(slot.text.size());
+                    if (!utf8ToSqlWide(*v, slot.wideText)) {
+                        slot.text = *v;
+                        slot.indicator = static_cast<SQLLEN>(slot.text.size());
+                        cType = SQL_C_CHAR;
+                        sqlType = slot.text.size() > 8000 ? SQL_LONGVARCHAR : SQL_VARCHAR;
+                        columnSize = static_cast<SQLULEN>(std::max<std::size_t>(1, slot.text.size()));
+                        data = const_cast<char *>(slot.text.data());
+                        bufferLength = static_cast<SQLLEN>(slot.text.size());
+                    } else if (utf8NarrowBinding) {
+                        const std::size_t units = slot.wideText.size() - 1;
+                        slot.text = *v;
+                        slot.indicator = static_cast<SQLLEN>(slot.text.size());
+                        cType = SQL_C_CHAR;
+                        sqlType = units > 4000 ? SQL_WLONGVARCHAR : SQL_WVARCHAR;
+                        columnSize = static_cast<SQLULEN>(std::max<std::size_t>(
+                            1, std::max(units, slot.text.size())));
+                        data = const_cast<char *>(slot.text.data());
+                        bufferLength = static_cast<SQLLEN>(slot.text.size());
+                    } else {
+                        const std::size_t units = slot.wideText.size() - 1;
+                        slot.indicator = static_cast<SQLLEN>(units * sizeof(SQLWCHAR));
+                        cType = SQL_C_WCHAR;
+                        sqlType = units > 4000 ? SQL_WLONGVARCHAR : SQL_WVARCHAR;
+                        columnSize = static_cast<SQLULEN>(std::max<std::size_t>(1, units));
+                        data = slot.wideText.data();
+                        bufferLength = static_cast<SQLLEN>(slot.wideText.size() * sizeof(SQLWCHAR));
+                    }
                 } else if (std::holds_alternative<common::Array>(value)||
         std::holds_alternative<common::Composite> (value)||
         std::holds_alternative<common::TypedArray> (value)||
@@ -512,14 +617,16 @@ namespace sqlconduit::driver {
 
         common::Status prepareAndBind(SQLHDBC dbc, const config::DataSourceConfig &cfg,
                                       const std::string &sql, const common::Params &params,
-                                      SQLHSTMT &stmt, std::vector<ParamBinding> &storage) {
+                                      SQLHSTMT &stmt, std::vector<ParamBinding> &storage,
+                                      const bool utf8NarrowBinding) {
             if (const auto status = newStatement(dbc, cfg, stmt); !status.ok()) return status;
             if (const SQLRETURN rc = SQLPrepare(
                     stmt, reinterpret_cast<SQLCHAR *>(const_cast<char *>(sql.data())), SQL_NTS);
                 !succeeded(rc))
                 return odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, stmt,
                                  "SQLPrepare");
-            if (const auto status = bindParameters(stmt, params, storage); !status.ok()) return status;
+            if (const auto status = bindParameters(stmt, params, storage, utf8NarrowBinding);
+                !status.ok()) return status;
             return common::Status::OK();
         }
 #endif
@@ -700,6 +807,33 @@ namespace sqlconduit::driver {
         }
         open_ = true;
         txOpen_ = false;
+        utf8NarrowBinding_ = false;
+        SQLCHAR driverName[256] = {};
+        SQLSMALLINT driverNameLength = 0;
+        if (succeeded(SQLGetInfo(dbc, SQL_DRIVER_NAME, driverName, sizeof(driverName),
+                                 &driverNameLength))) {
+            std::string name(reinterpret_cast<char *>(driverName),
+                             std::min<std::size_t>(
+                                 sizeof(driverName) - 1,
+                                 static_cast<std::size_t>(std::max<SQLSMALLINT>(0, driverNameLength))));
+            std::transform(name.begin(), name.end(), name.begin(), [](const unsigned char ch) {
+                return static_cast<char>(std::tolower(ch));
+            });
+            utf8NarrowBinding_ = name.find("tdsodbc") != std::string::npos ||
+                                 name.find("freetds") != std::string::npos;
+        }
+        if (const auto mode = cfg.extra.find("unicode_binding"); mode != cfg.extra.end()) {
+            if (mode->second == "wide") {
+                utf8NarrowBinding_ = false;
+            } else if (mode->second == "utf8") {
+                utf8NarrowBinding_ = true;
+            } else if (mode->second != "auto") {
+                close();
+                return common::Status::error(
+                    common::ErrorCode::ConfigError,
+                    "ODBC extra.unicode_binding must be auto, wide, or utf8");
+            }
+        }
         SQLUINTEGER isolation = 0;
         if (succeeded(SQLGetConnectAttr(dbc, SQL_ATTR_TXN_ISOLATION,
                                         &isolation, 0, nullptr)))
@@ -802,7 +936,7 @@ namespace sqlconduit::driver {
         SQLHSTMT raw = SQL_NULL_HSTMT;
         std::vector<ParamBinding> storage;
         const auto status = prepareAndBind(static_cast<SQLHDBC>(dbc_), cfg_, sql, params,
-                                           raw, storage);
+                                           raw, storage, utf8NarrowBinding_);
         StmtGuard stmt(raw);
         if (!status.ok()) return status;
         ActiveStatement active(activeStmtMtx_, activeStmt_, raw);
@@ -828,7 +962,7 @@ namespace sqlconduit::driver {
         SQLHSTMT raw = SQL_NULL_HSTMT;
         std::vector<ParamBinding> storage;
         const auto status = prepareAndBind(static_cast<SQLHDBC>(dbc_), cfg_, sql, params,
-                                           raw, storage);
+                                           raw, storage, utf8NarrowBinding_);
         StmtGuard stmt(raw);
         if (!status.ok()) return status;
         ActiveStatement active(activeStmtMtx_, activeStmt_, raw);
@@ -861,7 +995,7 @@ namespace sqlconduit::driver {
         SQLHSTMT raw = SQL_NULL_HSTMT;
         std::vector<ParamBinding> storage;
         const auto status = prepareAndBind(static_cast<SQLHDBC>(dbc_), cfg_, sql, params,
-                                           raw, storage);
+                                           raw, storage, utf8NarrowBinding_);
         StmtGuard stmt(raw);
         if (!status.ok()) return status;
         ActiveStatement active(activeStmtMtx_, activeStmt_, raw);
@@ -1051,6 +1185,7 @@ namespace sqlconduit::driver {
         env_ = nullptr;
         txOpen_ = false;
         defaultIsolation_ = 0;
+        utf8NarrowBinding_ = false;
         open_ = false;
     }
 
@@ -1099,7 +1234,7 @@ namespace sqlconduit::driver {
             !succeeded(rc))
             return odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, raw, "SQLPrepare");
         std::vector<ParamBinding> storage;
-        if (const auto s = bindParameters(raw, params, storage); !s.ok()) return s;
+        if (const auto s = bindParameters(raw, params, storage, utf8NarrowBinding_); !s.ok()) return s;
         if (const SQLRETURN rc = SQLExecute(raw); !succeeded(rc))
             return odbcError(common::ErrorCode::CursorError, SQL_HANDLE_STMT, raw, "SQLExecute");
         auto cur = std::make_unique<OdbcCursor>(std::move(stmt), std::move(storage),
@@ -1163,7 +1298,7 @@ namespace sqlconduit::driver {
         SQLHSTMT raw = SQL_NULL_HSTMT;
         std::vector<ParamBinding> storage;
         const auto status = prepareAndBind(static_cast<SQLHDBC>(dbc_), cfg_, sql, params,
-                                           raw, storage);
+                                           raw, storage, utf8NarrowBinding_);
         StmtGuard stmt(raw);
         if (!status.ok()) return status;
         ActiveStatement active(activeStmtMtx_, activeStmt_, raw);
@@ -1266,7 +1401,9 @@ namespace sqlconduit::driver {
                                          "ODBC: prepared handle is invalid or has been evicted");
         SQLHSTMT stmt = reinterpret_cast<SQLHSTMT>(cached->second.native());
         std::vector<ParamBinding> storage;
-        if (const auto status = bindParameters(stmt, params, storage); !status.ok()) return status;
+        PreparedStmtReset reset(stmt);
+        if (const auto status = bindParameters(stmt, params, storage, utf8NarrowBinding_);
+            !status.ok()) return status;
         ActiveStatement active(activeStmtMtx_, activeStmt_, reinterpret_cast<void *>(stmt));
         if (const SQLRETURN rc = SQLExecute(stmt); !succeeded(rc))
             return odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, stmt,
@@ -1297,7 +1434,9 @@ namespace sqlconduit::driver {
                                          "ODBC: prepared handle is invalid or has been evicted");
         SQLHSTMT stmt = reinterpret_cast<SQLHSTMT>(cached->second.native());
         std::vector<ParamBinding> storage;
-        if (const auto status = bindParameters(stmt, params, storage); !status.ok()) return status;
+        PreparedStmtReset reset(stmt);
+        if (const auto status = bindParameters(stmt, params, storage, utf8NarrowBinding_);
+            !status.ok()) return status;
         ActiveStatement active(activeStmtMtx_, activeStmt_, reinterpret_cast<void *>(stmt));
         if (const SQLRETURN rc = SQLExecute(stmt); !executionCompleted(rc))
             return odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, stmt,

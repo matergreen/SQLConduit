@@ -80,9 +80,9 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           cmake -S . -B build -A x64 `
-            -DSQLCONDUIT_ENABLE_MYSQL=${{ matrix.drivers }} `
-            -DSQLCONDUIT_ENABLE_POSTGRES=${{ matrix.drivers }} `
-            -DSQLCONDUIT_ENABLE_ODBC=${{ matrix.drivers }} `
+            -DSQLCONDUIT_ENABLE_MYSQL=OFF `
+            -DSQLCONDUIT_ENABLE_POSTGRES=OFF `
+            -DSQLCONDUIT_ENABLE_ODBC=ON `
             -DSQLCONDUIT_ENABLE_ORACLE=OFF `
             -DSQLCONDUIT_BUILD_TESTS=ON
 

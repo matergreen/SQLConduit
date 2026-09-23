@@ -190,13 +190,17 @@ endif()
 
 if(SQLCONDUIT_ENABLE_ODBC)
     target_compile_definitions(sqlconduit PRIVATE SQLCONDUIT_ENABLE_ODBC)
-    find_path(ODBC_INCLUDE_DIR NAMES sql.h)
-    find_library(ODBC_LIBRARY  NAMES odbc)
-    if(NOT ODBC_INCLUDE_DIR OR NOT ODBC_LIBRARY)
-        message(FATAL_ERROR "SQLCONDUIT_ENABLE_ODBC=ON but unixODBC not found. "
-            "Run: sudo apt install -y unixodbc-dev")
+    if(WIN32)
+        set(ODBC_LIBRARY odbc32)
+    else()
+        find_path(ODBC_INCLUDE_DIR NAMES sql.h)
+        find_library(ODBC_LIBRARY NAMES odbc)
+        if(NOT ODBC_INCLUDE_DIR OR NOT ODBC_LIBRARY)
+            message(FATAL_ERROR "SQLCONDUIT_ENABLE_ODBC=ON but unixODBC not found. "
+                "Run: sudo apt install -y unixodbc-dev")
+        endif()
+        target_include_directories(sqlconduit PRIVATE ${ODBC_INCLUDE_DIR})
     endif()
-    target_include_directories(sqlconduit PRIVATE ${ODBC_INCLUDE_DIR})
     sqlconduit_add_driver_dep(ODBC "${ODBC_LIBRARY}")
 endif()
 

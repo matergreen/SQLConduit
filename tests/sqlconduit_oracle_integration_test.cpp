@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -21,10 +22,14 @@ struct OraItem {
     std::string name;
     std::int64_t qty = 0;
     double price = 0;
-    sqlconduit::common::Blob payload;
-    std::string doc;
-    sqlconduit::common::Decimal amount{"0"};
+    std::optional<sqlconduit::common::Blob> payload;
+    std::optional<std::string> doc;
+    std::optional<sqlconduit::common::Decimal> amount;
     sqlconduit::common::Timestamp createdAt;
+};
+
+struct OraRequiredBlob {
+    sqlconduit::common::Blob payload;
 };
 
 namespace sqlconduit::mapping {
@@ -40,6 +45,13 @@ namespace sqlconduit::mapping {
                     .field(&OraItem::doc, "doc")
                     .field(&OraItem::amount, "amount")
                     .field(&OraItem::createdAt, "created_at");
+        }
+    };
+
+    template<>
+    struct RowMapper<OraRequiredBlob> {
+        static Mapping<OraRequiredBlob> describe() {
+            return Mapping<OraRequiredBlob>().field(&OraRequiredBlob::payload, "payload");
         }
     };
 }
@@ -448,6 +460,80 @@ namespace {
         require(output.outParams.size() == 1 && asInt(output.outParams[0]) == 10,
                 "named collection members were bound in order");
     }
+
+    void testSymmetryGaps(Fixture &f) {
+        // Seed rows for the mapped streaming + prepared-reuse checks.
+        std::int64_t affected = 0;
+        for (int i = 0; i < 4; ++i) {
+            requireOk(g_client.execute(
+                          "INSERT INTO " + f.table +
+                          " (\"name\", \"qty\", \"price\", \"created_at\") VALUES (?, ?, ?, ?)",
+                          Params{
+                              std::string("each-" + std::to_string(i)), std::int64_t(i), 1.0,
+                              std::chrono::system_clock::now()
+                          }, affected), "seed each row");
+        }
+
+        // queryEachAs: mapped entity streaming (Oracle previously only covered queryEach).
+        std::uint64_t mapped = 0;
+        auto each = sqlconduit::queryEachAs<OraItem>(g_client,
+                                                     "SELECT \"id\", \"name\", \"qty\", \"price\", "
+                                                     "\"payload\", \"doc\", \"amount\", \"created_at\" FROM "
+                                                     + f.table + " WHERE \"name\" LIKE ?",
+                                                     Params{std::string("each-%")},
+                                                     [](OraItem &&) { return true; }, mapped);
+        ResultSet eachCount;
+        requireOk(g_client.query("SELECT COUNT(*) AS N FROM " + f.table + " WHERE \"name\" LIKE ?",
+                                 Params{std::string("each-%")}, eachCount), "each count");
+        const auto eachRows = asInt(eachCount.rows()[0].at("N"));
+        require(each.ok() && mapped == 4,
+                "queryEachAs mapped count mismatch (mapped=" + std::to_string(mapped)
+                + " rows=" + std::to_string(eachRows) + ")");
+        std::uint64_t requiredMapped = 0;
+        const auto required = sqlconduit::queryEachAs<OraRequiredBlob>(
+            g_client,
+            "SELECT \"payload\" FROM " + f.table + " WHERE \"name\" = ?",
+            Params{std::string("each-0")}, [](OraRequiredBlob &&) { return true; }, requiredMapped);
+        require(!required.ok() && required.code == ErrorCode::MappingError && requiredMapped == 0,
+                "NULL should fail mapping into a non-optional Blob");
+
+        // Async path: queryAsync is configured on but was never invoked.
+        auto future = g_client.queryAsync("SELECT COUNT(*) AS N FROM " + f.table);
+        const auto asyncRows = future.get();
+        requireOk(asyncRows.status, "async query");
+        require(asInt(asyncRows.rows.rows()[0].at("N")) >= 4, "async count mismatch");
+
+        // Explicit prepared-statement reuse (config has prepared_cache enabled).
+        requireOk(g_client.withSession([&](sqlconduit::core::Session &session) {
+            sqlconduit::core::PreparedStatementHandle prepared;
+            auto st = session.prepare("SELECT \"qty\" FROM " + f.table + " WHERE \"name\" = ?",
+                                      Params{std::string()}, prepared);
+            if (!st.ok()) return st;
+            if (!prepared.valid()) return Status::error(ErrorCode::QueryError, "invalid prepared handle");
+            for (int i = 0; i < 4; ++i) {
+                ResultSet rows;
+                st = session.executePrepared(prepared,
+                                             Params{std::string("each-" + std::to_string(i))}, rows);
+                if (!st.ok()) return st;
+                if (rows.rowCount() != 1 || asInt(rows.rows()[0].at("qty")) != i)
+                    return Status::error(ErrorCode::QueryError, "prepared result mismatch");
+            }
+            return Status::OK();
+        }), "explicit prepared reuse");
+
+        // NULL binding round trip.
+        ResultSet nullRow;
+        requireOk(g_client.query("SELECT ? AS v FROM DUAL", Params{nullptr}, nullRow), "NULL bind");
+        require(std::holds_alternative<std::nullptr_t>(nullRow.rows()[0].at("v")),
+                "NULL binding round trip failed");
+
+        // Bad SQL must be classified as QueryError (not silently swallowed).
+        ResultSet ignored;
+        const Status bad = g_client.query("SELECT * FROM sqlconduit_it_no_such_table", ignored);
+        require(!bad.ok() && bad.code == ErrorCode::QueryError,
+                "bad SQL should be classified as QueryError, got " +
+                std::string(sqlconduit::common::errorCodeToString(bad.code)));
+    }
 }
 
 int main() {
@@ -459,6 +545,7 @@ int main() {
         testTransactionsAndSavepoints(f);
         testStreamingAndErrors(f);
         testCallableApi(f);
+        testSymmetryGaps(f);
         std::cout << "Oracle integration test passed (" << gChecks << " checks)\n";
         return 0;
     } catch (const std::exception &e) {

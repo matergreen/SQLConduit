@@ -11,6 +11,9 @@
 
 #ifdef SQLCONDUIT_ENABLE_ODBC
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #endif
 #include <sql.h>

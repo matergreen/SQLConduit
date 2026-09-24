@@ -12,6 +12,14 @@ namespace sqlconduit::common::util {
         Oracle = 4
     };
 
+    enum class RoutineKind { Function = 0, Procedure = 1 };
+
+    struct RoutineRef {
+        std::string name;
+        RoutineKind kind = RoutineKind::Procedure;
+        std::string dataSource;
+    };
+
     inline std::string quoteIdent(const std::string &identifier, const Dialect dialect) {
         const char quote = dialect == Dialect::MySQL ? '`' : '"';
         std::string out;

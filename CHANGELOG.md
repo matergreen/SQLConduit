@@ -8,6 +8,16 @@ description.
 
 ## [0.8.0]
 
+### Performance
+
+- Bounded the prepared-statement cache to 128 entries per connection by default and changed all
+  four driver LRU hit paths from linear list scans to constant-time iterator moves.
+- Removed the per-row copy from `queryEach` when interceptors are disabled or absent, fixed cursor
+  single-row fetches that accidentally copied from a const result, and avoided mapping every row
+  before `queryOneAs` reports a multi-row contract violation.
+- Raised the default idle-connection validation interval to 30 seconds and made heartbeat checks
+  honor that interval instead of pinging every idle connection on every heartbeat.
+
 ### Structured SQL construction
 
 - Added a deterministic, parameter-only CRUD builder for `SELECT`, `INSERT`, `UPDATE`, and
@@ -18,6 +28,21 @@ description.
   explicit dialect, and ODBC never guesses its backend dialect.
 - Reused the builder from entity mapping INSERT/UPDATE generation and added unit, public-contract,
   integration-matrix, and microbenchmark coverage.
+
+### Public API surface
+
+- Added a curated re-export facade in `sqlconduit/public.h` (pulled in by the `sqlconduit.h`
+  umbrella): the most-used public types and SQL-builder free functions are now reachable directly
+  under `sqlconduit::` (e.g. `sqlconduit::Dialect`, `sqlconduit::Value`, `sqlconduit::Builder`,
+  `sqlconduit::eq`). The deep namespace paths (`sqlconduit::common::util::Dialect`,
+  `sqlconduit::core::Cursor`, ...) remain valid for backward compatibility.
+- Extended the facade to cover the remaining 3-level public namespaces: routine/DDL options and
+  results (`sqlconduit::RoutineRef`, `sqlconduit::ExecOptions`, `sqlconduit::CallOptions`,
+  `sqlconduit::IndexSpec`, `sqlconduit::CallResult`, `sqlconduit::ScriptResult`,
+  `sqlconduit::CallParams`), the SQL-analysis utilities (`sqlconduit::StatementKind`,
+  `sqlconduit::classifyStatement`, `sqlconduit::hasWhereClause`, ...), and the routine/DDL free
+  functions (`sqlconduit::call`, `sqlconduit::createRoutine`, `sqlconduit::dropRoutine`,
+  `sqlconduit::createIndex`, `sqlconduit::runScripts`, `sqlconduit::quoteIdent`, ...).
 
 ### Configuration contract
 

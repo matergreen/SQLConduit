@@ -137,6 +137,35 @@ static_assert(std::is_same_v<decltype(std::declval<const sqlconduit::sql::Builde
 static_assert(static_cast<int>(sqlconduit::core::Cursor::Binding::OwnsHandle) == 0);
 static_assert(static_cast<int>(sqlconduit::core::Cursor::Binding::BorrowedInSession) == 1);
 
+// Curated re-export facade: high-frequency public symbols must be reachable
+// directly under sqlconduit:: while the deep namespace paths stay valid.
+static_assert(static_cast<int>(sqlconduit::Dialect::Auto) == 0);
+static_assert(static_cast<int>(sqlconduit::Dialect::Oracle) == 4);
+static_assert(static_cast<int>(sqlconduit::RoutineKind::Function) == 0);
+static_assert(static_cast<int>(sqlconduit::RoutineKind::Procedure) == 1);
+static_assert(std::is_same_v<decltype(sqlconduit::Value{nullptr}), sqlconduit::Value>);
+static_assert(std::is_same_v<decltype(sqlconduit::eq("id", 1)), sqlconduit::Condition>);
+static_assert(std::is_same_v<decltype(sqlconduit::Builder::select("t")), sqlconduit::Builder>);
+static_assert(std::is_same_v<decltype(std::declval<const sqlconduit::Builder &>().build()),
+                             sqlconduit::BuildResult>);
+static_assert(std::is_same_v<decltype(sqlconduit::Cursor::Binding::OwnsHandle),
+                             sqlconduit::core::Cursor::Binding>);
+
+// Expanded facade: routine/DDL options, call results, and SQL analysis must
+// also be reachable directly under sqlconduit::.
+static_assert(std::is_same_v<sqlconduit::RoutineRef, sqlconduit::common::util::RoutineRef>);
+static_assert(std::is_same_v<sqlconduit::ExecOptions, sqlconduit::common::util::ExecOptions>);
+static_assert(std::is_same_v<sqlconduit::CallOptions, sqlconduit::common::util::CallOptions>);
+static_assert(std::is_same_v<sqlconduit::IndexSpec, sqlconduit::common::util::IndexSpec>);
+static_assert(std::is_same_v<sqlconduit::CallResult, sqlconduit::common::util::CallResult>);
+static_assert(std::is_same_v<sqlconduit::ScriptResult, sqlconduit::common::util::ScriptResult>);
+static_assert(std::is_same_v<sqlconduit::CallParams, sqlconduit::common::CallParams>);
+static_assert(std::is_same_v<sqlconduit::StatementKind, sqlconduit::common::sql::StatementKind>);
+static_assert(std::is_invocable_r_v<std::string, decltype(sqlconduit::quoteIdent),
+             const std::string &, sqlconduit::Dialect>);
+static_assert(std::is_invocable_r_v<sqlconduit::StatementKind, decltype(sqlconduit::classifyStatement),
+             const std::string &>);
+
 int main() {
     return 0;
 }

@@ -33,6 +33,7 @@ set(SQLCONDUIT_FROZEN_PUBLIC_HEADERS
     sqlconduit/drivers/postgres.h
     sqlconduit/exporters/prometheus.h
     sqlconduit/mapping.h
+    sqlconduit/public.h
     sqlconduit/sql_builder.h
     sqlconduit/sqlconduit.h
     sqlconduit/util.h

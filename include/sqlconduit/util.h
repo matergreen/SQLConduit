@@ -7,7 +7,7 @@
 #include "sqlconduit/common/types.h"
 #include "sqlconduit/core/database_manager.h"
 #include "sqlconduit/core/query_cache.h"
-#include "sqlconduit/sqlconduit.h"
+#include "sqlconduit/client.h"
 
 #include <algorithm>
 #include <cctype>
@@ -26,14 +26,6 @@
 #include <vector>
 
 namespace sqlconduit::common::util {
-    enum class RoutineKind { Function = 0, Procedure = 1 };
-
-    struct RoutineRef {
-        std::string name;
-        RoutineKind kind = RoutineKind::Procedure;
-        std::string dataSource;
-    };
-
     struct ExecOptions {
         std::string dataSource;
         Dialect dialect = Dialect::Auto;

@@ -279,7 +279,7 @@ auto st = client.transaction([](sqlconduit::core::Session& s) {
 
 - A handle's lifetime is bound to "the current physical connection" and valid only while the connection / `Session` is alive; once the connection is returned / closed the handle is invalid, and the driver calls `closeAllPrepared()` from `close()` to release the native handle (MySQL `mysql_stmt_close` / PG `DEALLOCATE` / ODBC `SQLFreeHandle` / Oracle `OCIStmtRelease`).
 - The cache lives on the driver connection object; it survives being returned to the pool and is reused when the same connection is borrowed again. Pools are per data source, so prepared statements never leak across sources.
-- `max_per_connection > 0` evicts the least-recently-used handle via LRU; `0` = unlimited (reclaimed naturally when the connection closes).
+- `max_per_connection > 0` evicts the least-recently-used handle via LRU; the default is `128`; explicitly setting `0` means unlimited and is recommended only for a strictly bounded SQL set.
 - A prepared execution still passes the `DataSource` entry-point `preGate` (once); the result-cache key logic is unchanged; auditing still classifies by SQL text.
 
 ### Generated keys / auto-increment ID (GeneratedKeys)
@@ -329,13 +329,13 @@ ds->execute("INSERT INTO t(id, blob) VALUES(?, ?)", sp, n);   // or query / exec
 {
   "prepared_cache": {
     "enabled": true,
-    "max_per_connection": 0
+    "max_per_connection": 128
   }
 }
 ```
 
 - `enabled` defaults to `true` (a pure, transparent, side-effect-free performance optimization); turning it off degrades to re-binding every time.
-- `max_per_connection`: `0` = unlimited; `>0` triggers LRU eviction.
+- `max_per_connection`: defaults to `128`; `0` = unlimited; `>0` enables O(1) LRU eviction.
 - Generated keys / large-parameter streaming are API-driven and need no config switch.
 
 ## Timeouts, cancellation & transaction options
@@ -708,7 +708,7 @@ Implementation: each connection keeps an SQL-to-handle cache, an LRU list, and a
 - **value** = `PreparedStatementHandle { uint64_t id; void* native; }`: `native` is `MYSQL_STMT*` for MySQL, `nullptr` for PG (name stored separately in `preparedNames_`), `SQLHSTMT` for ODBC. What is stored is the **native server-side prepared statement handle**, not a result.
 
 **Expiry policy:**
-- **LRU capacity eviction**: when `max_per_connection > 0`, after insertion `while(size > limit)` evicts from the `lru_` head (least recently used) and releases the native handle via `mysql_stmt_close` / `conn_->unprepare` / `SQLFreeHandle`; `0` = unlimited (reclaimed on connection close). On a hit the key is moved to the `lru_` tail.
+- **LRU capacity eviction**: each connection keeps at most `128` handles by default. When `max_per_connection > 0`, the least-recently-used entry is evicted and its native handle is released; `0` = unlimited (reclaimed on connection close). Hits move to the LRU tail in O(1) through a stored iterator.
 - On connection close: `closeAllPrepared()` releases every handle of that connection.
 
 **Why**: prepare-once / execute-many for hot statements, saving the server-side hard-parse + type-inference round-trip; it **changes no query result** and is a pure performance optimization, so it is **on by default**.
@@ -1939,7 +1939,7 @@ should branch on `ErrorCode` and treat message text as a human diagnostic rather
 | `rate_limit.*` | Rate limiting: per-source total QPS / per-SQL-fingerprint QPS / burst capacity / fingerprint mode (off by default) |
 | `sql_audit.*` | SQL audit: action (block/warn, default warn), WHERE-less DML, LIMIT-less SELECT, read-only interception, fingerprint black/whitelist (off by default) |
 | `query_cache.*` | Query result cache: TTL, entry cap, memory cap, replica-only caching (off by default) |
-| `prepared_cache.*` | Prepared-statement cache: max handles per connection (0 = unlimited, LRU eviction), enabled flag (default true) |
+| `prepared_cache.*` | Prepared-statement cache: max handles per connection (default 128; 0 = unlimited), enabled flag (default true) |
 | `datasources[].name` | Data source name (unique) |
 | `datasources[].oracle.service_name` / `sid` | Oracle service name or SID (mutually exclusive) |
 | `datasources[].oracle.wallet_location` / `server_cert_dn` | Oracle TCPS wallet and optional server certificate DN |

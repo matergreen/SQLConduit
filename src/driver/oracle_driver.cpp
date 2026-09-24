@@ -4,6 +4,7 @@
 #include "sqlconduit/common/oracle_types.h"
 
 #include <algorithm>
+#include <iterator>
 #include <cerrno>
 #include <cstring>
 #include <functional>
@@ -1628,9 +1629,8 @@ namespace sqlconduit::driver {
 
         const std::string key = sql + common::paramTypeSignature(typesSample);
         if (const auto it = preparedCache_.find(key); it != preparedCache_.end()) {
-            preparedLru_.remove(key);
-            preparedLru_.push_back(key);
-            out = it->second;
+            preparedLru_.splice(preparedLru_.end(), preparedLru_, it->second.lru);
+            out = it->second.handle;
             return common::Status::OK();
         }
 
@@ -1648,18 +1648,18 @@ namespace sqlconduit::driver {
 
         const core::PreparedStatementHandle h =
                 core::PreparedStatementHandle::make(preparedSeq_, nullptr);
-        preparedCache_[key] = h;
         // Keep the caller-facing SQL here. runStatement() owns placeholder rewriting and must see
         // the original question marks again when a cached statement is executed.
-        preparedSql_[preparedSeq_] = sql;
         preparedLru_.push_back(key);
+        preparedCache_.emplace(key, PreparedEntry{h, std::prev(preparedLru_.end())});
+        preparedSql_[preparedSeq_] = sql;
         if (preparedLimit_ > 0) {
             while (preparedCache_.size() > static_cast<std::size_t>(preparedLimit_)) {
                 const std::string oldKey = preparedLru_.front();
                 preparedLru_.pop_front();
                 const auto old = preparedCache_.find(oldKey);
                 if (old == preparedCache_.end()) continue;
-                dropCachedStatement(old->second.id());
+                dropCachedStatement(old->second.handle.id());
                 preparedCache_.erase(old);
             }
         }
@@ -1758,6 +1758,15 @@ namespace sqlconduit::driver {
 
     void OracleConnection::setPreparedCacheLimit(const int maxPerConnection) {
         preparedLimit_ = maxPerConnection;
+        while (preparedLimit_ > 0 &&
+               preparedCache_.size() > static_cast<std::size_t>(preparedLimit_)) {
+            const std::string oldKey = preparedLru_.front();
+            preparedLru_.pop_front();
+            const auto old = preparedCache_.find(oldKey);
+            if (old == preparedCache_.end()) continue;
+            dropCachedStatement(old->second.handle.id());
+            preparedCache_.erase(old);
+        }
     }
 
     common::Status OracleConnection::executeBatch(const std::string &sql,

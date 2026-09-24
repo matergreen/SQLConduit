@@ -57,10 +57,13 @@ namespace sqlconduit::core {
 
             [[nodiscard]] bool enabled() const noexcept;
 
+            [[nodiscard]] bool active() const noexcept;
+
             void setEnabled(bool value) noexcept;
 
         private:
             std::atomic<bool> enabled_{false};
+            std::atomic<std::size_t> count_{0};
             mutable std::mutex mutex_;
             std::vector<std::shared_ptr<ISqlInterceptor> > interceptors_;
         };

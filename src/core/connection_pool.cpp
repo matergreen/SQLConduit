@@ -93,7 +93,7 @@ namespace sqlconduit::core {
                         new ConnectionPool::Handle(weak_from_this(), std::move(conn),
                                                    createdAt, now));
                 } else {
-                    idle.push(IdleConnection{std::move(conn), createdAt, now});
+                    idle.push(IdleConnection{std::move(conn), createdAt, now, now});
                 }
             }
         }
@@ -155,7 +155,7 @@ namespace sqlconduit::core {
                 if (state_->total >= maxConn_) overflow = true;
                 else {
                     const auto now = std::chrono::steady_clock::now();
-                    state_->idle.push(State::IdleConnection{std::move(conn), now, now});
+                    state_->idle.push(State::IdleConnection{std::move(conn), now, now, now});
                     ++state_->total;
                     ++state_->connectionsCreated;
                 }
@@ -599,7 +599,11 @@ namespace sqlconduit::core {
             const auto now = std::chrono::steady_clock::now();
             const bool expired = maxLifetime_ > std::chrono::milliseconds(0) &&
                                  now - item.createdAt >= maxLifetime_;
-            const bool alive = !retireForIdle && !expired && item.conn && item.conn->ping().ok();
+            const bool needsPing = state_->validationInterval <= std::chrono::milliseconds(0) ||
+                                   now - item.lastValidated >= state_->validationInterval;
+            const bool alive = !retireForIdle && !expired && item.conn &&
+                               (!needsPing || item.conn->ping().ok());
+            if (alive && needsPing) item.lastValidated = now;
 
             {
                 std::lock_guard<std::mutex> lk(state_->mtx);
@@ -642,7 +646,7 @@ namespace sqlconduit::core {
                 break;
             }
             const auto now = std::chrono::steady_clock::now();
-            fresh.push_back(State::IdleConnection{std::move(conn), now, now});
+            fresh.push_back(State::IdleConnection{std::move(conn), now, now, now});
         }
 
         {

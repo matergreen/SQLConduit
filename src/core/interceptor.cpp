@@ -48,12 +48,20 @@ namespace sqlconduit::core {
     void detail::InterceptorRegistryState::add(std::shared_ptr<ISqlInterceptor> interceptor) {
         if (!interceptor) return;
         std::lock_guard<std::mutex> lock(mutex_);
-        interceptors_.push_back(std::move(interceptor));
+        const auto previous = interceptors_.size();
+        count_.store(previous + 1, std::memory_order_release);
+        try {
+            interceptors_.push_back(std::move(interceptor));
+        } catch (...) {
+            count_.store(previous, std::memory_order_release);
+            throw;
+        }
     }
 
     void detail::InterceptorRegistryState::clear() {
         std::lock_guard<std::mutex> lock(mutex_);
         interceptors_.clear();
+        count_.store(0, std::memory_order_release);
     }
 
     detail::InterceptorRegistryState::Snapshot
@@ -64,6 +72,11 @@ namespace sqlconduit::core {
 
     bool detail::InterceptorRegistryState::enabled() const noexcept {
         return enabled_.load(std::memory_order_acquire);
+    }
+
+    bool detail::InterceptorRegistryState::active() const noexcept {
+        return enabled_.load(std::memory_order_acquire) &&
+               count_.load(std::memory_order_acquire) != 0;
     }
 
     void detail::InterceptorRegistryState::setEnabled(const bool value) noexcept {

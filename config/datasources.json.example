@@ -9,7 +9,8 @@
     "borrow_timeout_ms": 30000,
     "idle_timeout_ms": 600000,
     "max_lifetime_ms": 1800000,
-    "leak_detection_threshold_ms": 30000
+    "leak_detection_threshold_ms": 30000,
+    "validation_interval_ms": 30000
   },
   "retry": {
     "max_attempts": 3,
@@ -48,7 +49,7 @@
 
   "prepared_cache": {
     "enabled": true,
-    "max_per_connection": 0
+    "max_per_connection": 128
   },
 
   "observability": {

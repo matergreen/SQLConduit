@@ -52,7 +52,7 @@ namespace sqlconduit::config {
         int idle_timeout_ms = 600000;
         int max_lifetime_ms = 1800000;
         int leak_detection_threshold_ms = 30000;
-        int validation_interval_ms = 500;
+        int validation_interval_ms = 30000;
     };
 
     struct RetryConfig {
@@ -163,7 +163,7 @@ namespace sqlconduit::config {
 
     struct PreparedCacheConfig {
         bool enabled = true;
-        int max_per_connection = 0;
+        int max_per_connection = 128;
     };
 
     struct ReplicaConfig {

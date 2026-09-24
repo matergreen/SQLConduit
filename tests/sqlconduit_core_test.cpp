@@ -50,6 +50,7 @@ public:
     static std::atomic<int> executeFailuresRemaining;
     static std::atomic<int> queryCalls;
     static std::atomic<int> executeCalls;
+    static std::atomic<int> pingCalls;
     static std::atomic<int> executeOkBeforeFail;
     static std::atomic<bool> cancelThrows;
     static std::atomic<bool> cancelUnsupported;
@@ -76,6 +77,7 @@ public:
     }
 
     common::Status ping() override {
+        ++pingCalls;
         if (!open_ || pingFails.load()) return Status::error(common::ErrorCode::PingFailed, "mock ping failed");
         return Status::OK();
     }
@@ -197,6 +199,7 @@ std::atomic<int> MockConnection::queryFailuresRemaining{0};
 std::atomic<int> MockConnection::executeFailuresRemaining{0};
 std::atomic<int> MockConnection::queryCalls{0};
 std::atomic<int> MockConnection::executeCalls{0};
+std::atomic<int> MockConnection::pingCalls{0};
 std::atomic<int> MockConnection::executeOkBeforeFail{-1};
 std::atomic<bool> MockConnection::cancelThrows{false};
 std::atomic<bool> MockConnection::cancelUnsupported{true};
@@ -219,10 +222,13 @@ static config::DataSourceConfig mockCfg(const std::string &name = "mock") {
     return c;
 }
 
-static std::shared_ptr<core::ConnectionPool> makePool(int min, int max, int timeoutMs = 300) {
+static std::shared_ptr<core::ConnectionPool> makePool(int min, int max, int timeoutMs = 300,
+                                                      int validationIntervalMs = 30000) {
     return std::make_shared<core::ConnectionPool>(
         std::make_unique<MockDriver>(), mockCfg(), min, max,
-        std::chrono::milliseconds(timeoutMs));
+        std::chrono::milliseconds(timeoutMs), std::chrono::milliseconds(0),
+        std::chrono::milliseconds(0), std::chrono::milliseconds(0),
+        std::chrono::milliseconds(validationIntervalMs));
 }
 
 int main() {
@@ -284,7 +290,14 @@ int main() {
     std::cout << "== 4. 心跳：清除死连接并补足到 min ==\n";
     {
         MockConnection::alive = 0;
-        auto pool = makePool(2, 4);
+        MockConnection::pingCalls = 0;
+        auto intervalPool = makePool(2, 4);
+        intervalPool->healthCheck();
+        check(MockConnection::pingCalls.load() == 0,
+              "验证间隔未到时心跳不重复 ping 空闲连接");
+        intervalPool->shutdown(std::chrono::milliseconds(0));
+
+        auto pool = makePool(2, 4, 300, 0);
         check(MockConnection::alive == 2, "预热出 2 条连接");
         MockConnection::pingFails = true;
         MockConnection::connectFails = true;
@@ -1085,7 +1098,7 @@ groups:
     std::cout << "== 33. 连接池：建连/校验失败必须释放名额 ==\n";
     {
         MockConnection::alive = 0;
-        auto pool = makePool(0, 1);
+        auto pool = makePool(0, 1, 300, 0);
         common::ErrorCode ec;
         std::string err;
 

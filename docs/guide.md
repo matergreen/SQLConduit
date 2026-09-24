@@ -283,7 +283,7 @@ auto st = client.transaction([](sqlconduit::core::Session& s) {
 - 句柄生命周期绑定到"当前这条物理连接"，仅在连接/`Session` 存活期内有效；连接归还/关闭后句柄失效，
   驱动随 `close()` 调 `closeAllPrepared()` 释放原生句柄（MySQL `mysql_stmt_close` / PG `DEALLOCATE` / ODBC `SQLFreeHandle` / Oracle `OCIStmtRelease`）。
 - 缓存挂在驱动连接对象上，连接归还池后保留、下次借到同一连接直接复用；池是每数据源独立的，不会跨数据源串。
-- `max_per_connection > 0` 时按 LRU 驱逐最久未用句柄；`0` = 不限制（靠连接关闭自然回收）。
+- `max_per_connection > 0` 时按 LRU 驱逐最久未用句柄；默认 `128`；显式设置 `0` 表示不限制（仅建议 SQL 集合严格有界时使用）。
 - 预编译执行仍经过 `DataSource` 入口的 `preGate`（一次），结果缓存键逻辑不变，审计仍按 SQL 文本分类。
 
 ### 生成键 / 自增 ID（GeneratedKeys）
@@ -342,13 +342,13 @@ ds->execute("INSERT INTO t(id, blob) VALUES(?, ?)", sp, n);   // 或 query / exe
 {
   "prepared_cache": {
     "enabled": true,
-    "max_per_connection": 0
+    "max_per_connection": 128
   }
 }
 ```
 
 - `enabled` 默认 `true`（纯性能优化、透明、无副作用）；关掉则退化为每次重绑路径。
-- `max_per_connection`：`0` = 不限制；`>0` 触发 LRU 驱逐。
+- `max_per_connection`：默认 `128`；`0` = 不限制；`>0` 触发 O(1) LRU 驱逐。
 - 生成键 / 大参数流式为 API 驱动，无需配置开关。
 
 ## 超时、取消与事务选项
@@ -741,7 +741,7 @@ client.addInterceptor(std::make_shared<TenantQuotaInterceptor>());
 - **value** = `PreparedStatementHandle { uint64_t id; void* native; }`：`native` 对 MySQL 是 `MYSQL_STMT*`、PG 是 `nullptr`（名字另存 `preparedNames_`）、ODBC 是 `SQLHSTMT`。存的是**原生服务端预备语句句柄**，不是结果。
 
 **过期策略：**
-- **LRU 容量淘汰**：`max_per_connection > 0` 时，插入后 `while(size > limit)` 从 `lru_` 头（最久未用）淘汰，并 `mysql_stmt_close` / `conn_->unprepare` / `SQLFreeHandle` 释放原生句柄；`0` = 不限制（随连接关闭回收）。命中时把 key 移到 `lru_` 尾。
+- **LRU 容量淘汰**：默认每连接最多 `128` 个句柄；当 `max_per_connection > 0` 时从 LRU 头淘汰并释放原生句柄；`0` = 不限制（随连接关闭回收）。命中时通过保存的迭代器 O(1) 移到 LRU 尾。
 - 连接关闭：`closeAllPrepared()` 释放本连接全部句柄。
 
 **为什么**：热点语句 prepare-once / execute-many，省服务端硬解析 + 参数类型推导往返；**不改变任何查询结果**，纯性能优化，故**默认开**。
@@ -1917,7 +1917,7 @@ g++ main.cpp $(pkg-config --cflags sqlconduit-postgres) \
 | `rate_limit.*` | 限流：每数据源总 QPS / 单 SQL 指纹 QPS / 突发容量 / 指纹模式（默认关闭） |
 | `sql_audit.*` | SQL 审计：动作（block/warn，默认 warn）、无 WHERE 的 DML、无 LIMIT 的 SELECT、只读拦截、指纹黑白名单（默认关闭） |
 | `query_cache.*` | 查询结果缓存：TTL、条目数上限、内存上限、仅副本缓存（默认关闭） |
-| `prepared_cache.*` | 预编译语句缓存：每连接最大句柄数（0=不限，LRU 驱逐）、是否启用（默认 true） |
+| `prepared_cache.*` | 预编译语句缓存：每连接最大句柄数（默认 128；0=不限）、是否启用（默认 true） |
 | `datasources[].name` | 数据源名（唯一） |
 | `datasources[].type` | `mysql` / `postgres` / `oracle` / `odbc` / 自定义 |
 | `datasources[].host/port/user/password/database` | 连接参数 |

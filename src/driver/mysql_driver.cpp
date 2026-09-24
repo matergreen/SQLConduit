@@ -5,6 +5,7 @@
 
 #include <cstring>
 #include <algorithm>
+#include <iterator>
 #include <string>
 #include <memory>
 #include <utility>
@@ -724,7 +725,7 @@ namespace sqlconduit::driver {
             const auto st = fetch(1, tmp);
             if (!st.ok()) return st;
             if (tmp.empty()) return common::Status::OK();
-            outRow = std::move(tmp.rows()[0]);
+            outRow = std::move(tmp.mutableRows().front());
             ok = true;
             return common::Status::OK();
         }
@@ -875,9 +876,8 @@ namespace sqlconduit::driver {
         if (!open_ || !m_) return notConnected("prepare");
         const std::string key = sql + common::paramTypeSignature(typesSample);
         if (const auto it = preparedCache_.find(key); it != preparedCache_.end()) {
-            preparedLru_.remove(key);
-            preparedLru_.push_back(key);
-            out = it->second;
+            preparedLru_.splice(preparedLru_.end(), preparedLru_, it->second.lru);
+            out = it->second.handle;
             return common::Status::OK();
         }
         MYSQL_STMT *stmt = mysql_stmt_init(m_);
@@ -892,16 +892,16 @@ namespace sqlconduit::driver {
         const auto id = ++preparedSeq_;
         core::PreparedStatementHandle h =
                 core::PreparedStatementHandle::make(id, static_cast<void *>(stmt));
-        preparedCache_[key] = h;
-        preparedKeys_[id] = key;
         preparedLru_.push_back(key);
+        preparedCache_.emplace(key, PreparedEntry{h, std::prev(preparedLru_.end())});
+        preparedKeys_[id] = key;
         if (preparedLimit_ > 0) {
             while (preparedCache_.size() > static_cast<std::size_t>(preparedLimit_)) {
                 const std::string oldKey = preparedLru_.front();
                 preparedLru_.pop_front();
                 if (const auto oit = preparedCache_.find(oldKey); oit != preparedCache_.end()) {
-                    preparedKeys_.erase(oit->second.id());
-                    if (MYSQL_STMT *s = static_cast<MYSQL_STMT *>(oit->second.native()))
+                    preparedKeys_.erase(oit->second.handle.id());
+                    if (MYSQL_STMT *s = static_cast<MYSQL_STMT *>(oit->second.handle.native()))
                         mysql_stmt_close(s);
                     preparedCache_.erase(oit);
                 }
@@ -928,7 +928,7 @@ namespace sqlconduit::driver {
                                 : preparedCache_.find(key->second);
         MYSQL_STMT *stmt = cached == preparedCache_.end()
                                ? nullptr
-                               : static_cast<MYSQL_STMT *>(cached->second.native());
+                               : static_cast<MYSQL_STMT *>(cached->second.handle.native());
         if (!h.valid() || !stmt)
             return common::Status::error(common::ErrorCode::QueryError,
                                          "MySQL: prepared handle is invalid or has been evicted");
@@ -957,7 +957,7 @@ namespace sqlconduit::driver {
                                 : preparedCache_.find(key->second);
         MYSQL_STMT *stmt = cached == preparedCache_.end()
                                ? nullptr
-                               : static_cast<MYSQL_STMT *>(cached->second.native());
+                               : static_cast<MYSQL_STMT *>(cached->second.handle.native());
         if (!h.valid() || !stmt)
             return common::Status::error(common::ErrorCode::QueryError,
                                          "MySQL: prepared handle is invalid or has been evicted");
@@ -978,7 +978,7 @@ namespace sqlconduit::driver {
     void MySQLConnection::closeAllPrepared() {
 #ifdef SQLCONDUIT_ENABLE_MYSQL
         for (auto &kv: preparedCache_) {
-            if (MYSQL_STMT *s = static_cast<MYSQL_STMT *>(kv.second.native()))
+            if (MYSQL_STMT *s = static_cast<MYSQL_STMT *>(kv.second.handle.native()))
                 mysql_stmt_close(s);
         }
         preparedCache_.clear();
@@ -990,6 +990,17 @@ namespace sqlconduit::driver {
     void MySQLConnection::setPreparedCacheLimit(int maxPerConnection) {
 #ifdef SQLCONDUIT_ENABLE_MYSQL
         preparedLimit_ = maxPerConnection;
+        while (preparedLimit_ > 0 &&
+               preparedCache_.size() > static_cast<std::size_t>(preparedLimit_)) {
+            const std::string oldKey = preparedLru_.front();
+            preparedLru_.pop_front();
+            const auto old = preparedCache_.find(oldKey);
+            if (old == preparedCache_.end()) continue;
+            preparedKeys_.erase(old->second.handle.id());
+            if (MYSQL_STMT *stmt = static_cast<MYSQL_STMT *>(old->second.handle.native()))
+                mysql_stmt_close(stmt);
+            preparedCache_.erase(old);
+        }
 #else
         (void) maxPerConnection;
 #endif

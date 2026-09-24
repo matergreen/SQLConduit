@@ -137,9 +137,14 @@ namespace sqlconduit::driver {
         bool txOpen_ = false;
         config::DataSourceConfig cfg_;
 
-        std::unordered_map<std::string, core::PreparedStatementHandle> preparedCache_;
+        using PreparedLru = std::list<std::string>;
+        struct PreparedEntry {
+            core::PreparedStatementHandle handle;
+            PreparedLru::iterator lru;
+        };
+        std::unordered_map<std::string, PreparedEntry> preparedCache_;
         std::unordered_map<std::uint64_t, std::string> preparedKeys_;
-        std::list<std::string> preparedLru_;
+        PreparedLru preparedLru_;
         std::uint64_t preparedSeq_ = 0;
         int preparedLimit_ = 0;
 #ifdef SQLCONDUIT_ENABLE_MYSQL

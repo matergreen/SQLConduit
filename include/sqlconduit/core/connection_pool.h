@@ -42,7 +42,7 @@ namespace sqlconduit::core {
                        std::chrono::milliseconds leakDetectionThreshold =
                                std::chrono::milliseconds(0),
                        std::chrono::milliseconds validationInterval =
-                               std::chrono::milliseconds(500),
+                               std::chrono::milliseconds(30000),
                        bool metricsEnabled = true,
                        bool pooled = true);
 
@@ -155,7 +155,7 @@ namespace sqlconduit::core {
             std::string poolName;
             std::chrono::milliseconds maxLifetime{0};
             std::chrono::milliseconds leakDetectionThreshold{0};
-            std::chrono::milliseconds validationInterval{500};
+            std::chrono::milliseconds validationInterval{30000};
             std::uint64_t connectionsCreated = 0;
             std::uint64_t connectionsClosed = 0;
             std::uint64_t borrowTimeouts = 0;

@@ -3,6 +3,7 @@
 #include "sqlconduit/driver/driver_registry.h"
 
 #include <algorithm>
+#include <iterator>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -708,7 +709,7 @@ namespace sqlconduit::driver {
             const auto st = fetch(1, tmp);
             if (!st.ok()) return st;
             if (tmp.empty()) return common::Status::OK();
-            outRow = std::move(tmp.rows()[0]);
+            outRow = std::move(tmp.mutableRows().front());
             ok = true;
             return common::Status::OK();
         }
@@ -1346,9 +1347,8 @@ namespace sqlconduit::driver {
                                          "ODBC: not connected (prepare)");
         const std::string key = sql + common::paramTypeSignature(typesSample);
         if (const auto it = preparedCache_.find(key); it != preparedCache_.end()) {
-            preparedLru_.remove(key);
-            preparedLru_.push_back(key);
-            out = it->second;
+            preparedLru_.splice(preparedLru_.end(), preparedLru_, it->second.lru);
+            out = it->second.handle;
             return common::Status::OK();
         }
         SQLHSTMT raw = SQL_NULL_HSTMT;
@@ -1363,16 +1363,16 @@ namespace sqlconduit::driver {
         const std::uint64_t id = ++preparedSeq_;
         core::PreparedStatementHandle h =
                 core::PreparedStatementHandle::make(id, reinterpret_cast<void *>(raw));
-        preparedCache_[key] = h;
-        preparedKeys_[id] = key;
         preparedLru_.push_back(key);
+        preparedCache_.emplace(key, PreparedEntry{h, std::prev(preparedLru_.end())});
+        preparedKeys_[id] = key;
         if (preparedLimit_ > 0) {
             while (preparedCache_.size() > static_cast<std::size_t>(preparedLimit_)) {
                 const std::string oldKey = preparedLru_.front();
                 preparedLru_.pop_front();
                 if (const auto oit = preparedCache_.find(oldKey); oit != preparedCache_.end()) {
-                    preparedKeys_.erase(oit->second.id());
-                    SQLHSTMT old = reinterpret_cast<SQLHSTMT>(oit->second.native());
+                    preparedKeys_.erase(oit->second.handle.id());
+                    SQLHSTMT old = reinterpret_cast<SQLHSTMT>(oit->second.handle.native());
                     if (old != SQL_NULL_HSTMT) SQLFreeHandle(SQL_HANDLE_STMT, old);
                     preparedCache_.erase(oit);
                 }
@@ -1400,10 +1400,11 @@ namespace sqlconduit::driver {
         const auto cached = key == preparedKeys_.end()
                                 ? preparedCache_.end()
                                 : preparedCache_.find(key->second);
-        if (!h.valid() || cached == preparedCache_.end() || cached->second.native() == nullptr)
+        if (!h.valid() || cached == preparedCache_.end() ||
+            cached->second.handle.native() == nullptr)
             return common::Status::error(common::ErrorCode::QueryError,
                                          "ODBC: prepared handle is invalid or has been evicted");
-        SQLHSTMT stmt = reinterpret_cast<SQLHSTMT>(cached->second.native());
+        SQLHSTMT stmt = reinterpret_cast<SQLHSTMT>(cached->second.handle.native());
         std::vector<ParamBinding> storage;
         PreparedStmtReset reset(stmt);
         if (const auto status = bindParameters(stmt, params, storage, utf8NarrowBinding_);
@@ -1433,10 +1434,11 @@ namespace sqlconduit::driver {
         const auto cached = key == preparedKeys_.end()
                                 ? preparedCache_.end()
                                 : preparedCache_.find(key->second);
-        if (!h.valid() || cached == preparedCache_.end() || cached->second.native() == nullptr)
+        if (!h.valid() || cached == preparedCache_.end() ||
+            cached->second.handle.native() == nullptr)
             return common::Status::error(common::ErrorCode::QueryError,
                                          "ODBC: prepared handle is invalid or has been evicted");
-        SQLHSTMT stmt = reinterpret_cast<SQLHSTMT>(cached->second.native());
+        SQLHSTMT stmt = reinterpret_cast<SQLHSTMT>(cached->second.handle.native());
         std::vector<ParamBinding> storage;
         PreparedStmtReset reset(stmt);
         if (const auto status = bindParameters(stmt, params, storage, utf8NarrowBinding_);
@@ -1461,7 +1463,7 @@ namespace sqlconduit::driver {
     void OdbcConnection::closeAllPrepared() {
 #ifdef SQLCONDUIT_ENABLE_ODBC
         for (auto &kv: preparedCache_) {
-            SQLHSTMT stmt = reinterpret_cast<SQLHSTMT>(kv.second.native());
+            SQLHSTMT stmt = reinterpret_cast<SQLHSTMT>(kv.second.handle.native());
             if (stmt != SQL_NULL_HSTMT) SQLFreeHandle(SQL_HANDLE_STMT, stmt);
         }
         preparedCache_.clear();
@@ -1473,6 +1475,17 @@ namespace sqlconduit::driver {
     void OdbcConnection::setPreparedCacheLimit(int maxPerConnection) {
 #ifdef SQLCONDUIT_ENABLE_ODBC
         preparedLimit_ = maxPerConnection;
+        while (preparedLimit_ > 0 &&
+               preparedCache_.size() > static_cast<std::size_t>(preparedLimit_)) {
+            const std::string oldKey = preparedLru_.front();
+            preparedLru_.pop_front();
+            const auto old = preparedCache_.find(oldKey);
+            if (old == preparedCache_.end()) continue;
+            preparedKeys_.erase(old->second.handle.id());
+            SQLHSTMT stmt = reinterpret_cast<SQLHSTMT>(old->second.handle.native());
+            if (stmt != SQL_NULL_HSTMT) SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+            preparedCache_.erase(old);
+        }
 #else
         (void) maxPerConnection;
 #endif

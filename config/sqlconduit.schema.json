@@ -46,7 +46,7 @@
         "idle_timeout_ms": { "$ref": "#/$defs/nonNegativeInteger", "default": 600000 },
         "max_lifetime_ms": { "$ref": "#/$defs/nonNegativeInteger", "default": 1800000 },
         "leak_detection_threshold_ms": { "$ref": "#/$defs/nonNegativeInteger", "default": 30000 },
-        "validation_interval_ms": { "$ref": "#/$defs/nonNegativeInteger", "default": 500 }
+        "validation_interval_ms": { "$ref": "#/$defs/nonNegativeInteger", "default": 30000 }
       }
     },
     "retry": {
@@ -192,7 +192,7 @@
       "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean", "default": true },
-        "max_per_connection": { "$ref": "#/$defs/nonNegativeInteger", "default": 0 }
+        "max_per_connection": { "$ref": "#/$defs/nonNegativeInteger", "default": 128 }
       }
     },
     "async": {

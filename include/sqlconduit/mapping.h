@@ -982,48 +982,62 @@ namespace sqlconduit {
     }
 
     namespace detail {
-        template<class T>
-        EntityOne<T> queryOneAsImpl(EntityResult<T> &&r) {
+        template<class T, class Runner>
+        EntityOne<T> queryOneAsImpl(Runner &&runner) {
             EntityOne<T> o;
-            o.status = r.status;
-            if (!r.status.ok()) return o;
-            if (r.items.size() > 1) {
+            common::ResultSet rows;
+            o.status = std::forward<Runner>(runner)(rows);
+            if (!o.status.ok()) return o;
+            if (rows.rowCount() > 1) {
                 o.status = mapping::mapError("queryOneAs: expected at most 1 row, got " +
-                                             std::to_string(r.items.size()));
+                                             std::to_string(rows.rowCount()));
                 return o;
             }
-            if (!r.items.empty()) o.value = std::move(r.items.front());
+            if (rows.empty()) return o;
+            T item{};
+            o.status = mapping::fromRow<T>(rows.rows().front(), item);
+            if (o.status.ok()) o.value = std::move(item);
             return o;
         }
     }
 
     template<class T>
     EntityOne<T> queryOneAs(Client &client, const std::string &sql) {
-        return detail::queryOneAsImpl<T>(queryAs<T>(client, sql));
+        return detail::queryOneAsImpl<T>([&](common::ResultSet &rows) {
+            return client.query(sql, rows);
+        });
     }
 
     template<class T>
     EntityOne<T> queryOneAs(Client &client, const std::string &sql,
                             const common::Params &params) {
-        return detail::queryOneAsImpl<T>(queryAs<T>(client, sql, params));
+        return detail::queryOneAsImpl<T>([&](common::ResultSet &rows) {
+            return client.query(sql, params, rows);
+        });
     }
 
     template<class T>
     EntityOne<T> queryOneAs(Client &client, const std::string &dataSource,
                             const std::string &sql,
                             const common::Params &params) {
-        return detail::queryOneAsImpl<T>(queryAs<T>(client, dataSource, sql, params));
+        return detail::queryOneAsImpl<T>([&](common::ResultSet &rows) {
+            return client.query(dataSource, sql, params, rows);
+        });
     }
 
     template<class T>
     EntityOne<T> queryOneAs(core::Session &s, const std::string &sql) {
-        return detail::queryOneAsImpl<T>(queryAs<T>(s, sql));
+        return detail::queryOneAsImpl<T>([&](common::ResultSet &rows) {
+            return s.query(sql, rows);
+        });
     }
 
     template<class T>
     EntityOne<T> queryOneAs(core::Session &s, const std::string &sql,
                             const common::Params &params) {
-        return detail::queryOneAsImpl<T>(queryAs<T>(s, sql, params));
+        return detail::queryOneAsImpl<T>([&](common::ResultSet &rows) {
+            return s.query(sql, params, rows);
+        });
     }
 
     template<class T>

@@ -5,6 +5,7 @@
 
 #include <optional>
 #include <algorithm>
+#include <iterator>
 #include <string>
 #include <memory>
 #include <utility>
@@ -603,7 +604,7 @@ namespace sqlconduit::driver {
             const auto st = fetch(1, tmp);
             if (!st.ok()) return st;
             if (tmp.empty()) return common::Status::OK();
-            outRow = std::move(tmp.rows()[0]);
+            outRow = std::move(tmp.mutableRows().front());
             ok = true;
             return common::Status::OK();
         }
@@ -1023,9 +1024,8 @@ namespace sqlconduit::driver {
         if (found != typesSample.size()) return paramMismatch(typesSample.size(), found);
         const std::string key = sql + common::paramTypeSignature(typesSample);
         if (const auto it = preparedCache_.find(key); it != preparedCache_.end()) {
-            preparedLru_.remove(key);
-            preparedLru_.push_back(key);
-            out = it->second;
+            preparedLru_.splice(preparedLru_.end(), preparedLru_, it->second.lru);
+            out = it->second.handle;
             return common::Status::OK();
         }
         const std::string name = "sqlconduit_ps_" + std::to_string(++preparedSeq_);
@@ -1036,15 +1036,15 @@ namespace sqlconduit::driver {
         }
         core::PreparedStatementHandle h =
                 core::PreparedStatementHandle::make(preparedSeq_, nullptr);
-        preparedCache_[key] = h;
-        preparedNames_[preparedSeq_] = name;
         preparedLru_.push_back(key);
+        preparedCache_.emplace(key, PreparedEntry{h, std::prev(preparedLru_.end())});
+        preparedNames_[preparedSeq_] = name;
         if (preparedLimit_ > 0) {
             while (preparedCache_.size() > static_cast<std::size_t>(preparedLimit_)) {
                 const std::string oldKey = preparedLru_.front();
                 preparedLru_.pop_front();
                 if (const auto oit = preparedCache_.find(oldKey); oit != preparedCache_.end()) {
-                    if (const auto nit = preparedNames_.find(oit->second.id());
+                    if (const auto nit = preparedNames_.find(oit->second.handle.id());
                         nit != preparedNames_.end()) {
                         try { conn_->unprepare(nit->second); } catch (...) {
                         }
@@ -1146,6 +1146,20 @@ namespace sqlconduit::driver {
     void PostgresConnection::setPreparedCacheLimit(int maxPerConnection) {
 #ifdef SQLCONDUIT_ENABLE_POSTGRES
         preparedLimit_ = maxPerConnection;
+        while (preparedLimit_ > 0 &&
+               preparedCache_.size() > static_cast<std::size_t>(preparedLimit_)) {
+            const std::string oldKey = preparedLru_.front();
+            preparedLru_.pop_front();
+            const auto old = preparedCache_.find(oldKey);
+            if (old == preparedCache_.end()) continue;
+            if (const auto name = preparedNames_.find(old->second.handle.id());
+                name != preparedNames_.end()) {
+                try { conn_->unprepare(name->second); } catch (...) {
+                }
+                preparedNames_.erase(name);
+            }
+            preparedCache_.erase(old);
+        }
 #else
         (void) maxPerConnection;
 #endif

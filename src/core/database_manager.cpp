@@ -576,6 +576,7 @@ namespace sqlconduit::core {
             std::exception_ptr callbackError;
             const common::RowCallback guardedCallback = [&](const common::Row &row) {
                 try {
+                    if (!services_->interceptors.active()) return callback(row);
                     auto transformed = row;
                     detail::runOnRow(services_->interceptors, view, transformed);
                     return callback(transformed);
@@ -2546,7 +2547,7 @@ namespace sqlconduit::core {
         runtimePool.idle_timeout_ms = 600000;
         runtimePool.max_lifetime_ms = 1800000;
         runtimePool.leak_detection_threshold_ms = 30000;
-        runtimePool.validation_interval_ms = 500;
+        runtimePool.validation_interval_ms = 30000;
         runtimePool.enabled = true;
 
         const std::unordered_set<std::string> emptyReplicaNames;

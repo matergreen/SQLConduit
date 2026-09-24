@@ -36,6 +36,10 @@ namespace sqlconduit::driver {
         common::Status execute(const std::string &sql, const common::Params &params,
                                int64_t &affected, common::GeneratedKeys &out) override;
 
+        common::Status executeBatch(const std::string &sql,
+                                    const common::ParamBatch &batch,
+                                    common::BatchResult &out) override;
+
         [[nodiscard]] bool supportsPrepared() const override;
 
         common::Status prepare(const std::string &sql, const common::Params &typesSample,

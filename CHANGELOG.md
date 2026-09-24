@@ -6,6 +6,14 @@ description.
 
 ## [Unreleased]
 
+### Performance
+
+- Reworked batch execution so PostgreSQL sends bounded chunks through `pqxx::pipeline`, ODBC uses
+  capability-gated parameter arrays, and MySQL sends safely escaped, bounded multi-statement
+  chunks for eligible DML. Safe fallbacks preserve atomic rollback, per-parameter-set affected counts, and generated
+  keys. All batch paths now reject inconsistent parameter-group shapes before executing the first
+  row and clear partial results on failure.
+
 ## [0.8.0]
 
 ### Performance

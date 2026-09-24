@@ -76,6 +76,22 @@ namespace sqlconduit::core {
         out.keys.reserve(batch.size());
         if (batch.empty()) return common::Status::OK();
 
+        // The base class cannot compare against SQL placeholder count: some drivers
+        // append output placeholders (for example Oracle RETURNING ... INTO) that are
+        // intentionally absent from the caller's input Params. It can still reject an
+        // internally inconsistent batch before the first row reaches the database.
+        const std::size_t parameterCount = batch.front().size();
+        for (const auto &params: batch) {
+            if (params.size() != parameterCount) {
+                out.clear();
+                return common::Status::error(
+                    common::ErrorCode::QueryError,
+                    "parameter mismatch: batch parameter groups must all contain "
+                    + std::to_string(parameterCount) + " value(s), but one contains "
+                    + std::to_string(params.size()));
+            }
+        }
+
         const bool ownTx = !inTransaction();
         if (ownTx) {
             if (const auto st = begin(); !st.ok()) return st;
@@ -91,14 +107,14 @@ namespace sqlconduit::core {
             out.keys.push_back(std::move(keys));
         }
 
-        if (!ownTx) return status;
-
         if (!status.ok()) {
-            (void) rollback();
+            if (ownTx) (void) rollback();
             out.clear();
             return status;
         }
+        if (!ownTx) return status;
         if (const auto st = commit(); !st.ok()) {
+            (void) rollback();
             out.clear();
             return st;
         }

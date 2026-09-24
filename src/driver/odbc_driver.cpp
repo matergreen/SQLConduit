@@ -401,6 +401,28 @@ namespace sqlconduit::driver {
             common::Blob blob;
         };
 
+        struct BatchColumn {
+            SQLSMALLINT cType = SQL_C_CHAR;
+            SQLSMALLINT sqlType = SQL_VARCHAR;
+            SQLULEN columnSize = 1;
+            SQLSMALLINT decimalDigits = 0;
+            SQLLEN bufferLength = 0;
+            std::vector<SQLLEN> indicators;
+            std::vector<std::int64_t> integers;
+            std::vector<std::uint64_t> unsignedIntegers;
+            std::vector<double> reals;
+            std::vector<char> bytes;
+            std::vector<SQLWCHAR> wide;
+
+            SQLPOINTER data() {
+                if (!integers.empty()) return integers.data();
+                if (!unsignedIntegers.empty()) return unsignedIntegers.data();
+                if (!reals.empty()) return reals.data();
+                if (!wide.empty()) return wide.data();
+                return bytes.data();
+            }
+        };
+
         bool utf8ToSqlWide(const std::string &text, std::vector<SQLWCHAR> &out) {
             out.clear();
             out.reserve(text.size() + 1);
@@ -448,6 +470,157 @@ namespace sqlconduit::driver {
                 i += extra + 1;
             }
             out.push_back(0);
+            return true;
+        }
+
+        bool batchTextValue(const common::Value &value, std::string &out,
+                            SQLSMALLINT &sqlType, SQLSMALLINT &digits) {
+            digits = 0;
+            if (const auto *v = std::get_if<common::Timestamp>(&value)) {
+                out = common::timestampToStringMs(*v);
+                sqlType = SQL_VARCHAR;
+            } else if (const auto *v = std::get_if<common::Decimal>(&value)) {
+                out = v->value;
+                sqlType = SQL_DECIMAL;
+                bool fractional = false;
+                for (const char ch: out) {
+                    if (ch == 'e' || ch == 'E') break;
+                    if (ch == '.') fractional = true;
+                    else if (fractional && ch >= '0' && ch <= '9' && digits < 32767) ++digits;
+                }
+            } else if (const auto *v = std::get_if<common::Date>(&value)) {
+                out = v->value; sqlType = SQL_TYPE_DATE;
+            } else if (const auto *v = std::get_if<common::Time>(&value)) {
+                out = v->value; sqlType = SQL_TYPE_TIME;
+            } else if (const auto *v = std::get_if<common::Uuid>(&value)) {
+                out = v->value;
+#ifdef SQL_GUID
+                sqlType = SQL_GUID;
+#else
+                sqlType = SQL_VARCHAR;
+#endif
+            } else if (const auto *v = std::get_if<common::Json>(&value)) {
+                out = v->value; sqlType = SQL_LONGVARCHAR;
+            } else if (const auto *v = std::get_if<common::IntervalYearMonth>(&value)) {
+                out = v->value; sqlType = SQL_VARCHAR;
+            } else if (const auto *v = std::get_if<common::IntervalDaySecond>(&value)) {
+                out = v->value; sqlType = SQL_VARCHAR;
+            } else if (const auto *v = std::get_if<std::string>(&value)) {
+                out = *v; sqlType = SQL_VARCHAR;
+            } else {
+                return false;
+            }
+            return true;
+        }
+
+        bool buildBatchColumns(const common::ParamBatch &batch,
+                               std::vector<BatchColumn> &columns,
+                               const bool utf8NarrowBinding) {
+            if (batch.empty()) return true;
+            const std::size_t rows = batch.size();
+            const std::size_t count = batch.front().size();
+            columns.assign(count, BatchColumn{});
+            for (std::size_t c = 0; c < count; ++c) {
+                const common::Value *sample = nullptr;
+                for (const auto &row: batch)
+                    if (!std::holds_alternative<std::nullptr_t>(row[c])) { sample = &row[c]; break; }
+                auto &column = columns[c];
+                column.indicators.assign(rows, SQL_NULL_DATA);
+                if (!sample) {
+                    column.bytes.assign(rows, 0);
+                    column.bufferLength = 1;
+                    continue;
+                }
+                const std::size_t type = sample->index();
+                for (const auto &row: batch)
+                    if (!std::holds_alternative<std::nullptr_t>(row[c]) && row[c].index() != type)
+                        return false;
+
+                if (type == common::Value{bool{}}.index() ||
+                    type == common::Value{std::int64_t{}}.index()) {
+                    column.cType = SQL_C_SBIGINT; column.sqlType = SQL_BIGINT;
+                    column.bufferLength = sizeof(std::int64_t); column.integers.assign(rows, 0);
+                    for (std::size_t r = 0; r < rows; ++r) {
+                        if (const auto *v = std::get_if<bool>(&batch[r][c])) column.integers[r] = *v ? 1 : 0;
+                        else if (const auto *v = std::get_if<std::int64_t>(&batch[r][c])) column.integers[r] = *v;
+                        else continue;
+                        column.indicators[r] = 0;
+                    }
+                } else if (type == common::Value{std::uint64_t{}}.index()) {
+                    column.cType = SQL_C_UBIGINT; column.sqlType = SQL_BIGINT;
+                    column.bufferLength = sizeof(std::uint64_t); column.unsignedIntegers.assign(rows, 0);
+                    for (std::size_t r = 0; r < rows; ++r)
+                        if (const auto *v = std::get_if<std::uint64_t>(&batch[r][c])) {
+                            column.unsignedIntegers[r] = *v; column.indicators[r] = 0;
+                        }
+                } else if (type == common::Value{double{}}.index()) {
+                    column.cType = SQL_C_DOUBLE; column.sqlType = SQL_DOUBLE;
+                    column.bufferLength = sizeof(double); column.reals.assign(rows, 0);
+                    for (std::size_t r = 0; r < rows; ++r)
+                        if (const auto *v = std::get_if<double>(&batch[r][c])) {
+                            column.reals[r] = *v; column.indicators[r] = 0;
+                        }
+                } else if (type == common::Value{common::Blob{}}.index()) {
+                    std::size_t stride = 1;
+                    for (const auto &row: batch)
+                        if (const auto *v = std::get_if<common::Blob>(&row[c]))
+                            stride = std::max(stride, v->size());
+                    column.cType = SQL_C_BINARY; column.sqlType = SQL_VARBINARY;
+                    column.columnSize = stride; column.bufferLength = static_cast<SQLLEN>(stride);
+                    column.bytes.assign(stride * rows, 0);
+                    for (std::size_t r = 0; r < rows; ++r)
+                        if (const auto *v = std::get_if<common::Blob>(&batch[r][c])) {
+                            if (!v->empty()) std::memcpy(column.bytes.data() + r * stride, v->data(), v->size());
+                            column.indicators[r] = static_cast<SQLLEN>(v->size());
+                        }
+                } else {
+                    std::vector<std::string> values(rows);
+                    SQLSMALLINT sqlType = SQL_VARCHAR, digits = 0;
+                    bool stringColumn = type == common::Value{std::string{}}.index();
+                    bool allUtf8 = stringColumn;
+                    std::size_t maxBytes = 0, maxUnits = 0;
+                    std::vector<std::vector<SQLWCHAR>> wideValues(rows);
+                    for (std::size_t r = 0; r < rows; ++r) {
+                        if (std::holds_alternative<std::nullptr_t>(batch[r][c])) continue;
+                        SQLSMALLINT rowType = SQL_VARCHAR, rowDigits = 0;
+                        if (!batchTextValue(batch[r][c], values[r], rowType, rowDigits)) return false;
+                        sqlType = rowType; digits = std::max(digits, rowDigits);
+                        maxBytes = std::max(maxBytes, values[r].size());
+                        if (stringColumn) {
+                            if (!utf8ToSqlWide(values[r], wideValues[r])) allUtf8 = false;
+                            else maxUnits = std::max(maxUnits, wideValues[r].size() - 1);
+                        }
+                    }
+                    column.decimalDigits = digits;
+                    if (stringColumn && allUtf8 && !utf8NarrowBinding) {
+                        const std::size_t stride = std::max<std::size_t>(1, maxUnits + 1);
+                        column.cType = SQL_C_WCHAR;
+                        column.sqlType = maxUnits > 4000 ? SQL_WLONGVARCHAR : SQL_WVARCHAR;
+                        column.columnSize = std::max<std::size_t>(1, maxUnits);
+                        column.bufferLength = static_cast<SQLLEN>(stride * sizeof(SQLWCHAR));
+                        column.wide.assign(stride * rows, 0);
+                        for (std::size_t r = 0; r < rows; ++r) if (!wideValues[r].empty()) {
+                            std::copy(wideValues[r].begin(), wideValues[r].end(), column.wide.begin() + r * stride);
+                            column.indicators[r] = static_cast<SQLLEN>((wideValues[r].size() - 1) * sizeof(SQLWCHAR));
+                        }
+                    } else {
+                        const std::size_t stride = std::max<std::size_t>(1, maxBytes + 1);
+                        column.cType = SQL_C_CHAR;
+                        column.sqlType = stringColumn && allUtf8
+                                             ? (maxUnits > 4000 ? SQL_WLONGVARCHAR : SQL_WVARCHAR)
+                                             : sqlType;
+                        column.columnSize = std::max<std::size_t>(1, stringColumn && allUtf8
+                                                                     ? std::max(maxUnits, maxBytes) : maxBytes);
+                        column.bufferLength = static_cast<SQLLEN>(stride);
+                        column.bytes.assign(stride * rows, 0);
+                        for (std::size_t r = 0; r < rows; ++r)
+                            if (!std::holds_alternative<std::nullptr_t>(batch[r][c])) {
+                                std::memcpy(column.bytes.data() + r * stride, values[r].data(), values[r].size());
+                                column.indicators[r] = static_cast<SQLLEN>(values[r].size());
+                            }
+                    }
+                }
+            }
             return true;
         }
 
@@ -1326,6 +1499,169 @@ namespace sqlconduit::driver {
         affected = 0;
         out.clear();
         return common::Status::error(common::ErrorCode::DriverDisabled, "ODBC driver disabled");
+#endif
+    }
+
+    common::Status OdbcConnection::executeBatch(const std::string &sql,
+                                                const common::ParamBatch &batch,
+                                                common::BatchResult &out) {
+        out.clear();
+#ifdef SQLCONDUIT_ENABLE_ODBC
+        if (batch.empty()) return common::Status::OK();
+        if (!open_)
+            return common::Status::error(common::ErrorCode::NotConnected,
+                                         "ODBC: not connected (batch)");
+
+        SQLHSTMT raw = SQL_NULL_HSTMT;
+        if (const auto status = newStatement(static_cast<SQLHDBC>(dbc_), cfg_, raw); !status.ok())
+            return status;
+        StmtGuard statement(raw);
+        if (const SQLRETURN rc = SQLPrepare(
+                raw, reinterpret_cast<SQLCHAR *>(const_cast<char *>(sql.data())), SQL_NTS);
+            !succeeded(rc))
+            return odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, raw,
+                             "SQLPrepare(batch)");
+
+        SQLSMALLINT expected = 0;
+        if (const SQLRETURN rc = SQLNumParams(raw, &expected); !succeeded(rc))
+            return odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, raw,
+                             "SQLNumParams(batch)");
+        for (const auto &params: batch) {
+            if (params.size() != static_cast<std::size_t>(expected))
+                return common::Status::error(
+                    common::ErrorCode::QueryError,
+                    "parameter mismatch: statement expects " + std::to_string(expected)
+                    + " parameter(s) but " + std::to_string(params.size()) + " supplied");
+        }
+
+        SQLUSMALLINT rowCountMode = SQL_PARC_NO_BATCH;
+        SQLSMALLINT infoLength = 0;
+        const bool reportsPerSetRows = succeeded(SQLGetInfo(
+            static_cast<SQLHDBC>(dbc_), SQL_PARAM_ARRAY_ROW_COUNTS,
+            &rowCountMode, sizeof(rowCountMode), &infoLength)) &&
+            rowCountMode == SQL_PARC_BATCH;
+        std::vector<BatchColumn> batchColumns;
+        const bool useParameterArrays = batch.size() > 1 && reportsPerSetRows &&
+            buildBatchColumns(batch, batchColumns, utf8NarrowBinding_);
+
+        const bool ownTransaction = !inTransaction();
+        if (ownTransaction) {
+            if (const auto status = begin(); !status.ok()) return status;
+        }
+        auto fail = [&](common::Status status) {
+            if (ownTransaction) (void) rollback();
+            out.clear();
+            return status;
+        };
+
+        ActiveStatement active(activeStmtMtx_, activeStmt_, raw);
+        out.affected.reserve(batch.size());
+        out.keys.reserve(batch.size());
+        if (useParameterArrays) {
+            std::vector<SQLUSMALLINT> parameterStatus(batch.size(), SQL_PARAM_UNUSED);
+            SQLULEN processed = 0;
+            auto setAttribute = [&](const SQLINTEGER attribute, SQLPOINTER value,
+                                    const char *name) -> common::Status {
+                if (const SQLRETURN rc = SQLSetStmtAttr(raw, attribute, value, 0); !succeeded(rc))
+                    return odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, raw, name);
+                return common::Status::OK();
+            };
+            if (auto status = setAttribute(
+                    SQL_ATTR_PARAM_BIND_TYPE,
+                    reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_PARAM_BIND_BY_COLUMN)),
+                    "SQLSetStmtAttr(PARAM_BIND_TYPE)"); !status.ok()) return fail(status);
+            if (auto status = setAttribute(
+                    SQL_ATTR_PARAMSET_SIZE,
+                    reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(batch.size())),
+                    "SQLSetStmtAttr(PARAMSET_SIZE)"); !status.ok()) return fail(status);
+            if (auto status = setAttribute(SQL_ATTR_PARAM_STATUS_PTR, parameterStatus.data(),
+                                           "SQLSetStmtAttr(PARAM_STATUS_PTR)");
+                !status.ok()) return fail(status);
+            if (auto status = setAttribute(SQL_ATTR_PARAMS_PROCESSED_PTR, &processed,
+                                           "SQLSetStmtAttr(PARAMS_PROCESSED_PTR)");
+                !status.ok()) return fail(status);
+            for (std::size_t i = 0; i < batchColumns.size(); ++i) {
+                auto &column = batchColumns[i];
+                const SQLRETURN rc = SQLBindParameter(
+                    raw, static_cast<SQLUSMALLINT>(i + 1), SQL_PARAM_INPUT,
+                    column.cType, column.sqlType, column.columnSize, column.decimalDigits,
+                    column.data(), column.bufferLength, column.indicators.data());
+                if (!succeeded(rc))
+                    return fail(odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, raw,
+                                          "SQLBindParameter(array)"));
+            }
+            const SQLRETURN executeRc = SQLExecute(raw);
+            if (!executionCompleted(executeRc))
+                return fail(odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, raw,
+                                      "SQLExecute(array batch)"));
+            for (std::size_t i = 0; i < static_cast<std::size_t>(processed); ++i) {
+                if (parameterStatus[i] == SQL_PARAM_ERROR ||
+                    parameterStatus[i] == SQL_PARAM_DIAG_UNAVAILABLE)
+                    return fail(common::Status::error(
+                        common::ErrorCode::QueryError,
+                        "ODBC array batch failed for parameter set " + std::to_string(i)));
+            }
+
+            for (;;) {
+                common::GeneratedKeys keys;
+                if (const auto status = fetchRows(raw, keys.rows); !status.ok()) return fail(status);
+                SQLLEN rows = 0;
+                if (const SQLRETURN rc = SQLRowCount(raw, &rows); !succeeded(rc))
+                    return fail(odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, raw,
+                                          "SQLRowCount(array batch)"));
+                out.affected.push_back(rows < 0
+                                           ? static_cast<std::int64_t>(keys.rows.rowCount())
+                                           : static_cast<std::int64_t>(rows));
+                out.keys.push_back(std::move(keys));
+                const SQLRETURN more = SQLMoreResults(raw);
+                if (more == SQL_NO_DATA) break;
+                if (!succeeded(more))
+                    return fail(odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, raw,
+                                          "SQLMoreResults(array batch)"));
+            }
+            if (processed != static_cast<SQLULEN>(batch.size()) ||
+                out.affected.size() != batch.size())
+                return fail(common::Status::error(
+                    common::ErrorCode::QueryError,
+                    "ODBC driver did not return one result per parameter set in array batch"));
+        } else {
+        for (const auto &params: batch) {
+            std::vector<ParamBinding> storage;
+            if (const auto status = bindParameters(raw, params, storage, utf8NarrowBinding_);
+                !status.ok())
+                return fail(status);
+            if (const SQLRETURN rc = SQLExecute(raw); !executionCompleted(rc))
+                return fail(odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, raw,
+                                      "SQLExecute(batch)"));
+
+            common::GeneratedKeys keys;
+            if (const auto status = fetchRows(raw, keys.rows); !status.ok()) return fail(status);
+            SQLLEN rows = 0;
+            if (const SQLRETURN rc = SQLRowCount(raw, &rows); !succeeded(rc))
+                return fail(odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT, raw,
+                                      "SQLRowCount(batch)"));
+            out.affected.push_back(rows < 0
+                                       ? static_cast<std::int64_t>(keys.rows.rowCount())
+                                       : static_cast<std::int64_t>(rows));
+            out.keys.push_back(std::move(keys));
+            SQLFreeStmt(raw, SQL_CLOSE);
+            SQLFreeStmt(raw, SQL_RESET_PARAMS);
+        }
+        }
+
+        if (ownTransaction) {
+            if (const auto status = commit(); !status.ok()) {
+                (void) rollback();
+                out.clear();
+                return status;
+            }
+        }
+        return common::Status::OK();
+#else
+        (void) sql;
+        (void) batch;
+        return common::Status::error(common::ErrorCode::DriverDisabled,
+                                     "ODBC driver disabled");
 #endif
     }
 

@@ -197,6 +197,20 @@ namespace {
                       "INSERT INTO " + f.table + " (name,qty) VALUES (?,?)", batch, result), "batch");
         require(result.totalAffected() == 2, "batch affected mismatch");
 
+        sqlconduit::common::BatchResult invalidResult;
+        const auto invalid = g_client.executeBatch(
+            "INSERT INTO " + f.table + " (name,qty) VALUES (?,?)",
+            {{std::string("batch-prevalidate"), std::int64_t(1)},
+             {std::string("missing-parameter")}}, invalidResult);
+        require(invalid.code == ErrorCode::QueryError && invalidResult.affected.empty(),
+                "invalid batch shape was not rejected before execution");
+        ResultSet invalidCount;
+        requireOk(g_client.query("SELECT COUNT(*) n FROM " + f.table
+                                 + " WHERE name='batch-prevalidate'", invalidCount),
+                  "verify batch prevalidation");
+        require(asInt(invalidCount.rows()[0].at("n")) == 0,
+                "batch executed rows before detecting a later parameter mismatch");
+
         const auto rolled = g_client.transaction([&](sqlconduit::core::Session &session) {
             std::int64_t affected = 0;
             auto st = session.execute("INSERT INTO " + f.table

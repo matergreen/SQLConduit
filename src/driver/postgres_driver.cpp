@@ -894,24 +894,60 @@ namespace sqlconduit::driver {
                                                     common::BatchResult &out) {
 #ifdef SQLCONDUIT_ENABLE_POSTGRES
         out.clear();
+        if (batch.empty()) return common::Status::OK();
         if (!open_ || !conn_) return notConnected("batch");
+
+        std::size_t placeholderCount = 0;
+        (void) replacePlaceholders(
+            sql, [](std::size_t i) { return "$" + std::to_string(i + 1); },
+            placeholderCount);
+        for (const auto &params: batch) {
+            if (params.size() != placeholderCount)
+                return paramMismatch(params.size(), placeholderCount);
+        }
+
         ActiveOperation active(operationMtx_, operationActive_);
         try {
             auto run = [&](pqxx::transaction_base &transaction) {
                 out.affected.reserve(batch.size());
                 out.keys.reserve(batch.size());
-                for (const auto &params: batch) {
-                    std::size_t found = 0;
-                    const std::string pgSql = replacePlaceholders(
-                        sql, [](std::size_t i) { return "$" + std::to_string(i + 1); }, found);
-                    if (found != params.size()) return paramMismatch(params.size(), found);
-                    pqxx::params bound;
-                    appendParams(bound, params);
-                    const pqxx::result r = execParams(transaction, pgSql, bound);
-                    out.affected.push_back(static_cast<std::int64_t>(r.affected_rows()));
-                    common::GeneratedKeys keys;
-                    fillResultSet(r, keys.rows, 0, &types_, &transaction);
-                    out.keys.push_back(std::move(keys));
+                // Result conversion may need PostgreSQL type metadata. Load it before
+                // pipeline takes transaction focus; issuing metadata SQL while a
+                // pipeline is active is forbidden by libpqxx.
+                types_.ensureLoaded(&transaction);
+
+                // pqxx::pipeline accepts SQL text rather than pqxx::params. Values are
+                // still rendered through libpqxx's connection-aware quote() function;
+                // no caller bytes are concatenated into SQL without escaping. Bound the
+                // number of in-flight statements so a very large ParamBatch cannot make
+                // the pipeline retain an unbounded amount of SQL and result memory.
+                constexpr std::size_t kPipelineChunkSize = 256;
+                for (std::size_t offset = 0; offset < batch.size();
+                     offset += kPipelineChunkSize) {
+                    const std::size_t end = std::min(batch.size(), offset + kPipelineChunkSize);
+                    pqxx::pipeline pipeline{transaction, "sqlconduit_batch"};
+                    std::vector<pqxx::pipeline::query_id> queryIds;
+                    queryIds.reserve(end - offset);
+                    for (std::size_t row = offset; row < end; ++row) {
+                        const auto &params = batch[row];
+                        std::size_t renderedCount = 0;
+                        const std::string rendered = replacePlaceholders(
+                            sql,
+                            [&](const std::size_t index) {
+                                const auto text = valueToPgText(params[index]);
+                                return text ? transaction.quote(*text) : std::string("NULL");
+                            },
+                            renderedCount);
+                        queryIds.push_back(pipeline.insert(rendered));
+                    }
+                    pipeline.complete();
+                    for (const auto queryId: queryIds) {
+                        const pqxx::result r = pipeline.retrieve(queryId);
+                        out.affected.push_back(static_cast<std::int64_t>(r.affected_rows()));
+                        common::GeneratedKeys keys;
+                        fillResultSet(r, keys.rows, 0, &types_, &transaction);
+                        out.keys.push_back(std::move(keys));
+                    }
                 }
                 return common::Status::OK();
             };
@@ -926,6 +962,7 @@ namespace sqlconduit::driver {
             out.clear();
             return status;
         } catch (std::exception const &e) {
+            out.clear();
             return postgresError(common::ErrorCode::QueryError, "batch", e);
         }
 #else

@@ -1053,6 +1053,19 @@ groups:
               "中途失败触发回滚而不是提交\n          实际: " + log);
 
         MockConnection::resetLog();
+        common::BatchResult invalidShapeResult;
+        const auto invalidShape = ds.executeBatch(
+            "UPDATE t SET v=?",
+            {common::Params{std::int64_t(1)}, common::Params{}}, invalidShapeResult);
+        const auto invalidShapeLog = MockConnection::joined();
+        check(invalidShape.code == common::ErrorCode::QueryError &&
+              invalidShapeResult.affected.empty() &&
+              invalidShapeLog.find("execute:") == std::string::npos &&
+              invalidShapeLog.find("begin") == std::string::npos,
+              "参数组形状不一致时在事务和首行执行前失败\n          实际: "
+              + invalidShapeLog);
+
+        MockConnection::resetLog();
         MockConnection::executeOkBeforeFail = -1;
         const auto inTx = ds.transaction([&](core::Session &s) {
             common::BatchResult inner;

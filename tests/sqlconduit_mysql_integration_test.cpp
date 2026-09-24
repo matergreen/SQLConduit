@@ -192,6 +192,44 @@ namespace {
                       "VALUES (?,?,1,NOW(6))", batch, batchResult), "batch");
         require(batchResult.totalAffected() == 2, "batch affected mismatch");
 
+        sqlconduit::common::BatchResult invalidResult;
+        const auto invalid = g_client.executeBatch(
+            "INSERT INTO " + f.table + " (name,qty,unsigned_value,created_at) "
+            "VALUES (?,?,1,NOW(6))",
+            {{std::string("batch-prevalidate"), std::int64_t(1)},
+             {std::string("missing-parameter")}}, invalidResult);
+        require(invalid.code == ErrorCode::QueryError && invalidResult.affected.empty(),
+                "invalid batch shape was not rejected before execution");
+        ResultSet invalidCount;
+        requireOk(g_client.query("SELECT COUNT(*) n FROM " + f.table
+                                 + " WHERE name='batch-prevalidate'", invalidCount),
+                  "verify batch prevalidation");
+        require(asInt(invalidCount.rows()[0].at("n")) == 0,
+                "batch executed rows before detecting a later parameter mismatch");
+
+        sqlconduit::common::ParamBatch chunked;
+        chunked.reserve(140);
+        for (int i = 0; i < 140; ++i) {
+            const std::string name = i == 37
+                                         ? "batch-quote-'\\-semicolon;"
+                                         : "multi-statement-" + std::to_string(i);
+            chunked.push_back({name, std::int64_t(i)});
+        }
+        sqlconduit::common::BatchResult chunkedResult;
+        requireOk(g_client.executeBatch(
+                      "INSERT INTO " + f.table + " (name,qty,unsigned_value,created_at) "
+                      "VALUES (?,?,1,NOW(6));", chunked, chunkedResult),
+                  "chunked multi-statement batch");
+        require(chunkedResult.affected.size() == chunked.size() &&
+                chunkedResult.totalAffected() == static_cast<std::int64_t>(chunked.size()),
+                "multi-statement batch did not preserve per-row results across chunks");
+        ResultSet escapedCount;
+        requireOk(g_client.query("SELECT COUNT(*) n FROM " + f.table + " WHERE name=?",
+                                 {std::string("batch-quote-'\\-semicolon;")}, escapedCount),
+                  "verify escaped batch value");
+        require(asInt(escapedCount.rows()[0].at("n")) == 1,
+                "multi-statement batch did not preserve escaped parameter bytes");
+
         const auto rollback = g_client.transaction([&](sqlconduit::core::Session &session) {
             std::int64_t affected = 0;
             auto st = session.execute("INSERT INTO " + f.table

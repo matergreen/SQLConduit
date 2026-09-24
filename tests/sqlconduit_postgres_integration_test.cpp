@@ -303,6 +303,37 @@ namespace {
         require(result.affected.size() == 3 && result.totalAffected() == 3,
                 "batch affected rows are wrong");
 
+        sqlconduit::common::BatchResult invalidResult;
+        const auto invalid = g_client.executeBatch(
+            "INSERT INTO " + f.table
+            + " (name, qty, price, active, created_at) VALUES (?, ?, 1.0, true, now())",
+            {Params{std::string("batch-prevalidate"), std::int64_t(1)},
+             Params{std::string("missing-parameter")}}, invalidResult);
+        require(invalid.code == ErrorCode::QueryError && invalidResult.affected.empty(),
+                "invalid batch shape was not rejected before execution");
+        ResultSet invalidCount;
+        requireOk(g_client.query("SELECT COUNT(*) n FROM " + f.table
+                                 + " WHERE name='batch-prevalidate'", invalidCount),
+                  "verify batch prevalidation");
+        require(asInt(invalidCount.rows()[0].at("n")) == 0,
+                "batch executed rows before detecting a later parameter mismatch");
+
+        sqlconduit::common::ParamBatch chunked;
+        chunked.reserve(300);
+        for (int i = 0; i < 300; ++i) {
+            chunked.push_back(Params{std::string("pipeline-") + std::to_string(i),
+                                     std::int64_t(i)});
+        }
+        sqlconduit::common::BatchResult chunkedResult;
+        requireOk(g_client.executeBatch(
+                      "INSERT INTO " + f.table
+                      + " (name, qty, price, active, created_at) VALUES (?, ?, 1.0, true, now())",
+                      chunked, chunkedResult),
+                  "chunked pipeline batch");
+        require(chunkedResult.affected.size() == chunked.size() &&
+                chunkedResult.totalAffected() == static_cast<std::int64_t>(chunked.size()),
+                "pipeline batch did not preserve results across chunk boundaries");
+
         requireOk(g_client.withSession([&](sqlconduit::core::Session &session) {
             sqlconduit::core::PreparedStatementHandle prepared;
             auto st = session.prepare("SELECT qty FROM " + f.table + " WHERE name = ?",

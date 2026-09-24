@@ -1,13 +1,16 @@
 #include "sqlconduit/driver/mysql_driver.h"
 #include "sqlconduit/drivers/mysql.h"
 #include "sqlconduit/common/logger.h"
+#include "sqlconduit/common/sql_analyze.h"
 #include "sqlconduit/driver/driver_registry.h"
 
 #include <cstring>
+#include <cctype>
 #include <algorithm>
 #include <iterator>
 #include <string>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -95,6 +98,41 @@ namespace sqlconduit::driver {
             std::vector<double> dblBuf;
             std::vector<unsigned long> len;
         };
+
+        std::optional<std::string> mysqlBatchLiteral(MYSQL *mysql,
+                                                     const common::Value &value) {
+            if (std::holds_alternative<std::nullptr_t>(value)) return "NULL";
+            if (const auto *v = std::get_if<bool>(&value)) return *v ? "TRUE" : "FALSE";
+            if (const auto *v = std::get_if<std::int64_t>(&value)) return std::to_string(*v);
+            if (const auto *v = std::get_if<std::uint64_t>(&value)) return std::to_string(*v);
+            if (const auto *v = std::get_if<double>(&value))
+                return common::escapeLiteralGeneric(*v);
+            if (const auto *v = std::get_if<common::Blob>(&value))
+                return common::escapeLiteralGeneric(*v);
+
+            std::string text;
+            if (const auto *v = std::get_if<std::string>(&value)) text = *v;
+            else if (const auto *v = std::get_if<common::Decimal>(&value)) text = v->value;
+            else if (const auto *v = std::get_if<common::Date>(&value)) text = v->value;
+            else if (const auto *v = std::get_if<common::Time>(&value)) text = v->value;
+            else if (const auto *v = std::get_if<common::Timestamp>(&value))
+                text = common::timestampToStringMs(*v);
+            else if (const auto *v = std::get_if<common::Uuid>(&value)) text = v->value;
+            else if (const auto *v = std::get_if<common::Json>(&value)) text = v->value;
+            else if (const auto *v = std::get_if<common::IntervalYearMonth>(&value)) text = v->value;
+            else if (const auto *v = std::get_if<common::IntervalDaySecond>(&value)) text = v->value;
+            else return std::nullopt;
+
+            std::vector<char> escaped(text.size() * 2 + 1, '\0');
+            const unsigned long length = mysql_real_escape_string(
+                mysql, escaped.data(), text.data(), static_cast<unsigned long>(text.size()));
+            std::string result;
+            result.reserve(static_cast<std::size_t>(length) + 2);
+            result.push_back('\'');
+            result.append(escaped.data(), static_cast<std::size_t>(length));
+            result.push_back('\'');
+            return result;
+        }
 
         void setStringParam(ParamStorage &st, std::size_t i, const char *data, std::size_t size) {
             st.strBuf[i].assign(data, data + size);
@@ -857,6 +895,183 @@ namespace sqlconduit::driver {
         (void) affected;
         out.clear();
         return common::Status::error(common::ErrorCode::NotSupported, "MySQL driver disabled");
+#endif
+    }
+
+    common::Status MySQLConnection::executeBatch(const std::string &sql,
+                                                 const common::ParamBatch &batch,
+                                                 common::BatchResult &out) {
+        out.clear();
+#ifdef SQLCONDUIT_ENABLE_MYSQL
+        if (batch.empty()) return common::Status::OK();
+        if (!open_ || !m_) return notConnected("batch");
+
+        StmtGuard statement(mysql_stmt_init(m_));
+        if (!statement.get())
+            return common::Status::error(common::ErrorCode::QueryError,
+                                         "MySQL: mysql_stmt_init failed (out of memory)");
+        if (mysql_stmt_prepare(statement.get(), sql.data(),
+                               static_cast<unsigned long>(sql.size())) != 0)
+            return stmtError("mysql_stmt_prepare(batch)", statement.get());
+
+        const auto expected = static_cast<std::size_t>(mysql_stmt_param_count(statement.get()));
+        for (const auto &params: batch) {
+            if (params.size() != expected)
+                return common::Status::error(
+                    common::ErrorCode::QueryError,
+                    "parameter mismatch: statement expects " + std::to_string(expected)
+                    + " parameter(s) but " + std::to_string(params.size()) + " supplied");
+        }
+
+        const bool ownTransaction = !inTransaction();
+        if (ownTransaction) {
+            if (const auto status = begin(); !status.ok()) return status;
+        }
+        auto fail = [&](common::Status status) {
+            if (ownTransaction) (void) rollback();
+            out.clear();
+            return status;
+        };
+
+        ActiveMysqlOperation active(operationMtx_, activeThreadId_, mysql_thread_id(m_));
+        out.affected.reserve(batch.size());
+        out.keys.reserve(batch.size());
+        const auto statementKind = common::sql::classifyStatement(sql);
+        const bool batchableStatement =
+            (statementKind == common::sql::StatementKind::Insert ||
+             statementKind == common::sql::StatementKind::Update ||
+             statementKind == common::sql::StatementKind::Delete) &&
+            !common::sql::hasMultipleStatements(sql);
+        bool renderedBatch = batchableStatement && batch.size() > 1;
+        constexpr std::size_t kTargetChunkBytes = 1024 * 1024;
+        std::vector<std::string> rendered;
+        if (renderedBatch) {
+            rendered.reserve(batch.size());
+            for (const auto &params: batch) {
+                bool supported = true;
+                std::size_t renderedCount = 0;
+                std::string statementSql = replacePlaceholders(
+                    sql,
+                    [&](const std::size_t index) {
+                        const auto literal = mysqlBatchLiteral(m_, params[index]);
+                        if (!literal) {
+                            supported = false;
+                            return std::string("NULL");
+                        }
+                        return *literal;
+                    },
+                    renderedCount);
+                if (!supported) {
+                    renderedBatch = false;
+                    rendered.clear();
+                    break;
+                }
+                while (!statementSql.empty() &&
+                       std::isspace(static_cast<unsigned char>(statementSql.back())))
+                    statementSql.pop_back();
+                if (!statementSql.empty() && statementSql.back() == ';') {
+                    statementSql.pop_back();
+                    while (!statementSql.empty() &&
+                           std::isspace(static_cast<unsigned char>(statementSql.back())))
+                        statementSql.pop_back();
+                }
+                if (statementSql.size() > kTargetChunkBytes) {
+                    renderedBatch = false;
+                    rendered.clear();
+                    break;
+                }
+                rendered.push_back(std::move(statementSql));
+            }
+        }
+
+        if (renderedBatch &&
+            mysql_set_server_option(m_, MYSQL_OPTION_MULTI_STATEMENTS_ON) == 0) {
+            struct MultiStatementReset {
+                MYSQL *mysql;
+                ~MultiStatementReset() {
+                    (void) mysql_set_server_option(mysql, MYSQL_OPTION_MULTI_STATEMENTS_OFF);
+                }
+            } reset{m_};
+            constexpr std::size_t kMaxStatementsPerChunk = 128;
+            for (std::size_t offset = 0; offset < rendered.size();) {
+                std::string query;
+                std::size_t end = offset;
+                while (end < rendered.size() && end - offset < kMaxStatementsPerChunk) {
+                    const std::size_t extra = rendered[end].size() + (query.empty() ? 0 : 1);
+                    if (!query.empty() && query.size() + extra > kTargetChunkBytes) break;
+                    if (!query.empty()) query.push_back(';');
+                    query += rendered[end++];
+                }
+                if (mysql_real_query(m_, query.data(), query.size()) != 0)
+                    return fail(lastError("mysql_real_query(batch)"));
+                for (std::size_t row = offset; row < end; ++row) {
+                    common::GeneratedKeys keys;
+                    std::unique_ptr<MYSQL_RES, void(*)(MYSQL_RES *)> result(
+                        mysql_store_result(m_), &freeMysqlResult);
+                    if (result) {
+                        if (const auto status = fillResultSet(result.get(), cfg_, keys.rows);
+                            !status.ok()) return fail(status);
+                    } else if (mysql_field_count(m_) != 0) {
+                        return fail(lastError("mysql_store_result(batch)"));
+                    }
+                    const auto affected = mysql_affected_rows(m_);
+                    out.affected.push_back(affected == static_cast<my_ulonglong>(-1)
+                                               ? static_cast<std::int64_t>(keys.rows.rowCount())
+                                               : static_cast<std::int64_t>(affected));
+                    if (const auto id = mysql_insert_id(m_); id != 0 && keys.empty()) {
+                        common::Row keyRow;
+                        keyRow.set("insert_id", static_cast<std::uint64_t>(id));
+                        keys.rows.addRow(std::move(keyRow));
+                    }
+                    out.keys.push_back(std::move(keys));
+                    const int next = mysql_next_result(m_);
+                    if (row + 1 < end) {
+                        if (next != 0)
+                            return fail(lastError("mysql_next_result(batch)"));
+                    } else if (next > 0) {
+                        return fail(lastError("mysql_next_result(batch)"));
+                    } else if (next == 0) {
+                        return fail(common::Status::error(
+                            common::ErrorCode::QueryError,
+                            "MySQL batch statement produced unexpected extra results"));
+                    }
+                }
+                offset = end;
+            }
+        } else {
+        for (const auto &params: batch) {
+            ParamStorage storage;
+            if (const auto status = bindParamsOnly(statement.get(), params, storage); !status.ok())
+                return fail(status);
+            if (mysql_stmt_execute(statement.get()) != 0)
+                return fail(stmtError("mysql_stmt_execute(batch)", statement.get()));
+
+            out.affected.push_back(static_cast<std::int64_t>(
+                mysql_stmt_affected_rows(statement.get())));
+            common::GeneratedKeys keys;
+            if (const auto id = mysql_stmt_insert_id(statement.get()); id != 0) {
+                common::Row row;
+                row.set("insert_id", static_cast<std::uint64_t>(id));
+                keys.rows.addRow(std::move(row));
+            }
+            out.keys.push_back(std::move(keys));
+            mysql_stmt_free_result(statement.get());
+        }
+        }
+
+        if (ownTransaction) {
+            if (const auto status = commit(); !status.ok()) {
+                (void) rollback();
+                out.clear();
+                return status;
+            }
+        }
+        return common::Status::OK();
+#else
+        (void) sql;
+        (void) batch;
+        return common::Status::error(common::ErrorCode::DriverDisabled,
+                                     "MySQL driver disabled");
 #endif
     }
 

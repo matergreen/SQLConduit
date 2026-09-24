@@ -400,9 +400,16 @@ sqlconduit::common::BatchResult result;
 client.executeBatch("INSERT INTO t(id, name) VALUES(?, ?)", batch, result);
 ```
 
-**批量执行是原子的**，三个驱动行为一致：调用方未开事务时中间件自动包一层事务，
+**批量执行是原子的**，四个驱动行为一致：调用方未开事务时中间件自动包一层事务，
 中途任何一组失败都整批回滚，且 `BatchResult` 不会留下部分影响行数（避免调用方
 误以为前几组已落库）。调用方已在事务中时则沿用外层事务，回滚范围由调用方决定。
+
+执行策略按驱动能力分层：PostgreSQL 使用有界 `pqxx::pipeline` 分块发送并按顺序回收
+每组结果；ODBC 在驱动通过 `SQL_PARAM_ARRAY_ROW_COUNTS` 明确支持逐参数组行数时使用
+参数数组，否则回退到单次 prepare 后逐组执行；MySQL 对单条 INSERT/UPDATE/DELETE 使用
+经过客户端字符集转义的有界 multi-statement 分块，并逐个回收 affected、结果集和生成键，
+不适合合并的语句回退到单次 prepare。满足 OCI 限制的 Oracle 批次使用数组绑定和单次 `OCIStmtExecute`。
+所有回退路径仍保留准确的逐组影响行数和生成键。
 
 > 实现注意：驱动若覆盖 `executeBatch` 追求更高性能（数组绑定 / COPY），
 > 必须同时覆盖 `inTransaction()` 返回真实事务状态，并保持同样的原子性保证。
@@ -1103,7 +1110,7 @@ SQL Server 不补的原因有两个，都不是偷懒：`OUTPUT` 的位置与 `R
 
 批量插入：`insertBatchAs` 传**具名非 const `std::vector<T>`** 才会回填（要改实体，必须可写）；
 传临时量 / const vector 走的是不回填的重载。驱动侧 PostgreSQL 逐条收集 `RETURNING` 结果集，
-MySQL 走基类批量循环里的 `mysql_insert_id`。
+MySQL 在批次复用的预处理语句每次执行后读取 `mysql_stmt_insert_id`。
 
 ### 宽松 / 严格（缺列可配，类型不符与 NULL 始终报错）
 

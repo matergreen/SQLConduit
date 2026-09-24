@@ -382,6 +382,15 @@ client.executeBatch("INSERT INTO t(id, name) VALUES(?, ?)", batch, result);
 
 **Batch execution is atomic**, with consistent behavior across all four drivers: when the caller has not opened a transaction, the middleware wraps it in one automatically; if any row in the middle fails, the whole batch rolls back and `BatchResult` carries no partial affected-row counts (avoiding a caller mistakenly assuming the earlier rows committed). When the caller is already in a transaction, the outer transaction is reused and the rollback scope is up to the caller.
 
+Execution is tiered by driver capability. PostgreSQL sends bounded chunks through
+`pqxx::pipeline` and retrieves every parameter group's result in order. ODBC uses parameter arrays
+when the driver reports per-parameter-set row counts through `SQL_PARAM_ARRAY_ROW_COUNTS`, and
+falls back to one prepare plus per-group execution otherwise. MySQL sends bounded multi-statement
+chunks for a single INSERT/UPDATE/DELETE, using connection-aware escaping and retrieving each
+statement's affected count, result, and generated key; ineligible statements fall back to one
+prepare. Eligible Oracle batches use array binding and one
+`OCIStmtExecute`. Every path preserves exact per-group affected counts and generated keys.
+
 > Implementation note: a driver that overrides `executeBatch` for higher throughput (array binding / COPY)
 > must also override `inTransaction()` to return the real transaction state and preserve the same atomicity guarantee.
 
@@ -1076,8 +1085,8 @@ It will be enabled once verified against a real SQL Server instance.
 Batched inserts: `insertBatchAs` back-fills only when you pass a **named non-const
 `std::vector<T>`** (the entities must be mutable); a temporary or const vector selects the
 non-back-filling overload. Under the hood PostgreSQL collects one `RETURNING` result set per row,
-Oracle reads back one `RETURNING ... INTO` output bind per row, while MySQL relies on
-`mysql_insert_id` inside the base-class batch loop.
+Oracle reads back one `RETURNING ... INTO` output bind per row, while MySQL reads
+`mysql_stmt_insert_id` after each execution of the batch's reused prepared statement.
 
 ### Lenient / strict (missing columns configurable; type mismatch and NULL always error)
 

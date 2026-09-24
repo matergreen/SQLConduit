@@ -6,6 +6,8 @@ description.
 
 ## [Unreleased]
 
+## [0.7.0]
+
 ### Public API foundation
 
 - **Breaking (preview packaging/API):** split the monolithic static archive into

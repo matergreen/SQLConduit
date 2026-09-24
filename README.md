@@ -111,6 +111,26 @@ int main() {
 }
 ```
 
+For common CRUD statements, the structured builder keeps identifiers and bound values separate:
+
+```cpp
+auto built = sqlconduit::sql::Builder::select("users")
+    .columns({"id", "name"})
+    .where(sqlconduit::sql::eq("status", std::string("active")))
+    .where(sqlconduit::sql::ge("age", std::int64_t{18}))
+    .orderBy("id")
+    .build();
+
+if (built.ok())
+    status = client.query(built.statement.sql, built.statement.params, rows);
+```
+
+The builder covers portable `SELECT`, `INSERT`, `UPDATE`, and `DELETE` construction. Values always
+remain in `Params`, field order determines parameter order, and full-table updates/deletes require
+an explicit `.allowAllRows()`. Pass `common::util::Dialect::MySQL` when MySQL backtick quoting is
+required; the default uses standard double-quoted identifiers. Pagination, upsert, generated-key
+clauses, locking, joins, expressions, and arbitrary dialect translation remain application SQL.
+
 Pass a data-source name as the first argument to target a specific source:
 
 ```cpp

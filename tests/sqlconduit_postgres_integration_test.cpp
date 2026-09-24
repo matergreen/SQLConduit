@@ -3,6 +3,7 @@
 #include "sqlconduit/mapping.h"
 #include "sqlconduit/util.h"
 #include "sqlconduit/drivers/postgres.h"
+#include "sql_builder_integration.h"
 
 #include <atomic>
 #include <chrono>
@@ -709,6 +710,17 @@ int main() {
     try {
         fixture.start();
         testConnectivityAndTypes(fixture);
+        requireOk(runSqlBuilderCrud(
+                      g_client, fixture.table, sqlconduit::common::util::Dialect::Postgres,
+                      {
+                          {"name", std::string("builder-row")},
+                          {"qty", std::int64_t{5}},
+                          {"price", 5.0},
+                          {"active", true},
+                          {"created_at", sqlconduit::common::Timestamp{
+                              std::chrono::system_clock::now()}}
+                      }),
+                  "SQL Builder CRUD");
         testBatchPreparedAndStreaming(fixture);
         testTransactions(fixture);
         testErrorsLimitsAndCursor(fixture);

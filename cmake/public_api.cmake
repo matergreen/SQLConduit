@@ -11,6 +11,7 @@ set(SQLCONDUIT_FROZEN_PUBLIC_HEADERS
     sqlconduit/common/oracle_types.h
     sqlconduit/common/pg_types.h
     sqlconduit/common/sql_analyze.h
+    sqlconduit/common/sql_dialect.h
     sqlconduit/common/types.h
     sqlconduit/config/config_loader.h
     sqlconduit/config/datasource_config.h
@@ -32,6 +33,7 @@ set(SQLCONDUIT_FROZEN_PUBLIC_HEADERS
     sqlconduit/drivers/postgres.h
     sqlconduit/exporters/prometheus.h
     sqlconduit/mapping.h
+    sqlconduit/sql_builder.h
     sqlconduit/sqlconduit.h
     sqlconduit/util.h
     sqlconduit/version.h)

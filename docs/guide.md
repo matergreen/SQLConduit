@@ -196,6 +196,39 @@ auto st = client.query("SELECT * FROM t WHERE name = ? AND age > ?", p, rs);
   字符串、标识符与注释里的 `?`。
 - 占位符数量与参数数量不一致时返回 `QueryError`，不会静默产生错误 SQL。
 
+### 结构化 CRUD 构造器
+
+`sqlconduit/sql_builder.h` 构造可移植范围内的 `SELECT`、`INSERT`、`UPDATE` 和 `DELETE`，
+同时继续使用驱动原生参数绑定：
+
+```cpp
+using namespace sqlconduit;
+
+auto statement = sql::Builder::update("accounts", common::util::Dialect::Postgres)
+    .value("enabled", false)
+    .value("reason", std::string("expired"))
+    .where(sql::lt("expires_at", common::Timestamp{std::chrono::system_clock::now()}))
+    .build();
+
+std::int64_t affected = 0;
+if (statement.ok())
+    client.execute(statement.statement.sql, statement.statement.params, affected);
+```
+
+- 条件支持比较、`LIKE`、`IN` / `NOT IN`、`BETWEEN`、NULL 判断、嵌套 `all` / `any`
+  和 `not_`；多次调用 `where()` 按 `AND` 连接。
+- 参数值永远不会渲染进 SQL。字段加入顺序会被保留，因此 SQL、预编译缓存键、指纹和参数
+  位置都是确定的。
+- 无条件 `UPDATE` / `DELETE` 返回 `QueryError`；只有显式 `.allowAllRows()` 才允许全表操作。
+- `Dialect::Auto`、PostgreSQL、SQL Server 和 Oracle 使用标准双引号；只有显式选择
+  `Dialect::MySQL` 才使用反引号。ODBC 后端必须明确选择真实数据库方言，不能把传输层名称
+  当作方言。
+- 分页、Upsert、生成列返回、锁、JOIN、表达式、CTE 和原始 SQL 片段暂不属于可移植阶段；
+  构造器不会猜测或静默翻译这些能力。
+
+实体映射的 `mapping::insertSql` / `mapping::updateSql` 已委托给同一个构造器生成基础 CRUD；
+原有生成键方言处理保持不变。
+
 常用数据库专有类型会保留语义，而不是全部退化成 `string`/`double`：
 
 | C++ 类型 | 数据库类型 | 说明 |

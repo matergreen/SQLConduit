@@ -109,6 +109,25 @@ int main() {
 }
 ```
 
+常见 CRUD 可以使用结构化构造器，让标识符和绑定参数始终分离：
+
+```cpp
+auto built = sqlconduit::sql::Builder::select("users")
+    .columns({"id", "name"})
+    .where(sqlconduit::sql::eq("status", std::string("active")))
+    .where(sqlconduit::sql::ge("age", std::int64_t{18}))
+    .orderBy("id")
+    .build();
+
+if (built.ok())
+    status = client.query(built.statement.sql, built.statement.params, rows);
+```
+
+构造器只覆盖可移植的 `SELECT`、`INSERT`、`UPDATE` 和 `DELETE`：值始终留在 `Params`
+中，字段加入顺序就是参数顺序；全表更新或删除必须显式调用 `.allowAllRows()`。MySQL 需要
+反引号时传入 `common::util::Dialect::MySQL`，默认使用标准双引号。分页、Upsert、生成键、
+锁、JOIN、表达式和任意 SQL 方言翻译仍由业务 SQL 负责。
+
 指定数据源时，把名称作为第一个参数：
 
 ```cpp

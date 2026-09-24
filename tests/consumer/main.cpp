@@ -1,4 +1,5 @@
 #include "sqlconduit/client.h"
+#include "sqlconduit/sql_builder.h"
 #include "sqlconduit/version.h"
 
 #if defined(SQLCONDUIT_CONSUMER_MYSQL)
@@ -16,6 +17,15 @@
 int main() {
     static_assert(SQLCONDUIT_VERSION_MAJOR == 0);
     static_assert(SQLCONDUIT_VERSION_MINOR == 8);
+
+    const auto statement = sqlconduit::sql::Builder::select("consumer_probe")
+        .columns({"id"})
+        .where(sqlconduit::sql::eq("id", 1))
+        .build();
+    if (!statement.ok() || statement.statement.params.size() != 1) {
+        std::printf("consumer smoke FAILED: SQL Builder package contract mismatch\n");
+        return 1;
+    }
 
     sqlconduit::Client client;
     client.setObserver([](const sqlconduit::common::OperationEvent &) {

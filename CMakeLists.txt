@@ -86,6 +86,7 @@ set(SQLCONDUIT_CORE_SOURCES
     src/common/context.cpp
     src/common/observer.cpp
     src/common/sql_analyze.cpp
+    src/common/sql_builder.cpp
     src/config/datasource_config.cpp
     src/config/config_loader.cpp
     src/config/yaml_parser.cpp

@@ -217,6 +217,17 @@ int main(int argc, char **argv) {
         benchmarkSink += static_cast<std::uint64_t>(affected);
     }));
 
+    results.push_back(measure("sql_builder_build", iterations, [&] {
+        const auto built = sql::Builder::select("benchmark_rows")
+            .columns({"id", "name", "score"})
+            .where(sql::eq("active", true))
+            .where(sql::ge("score", 50.0))
+            .orderBy("id")
+            .build();
+        requireOk(built.status, "SQL builder");
+        benchmarkSink += built.statement.sql.size() + built.statement.params.size();
+    }));
+
     common::Row row;
     row.set("id", std::int64_t{42});
     row.set("name", std::string("benchmark-user"));

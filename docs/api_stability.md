@@ -16,7 +16,9 @@ These are the preferred entry points for application code:
 - `sqlconduit/common/types.h`, `common/context.h`, and `common/observer.h`;
 - `sqlconduit/config/datasource_config.h` and `config/config_loader.h`;
 - `sqlconduit/async/async_types.h`: result and executor-statistics types returned by `Client`;
-- `sqlconduit/mapping.h`, `sqlconduit/util.h`, and `sqlconduit/version.h`.
+- `sqlconduit/mapping.h`, `sqlconduit/util.h`, and `sqlconduit/version.h`;
+- `sqlconduit/sql_builder.h` and `sqlconduit/common/sql_dialect.h` for portable CRUD construction
+  and explicit identifier dialect selection.
 
 Existing names, overloads, enum numeric values, and documented behavior in this group will not be
 changed incompatibly within a minor release line. New overloads and fields may be added when old
@@ -104,7 +106,7 @@ surface changes, transitive-include dependencies, and private-header installatio
 ## 稳定性分层
 
 - **应用 API**：唯一高层入口 `Client`、公共数据类型、配置、观测、future 异步结果、
-  mapping、util 和版本信息。相同 0.x 次版本内保持源码兼容。
+  mapping、util、结构化 SQL Builder 和版本信息。相同 0.x 次版本内保持源码兼容。
 - **扩展 API**：驱动、连接、拦截器、限流器接口，以及 `Client` 签名中公开的
   `DataSource`、`Session`、`Cursor`、选项和统计类型。
 - **内部实现**：`RuntimeServices`、`StatsReporter` 和 `detail` 命名空间。内部头不会安装，

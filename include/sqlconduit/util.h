@@ -3,6 +3,7 @@
 
 #include "sqlconduit/common/context.h"
 #include "sqlconduit/common/logger.h"
+#include "sqlconduit/common/sql_dialect.h"
 #include "sqlconduit/common/types.h"
 #include "sqlconduit/core/database_manager.h"
 #include "sqlconduit/core/query_cache.h"
@@ -26,8 +27,6 @@
 
 namespace sqlconduit::common::util {
     enum class RoutineKind { Function = 0, Procedure = 1 };
-
-    enum class Dialect { Auto = 0, MySQL = 1, Postgres = 2, SqlServer = 3, Oracle = 4 };
 
     struct RoutineRef {
         std::string name;
@@ -179,29 +178,6 @@ namespace sqlconduit::common::util {
         return o.dialect != Dialect::Auto
                    ? o.dialect
                    : detectDialect(client, o.dataSource);
-    }
-
-    inline std::string quoteIdent(const std::string &ident, const Dialect d) {
-        const char q = d == Dialect::MySQL ? '`' : '"';
-        std::string out;
-        std::string part;
-        const auto flush = [&] {
-            if (part.empty()) return;
-            if (!out.empty()) out.push_back('.');
-            out.push_back(q);
-            for (const char c: part) {
-                if (c == q) out.push_back(q);
-                out.push_back(c);
-            }
-            out.push_back(q);
-            part.clear();
-        };
-        for (const char c: ident) {
-            if (c == '.') flush();
-            else part.push_back(c);
-        }
-        flush();
-        return out;
     }
 
     inline std::string quoteStringLiteral(const std::string &value) {

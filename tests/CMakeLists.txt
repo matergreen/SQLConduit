@@ -5,6 +5,9 @@ target_compile_definitions(sqlconduit_core_test PRIVATE SQLCONDUIT_SOURCE_DIR="$
 add_executable(sqlconduit_mapping_test sqlconduit_mapping_test.cpp)
 target_link_libraries(sqlconduit_mapping_test PRIVATE sqlconduit_core)
 
+add_executable(sqlconduit_sql_builder_test sqlconduit_sql_builder_test.cpp)
+target_link_libraries(sqlconduit_sql_builder_test PRIVATE sqlconduit_core)
+
 add_executable(sqlconduit_pg_types_test sqlconduit_pg_types_test.cpp)
 target_link_libraries(sqlconduit_pg_types_test PRIVATE sqlconduit_core)
 
@@ -105,6 +108,7 @@ find_package(Threads QUIET)
 if(Threads_FOUND)
     target_link_libraries(sqlconduit_core_test PRIVATE Threads::Threads)
     target_link_libraries(sqlconduit_mapping_test PRIVATE Threads::Threads)
+    target_link_libraries(sqlconduit_sql_builder_test PRIVATE Threads::Threads)
     target_link_libraries(sqlconduit_util_test PRIVATE Threads::Threads)
     target_link_libraries(sqlconduit_interceptor_test PRIVATE Threads::Threads)
     target_link_libraries(sqlconduit_observability_test PRIVATE Threads::Threads)
@@ -135,6 +139,7 @@ endif()
 
 add_test(NAME sqlconduit_core_test COMMAND sqlconduit_core_test)
 add_test(NAME sqlconduit_mapping_test COMMAND sqlconduit_mapping_test)
+add_test(NAME sqlconduit_sql_builder_test COMMAND sqlconduit_sql_builder_test)
 add_test(NAME sqlconduit_pg_types_test COMMAND sqlconduit_pg_types_test)
 add_test(NAME sqlconduit_oracle_types_test COMMAND sqlconduit_oracle_types_test)
 add_test(NAME sqlconduit_util_test COMMAND sqlconduit_util_test)

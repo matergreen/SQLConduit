@@ -195,6 +195,41 @@ auto st = client.query("SELECT * FROM t WHERE name = ? AND age > ?", p, rs);
 - Literal interpolation is enabled only for compatible drivers that explicitly override `allowsLiteralInterpolation()`; the scanner skips `?` inside strings, identifiers, and comments.
 - A placeholder count that does not match the parameter count returns `QueryError`, never silently producing wrong SQL.
 
+### Structured CRUD builder
+
+`sqlconduit/sql_builder.h` constructs the portable subset of `SELECT`, `INSERT`, `UPDATE`, and
+`DELETE` while preserving native binding:
+
+```cpp
+using namespace sqlconduit;
+
+auto statement = sql::Builder::update("accounts", common::util::Dialect::Postgres)
+    .value("enabled", false)
+    .value("reason", std::string("expired"))
+    .where(sql::lt("expires_at", common::Timestamp{std::chrono::system_clock::now()}))
+    .build();
+
+std::int64_t affected = 0;
+if (statement.ok())
+    client.execute(statement.statement.sql, statement.statement.params, affected);
+```
+
+- Supported predicates are comparisons, `LIKE`, `IN` / `NOT IN`, `BETWEEN`, null checks, nested
+  `all` / `any`, and `not_`. Repeated `where()` calls are joined with `AND`.
+- Values are never rendered into SQL. Insertion order is retained so generated SQL, prepared-cache
+  keys, fingerprints, and parameter positions are deterministic.
+- `UPDATE` and `DELETE` without conditions fail with `QueryError`; `.allowAllRows()` is the explicit
+  opt-in for a full-table operation.
+- `Dialect::Auto`, PostgreSQL, SQL Server, and Oracle use standard double quotes. MySQL uses
+  backticks only when `Dialect::MySQL` is selected. ODBC backends must choose their actual dialect
+  explicitly rather than relying on the transport name.
+- Pagination, upsert, returned/generated columns, locks, joins, expressions, CTEs, and raw fragments
+  are intentionally outside this portable phase. Unsupported features are not guessed or silently
+  translated.
+
+The entity helpers `mapping::insertSql` and `mapping::updateSql` delegate their base CRUD generation
+to the same builder, while their existing generated-key dialect handling remains unchanged.
+
 Database-specific values retain their semantics instead of collapsing into `string` or `double`:
 
 | C++ type | Database type | Semantics |

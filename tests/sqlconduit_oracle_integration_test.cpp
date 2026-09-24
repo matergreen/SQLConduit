@@ -3,6 +3,7 @@
 #include "sqlconduit/mapping.h"
 #include "sqlconduit/util.h"
 #include "sqlconduit/drivers/oracle.h"
+#include "sql_builder_integration.h"
 
 #include <chrono>
 #include <cstdio>
@@ -544,6 +545,16 @@ int main() {
         Fixture f;
         f.start();
         testConnectivityAndTypes(f);
+        requireOk(runSqlBuilderCrud(
+                      g_client, f.table, sqlconduit::common::util::Dialect::Oracle,
+                      {
+                          {"name", std::string("builder-row")},
+                          {"qty", std::int64_t{5}},
+                          {"price", 5.0},
+                          {"created_at", sqlconduit::common::Timestamp{
+                              std::chrono::system_clock::now()}}
+                      }),
+                  "SQL Builder CRUD");
         testMappingRoundTrip(f);
         testTransactionsAndSavepoints(f);
         testStreamingAndErrors(f);

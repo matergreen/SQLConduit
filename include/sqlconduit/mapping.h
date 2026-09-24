@@ -7,6 +7,7 @@
 #include "sqlconduit/core/cursor.h"
 #include "sqlconduit/core/database_manager.h"
 #include "sqlconduit/sqlconduit.h"
+#include "sqlconduit/sql_builder.h"
 #include "sqlconduit/util.h"
 
 #include <cmath>
@@ -833,8 +834,10 @@ namespace sqlconduit::mapping {
     std::string insertSql(std::string table,
                           const common::util::Dialect d = common::util::Dialect::Auto) {
         const auto cols = mappingFor<T>().columnNames(WriteCols::Writable);
-        return "INSERT INTO " + common::util::quoteIdent(table, d) + " (" + joinIdentifiers(cols, d) +
-               ") VALUES (" + placeholders(cols.size()) + ")";
+        auto builder = sql::Builder::insert(std::move(table), d);
+        for (const auto &column: cols) builder.value(column, std::int64_t{0});
+        const auto result = builder.build();
+        return result.ok() ? result.statement.sql : std::string();
     }
 
     template<class T>
@@ -848,8 +851,11 @@ namespace sqlconduit::mapping {
             else if (Mapping<T>::writable(c)) setCols.push_back(c.name);
         }
         if (keyCols.empty() || setCols.empty()) return std::string();
-        return "UPDATE " + common::util::quoteIdent(table, d) + " SET " + buildAssignList(setCols, d) +
-               " WHERE " + buildAssignList(keyCols, d);
+        auto builder = sql::Builder::update(std::move(table), d);
+        for (const auto &column: setCols) builder.value(column, std::int64_t{0});
+        for (const auto &column: keyCols) builder.where(sql::eq(column, std::int64_t{0}));
+        const auto result = builder.build();
+        return result.ok() ? result.statement.sql : std::string();
     }
 
     template<class T>
@@ -862,8 +868,11 @@ namespace sqlconduit::mapping {
             if (!m.isDeclaredByName(n)) return std::string();
         for (const auto &n: whereCols)
             if (!m.isDeclaredByName(n)) return std::string();
-        return "UPDATE " + common::util::quoteIdent(table, d) + " SET " + buildAssignList(setCols, d) +
-               " WHERE " + buildAssignList(whereCols, d);
+        auto builder = sql::Builder::update(std::move(table), d);
+        for (const auto &column: setCols) builder.value(column, std::int64_t{0});
+        for (const auto &column: whereCols) builder.where(sql::eq(column, std::int64_t{0}));
+        const auto result = builder.build();
+        return result.ok() ? result.statement.sql : std::string();
     }
 
     template<class T>

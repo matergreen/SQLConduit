@@ -7,6 +7,7 @@
 #include "sqlconduit/core/sql_auditor.h"
 #include "sqlconduit/exporters/prometheus.h"
 #include "sqlconduit/mapping.h"
+#include "sqlconduit/sql_builder.h"
 #include "sqlconduit/sqlconduit.h"
 #include "sqlconduit/util.h"
 #include "sqlconduit/version.h"
@@ -125,6 +126,14 @@ static_assert(static_cast<int>(sqlconduit::common::util::RoutineKind::Function) 
 static_assert(static_cast<int>(sqlconduit::common::util::RoutineKind::Procedure) == 1);
 static_assert(static_cast<int>(sqlconduit::common::util::Dialect::Auto) == 0);
 static_assert(static_cast<int>(sqlconduit::common::util::Dialect::Oracle) == 4);
+static_assert(static_cast<int>(sqlconduit::sql::Operation::Select) == 0);
+static_assert(static_cast<int>(sqlconduit::sql::Operation::Delete) == 3);
+static_assert(static_cast<int>(sqlconduit::sql::CompareOperator::Equal) == 0);
+static_assert(static_cast<int>(sqlconduit::sql::CompareOperator::Like) == 6);
+static_assert(static_cast<int>(sqlconduit::sql::SortDirection::Ascending) == 0);
+static_assert(static_cast<int>(sqlconduit::sql::SortDirection::Descending) == 1);
+static_assert(std::is_same_v<decltype(std::declval<const sqlconduit::sql::Builder &>().build()),
+                             sqlconduit::sql::BuildResult>);
 static_assert(static_cast<int>(sqlconduit::core::Cursor::Binding::OwnsHandle) == 0);
 static_assert(static_cast<int>(sqlconduit::core::Cursor::Binding::BorrowedInSession) == 1);
 

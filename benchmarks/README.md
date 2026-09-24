@@ -1,9 +1,10 @@
 # SQLConduit microbenchmarks
 
-The benchmark executable covers six stable library-level paths without requiring a live database:
+The benchmark executable covers seven stable library-level paths without requiring a live database:
 
 - pooled connection borrow and return;
 - positional parameter binding through the core fallback binder;
+- structured SQL Builder construction, identifier quoting, and parameter collection;
 - result-row to entity mapping;
 - a 32-row parameter batch;
 - a 64-row cursor fetch;

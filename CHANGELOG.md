@@ -8,6 +8,17 @@ description.
 
 ## [0.8.0]
 
+### Structured SQL construction
+
+- Added a deterministic, parameter-only CRUD builder for `SELECT`, `INSERT`, `UPDATE`, and
+  `DELETE`, including structured predicates, ordering, identifier quoting, and explicit protection
+  against accidental full-table updates/deletes.
+- Kept the non-translation boundary: pagination, upsert, locks, joins, expressions, generated-key
+  clauses, and other dialect features remain explicit application SQL. MySQL quoting requires an
+  explicit dialect, and ODBC never guesses its backend dialect.
+- Reused the builder from entity mapping INSERT/UPDATE generation and added unit, public-contract,
+  integration-matrix, and microbenchmark coverage.
+
 ### Configuration contract
 
 - Added a distributable JSON Schema 2020-12 contract covering every configuration block, field,
@@ -19,9 +30,9 @@ description.
 
 ### Performance and operational contracts
 
-- Added dependency-free microbenchmarks for connection borrow/return, parameter binding, row
-  mapping, batching, cursor fetches, and the disabled SQL logging fast path. CI archives a JSON
-  baseline without applying unreliable hosted-runner thresholds.
+- Added dependency-free microbenchmarks for connection borrow/return, parameter binding, structured
+  SQL construction, row mapping, batching, cursor fetches, and the disabled SQL logging fast path.
+  CI archives a JSON baseline without applying unreliable hosted-runner thresholds.
 - Published a compatibility contract for Prometheus metric names, types, and labels. Fingerprint
   series now have a hard limit of 1000; SQL text, trace IDs, tenant IDs, and errors remain forbidden
   as labels.

@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <initializer_list>
 #include <utility>
 
 namespace sqlconduit::config {
@@ -49,6 +50,24 @@ namespace sqlconduit::config {
             out = static_cast<std::int64_t>(value);
             return true;
         }
+
+        bool rejectUnknownFields(const json &object,
+                                 const std::initializer_list<const char *> allowed,
+                                 const std::string &path,
+                                 std::string &error) {
+            for (auto it = object.begin(); it != object.end(); ++it) {
+                const bool known = std::any_of(
+                    allowed.begin(), allowed.end(), [&](const char *field) {
+                        return it.key() == field;
+                    });
+                if (!known) {
+                    error = "config error [unknown_field] at " + path + "/" + it.key()
+                            + ": field is not defined by sqlconduit.schema.json";
+                    return false;
+                }
+            }
+            return true;
+        }
     }
 
     bool ConfigLoader::loadFromFile(const std::string &path, GlobalConfig &out, std::string &error) {
@@ -85,10 +104,31 @@ namespace sqlconduit::config {
         }
 
         try {
+            if (!j.is_object()) {
+                error = "config error [type] at /: root must be an object";
+                return false;
+            }
+            if (!rejectUnknownFields(j, {
+                    "$schema", "default_datasource", "heartbeat_interval_ms", "pool", "retry",
+                    "circuit_breaker", "observability", "rate_limit", "sql_audit", "query_cache",
+                    "cursor", "prepared_cache", "async", "interceptors", "datasources", "groups"
+                }, "", error)) return false;
             out.default_datasource = j.value("default_datasource", std::string());
             out.heartbeat_interval_ms = j.value("heartbeat_interval_ms", 5000);
+            if (out.heartbeat_interval_ms < 0) {
+                error = "config error [minimum] at /heartbeat_interval_ms: must be >= 0";
+                return false;
+            }
 
-            if (j.contains("pool") && j["pool"].is_object()) {
+            if (j.contains("pool")) {
+                if (!j["pool"].is_object()) {
+                    error = "config error [type] at /pool: must be an object";
+                    return false;
+                }
+                if (!rejectUnknownFields(j["pool"], {
+                        "enabled", "min", "max", "borrow_timeout_ms", "idle_timeout_ms",
+                        "max_lifetime_ms", "leak_detection_threshold_ms", "validation_interval_ms"
+                    }, "/pool", error)) return false;
                 out.pool.enabled = j["pool"].value("enabled", out.pool.enabled);
                 out.pool.min = j["pool"].value("min", out.pool.min);
                 out.pool.max = j["pool"].value("max", out.pool.max);
@@ -100,22 +140,14 @@ namespace sqlconduit::config {
                 out.pool.validation_interval_ms = j["pool"].value("validation_interval_ms",
                                                                   out.pool.validation_interval_ms);
             }
-            if (out.pool.min < 0)
-                out.pool.min = 0;
-            if (out.pool.max < 1)
-                out.pool.max = 1;
-            if (out.pool.min > out.pool.max)
-                out.pool.min = out.pool.max;
-            if (out.pool.borrow_timeout_ms < 0)
-                out.pool.borrow_timeout_ms = 0;
-            if (out.pool.idle_timeout_ms < 0)
-                out.pool.idle_timeout_ms = 0;
-            if (out.pool.max_lifetime_ms < 0)
-                out.pool.max_lifetime_ms = 0;
-            if (out.pool.leak_detection_threshold_ms < 0)
-                out.pool.leak_detection_threshold_ms = 0;
-            if (out.pool.validation_interval_ms < 0)
-                out.pool.validation_interval_ms = 0;
+            if (out.pool.min < 0 || out.pool.max < 1 || out.pool.min > out.pool.max ||
+                out.pool.borrow_timeout_ms < 0 || out.pool.idle_timeout_ms < 0 ||
+                out.pool.max_lifetime_ms < 0 || out.pool.leak_detection_threshold_ms < 0 ||
+                out.pool.validation_interval_ms < 0) {
+                error = "config error [invalid_value] at /pool: require 0 <= min <= max, max >= 1, "
+                        "and non-negative timeout values";
+                return false;
+            }
 
             if (j.contains("retry")) {
                 if (!j["retry"].is_object()) {
@@ -123,6 +155,9 @@ namespace sqlconduit::config {
                     return false;
                 }
                 const auto &retry = j["retry"];
+                if (!rejectUnknownFields(retry, {
+                        "max_attempts", "initial_backoff_ms", "max_backoff_ms", "retry_writes"
+                    }, "/retry", error)) return false;
                 out.retry.max_attempts = retry.value("max_attempts", out.retry.max_attempts);
                 out.retry.initial_backoff_ms = retry.value(
                     "initial_backoff_ms", out.retry.initial_backoff_ms);
@@ -140,6 +175,8 @@ namespace sqlconduit::config {
                     return false;
                 }
                 const auto &breaker = j["circuit_breaker"];
+                if (!rejectUnknownFields(breaker, {"failure_threshold", "open_interval_ms"},
+                                         "/circuit_breaker", error)) return false;
                 out.circuit_breaker.failure_threshold = breaker.value(
                     "failure_threshold", out.circuit_breaker.failure_threshold);
                 out.circuit_breaker.open_interval_ms = breaker.value(
@@ -157,12 +194,20 @@ namespace sqlconduit::config {
                     return false;
                 }
                 const auto &observability = j["observability"];
+                if (!rejectUnknownFields(observability, {
+                        "sql_log", "slow_sql", "pool_metrics", "stats_report"
+                    }, "/observability", error)) return false;
                 if (observability.contains("sql_log")) {
                     if (!observability["sql_log"].is_object()) {
                         error = "observability.sql_log must be an object";
                         return false;
                     }
                     const auto &sqlLog = observability["sql_log"];
+                    if (!rejectUnknownFields(sqlLog, {
+                            "enabled", "mode", "level", "log_success", "log_errors", "slow_only",
+                            "sample_rate", "max_sql_length", "max_param_length",
+                            "include_string_values", "include_blob_values"
+                        }, "/observability/sql_log", error)) return false;
                     auto &cfg = out.observability.sql_log;
                     cfg.enabled = sqlLog.value("enabled", cfg.enabled);
                     cfg.mode = sqlLog.value("mode", cfg.mode);
@@ -192,6 +237,10 @@ namespace sqlconduit::config {
                         return false;
                     }
                     const auto &slowSql = observability["slow_sql"];
+                    if (!rejectUnknownFields(slowSql, {
+                            "enabled", "threshold_ms", "aggregate_capacity", "recent_capacity",
+                            "retain_rendered_sql", "max_sql_length", "histogram_buckets_ms"
+                        }, "/observability/slow_sql", error)) return false;
                     auto &cfg = out.observability.slow_sql;
                     cfg.enabled = slowSql.value("enabled", cfg.enabled);
                     cfg.threshold_ms = slowSql.value("threshold_ms", cfg.threshold_ms);
@@ -225,6 +274,8 @@ namespace sqlconduit::config {
                         error = "observability.pool_metrics must be an object";
                         return false;
                     }
+                    if (!rejectUnknownFields(observability["pool_metrics"], {"enabled"},
+                                             "/observability/pool_metrics", error)) return false;
                     out.observability.pool_metrics.enabled = observability["pool_metrics"].value(
                         "enabled", out.observability.pool_metrics.enabled);
                 }
@@ -234,6 +285,10 @@ namespace sqlconduit::config {
                         return false;
                     }
                     const auto &report = observability["stats_report"];
+                    if (!rejectUnknownFields(report, {
+                            "enabled", "interval_ms", "file", "format", "include_pool",
+                            "include_slow_sql", "slow_sql_limit"
+                        }, "/observability/stats_report", error)) return false;
                     auto &cfg = out.observability.stats_report;
                     cfg.enabled = report.value("enabled", cfg.enabled);
                     cfg.interval_ms = report.value("interval_ms", cfg.interval_ms);
@@ -242,7 +297,11 @@ namespace sqlconduit::config {
                     cfg.include_pool = report.value("include_pool", cfg.include_pool);
                     cfg.include_slow_sql = report.value("include_slow_sql", cfg.include_slow_sql);
                     cfg.slow_sql_limit = report.value("slow_sql_limit", cfg.slow_sql_limit);
-                    if (cfg.interval_ms < 1000) cfg.interval_ms = 1000;
+                    if (cfg.interval_ms < 1000) {
+                        error = "config error [minimum] at /observability/stats_report/interval_ms: "
+                                "must be >= 1000";
+                        return false;
+                    }
                     if (cfg.format != "text" && cfg.format != "json") {
                         error = "observability.stats_report.format must be 'text' or 'json'";
                         return false;
@@ -260,6 +319,9 @@ namespace sqlconduit::config {
                     return false;
                 }
                 const auto &rl = j["rate_limit"];
+                if (!rejectUnknownFields(rl, {
+                        "enabled", "global_qps", "per_fingerprint_qps", "burst", "fingerprint_mode"
+                    }, "/rate_limit", error)) return false;
                 out.rate_limit.enabled = rl.value("enabled", out.rate_limit.enabled);
                 out.rate_limit.global_qps = rl.value("global_qps", out.rate_limit.global_qps);
                 out.rate_limit.per_fingerprint_qps = rl.value(
@@ -285,6 +347,11 @@ namespace sqlconduit::config {
                     return false;
                 }
                 const auto &audit = j["sql_audit"];
+                if (!rejectUnknownFields(audit, {
+                        "enabled", "action", "block_no_where_dml", "require_limit_select",
+                        "enforce_read_only", "log_blocked", "blacklist_fingerprints",
+                        "whitelist_fingerprints"
+                    }, "/sql_audit", error)) return false;
                 out.sql_audit.enabled = audit.value("enabled", out.sql_audit.enabled);
                 out.sql_audit.action = audit.value("action", out.sql_audit.action);
                 out.sql_audit.block_no_where_dml = audit.value(
@@ -313,6 +380,10 @@ namespace sqlconduit::config {
                     return false;
                 }
                 const auto &qc = j["query_cache"];
+                if (!rejectUnknownFields(qc, {
+                        "enabled", "ttl_ms", "max_entries", "max_memory_bytes",
+                        "cache_on_replica_only"
+                    }, "/query_cache", error)) return false;
                 out.query_cache.enabled = qc.value("enabled", out.query_cache.enabled);
                 out.query_cache.ttl_ms = qc.value("ttl_ms", out.query_cache.ttl_ms);
                 out.query_cache.max_entries = qc.value("max_entries", out.query_cache.max_entries);
@@ -333,6 +404,9 @@ namespace sqlconduit::config {
                     return false;
                 }
                 const auto &cur = j["cursor"];
+                if (!rejectUnknownFields(cur, {
+                        "enabled", "default_batch_size", "max_open_cursors", "allow_scrollable"
+                    }, "/cursor", error)) return false;
                 out.cursor.enabled = cur.value("enabled", out.cursor.enabled);
                 out.cursor.default_batch_size = cur.value(
                     "default_batch_size", out.cursor.default_batch_size);
@@ -352,6 +426,8 @@ namespace sqlconduit::config {
                     return false;
                 }
                 const auto &pc = j["prepared_cache"];
+                if (!rejectUnknownFields(pc, {"enabled", "max_per_connection"},
+                                         "/prepared_cache", error)) return false;
                 out.prepared_cache.enabled = pc.value("enabled", out.prepared_cache.enabled);
                 out.prepared_cache.max_per_connection = pc.value(
                     "max_per_connection", out.prepared_cache.max_per_connection);
@@ -367,13 +443,8 @@ namespace sqlconduit::config {
                     return false;
                 }
                 const auto &ic = j["interceptors"];
+                if (!rejectUnknownFields(ic, {"enabled"}, "/interceptors", error)) return false;
                 out.interceptors.enabled = ic.value("enabled", out.interceptors.enabled);
-                for (auto it = ic.begin(); it != ic.end(); ++it) {
-                    if (it.key() != "enabled") {
-                        error = "unknown interceptors field: " + it.key();
-                        return false;
-                    }
-                }
             }
 
             if (j.contains("async")) {
@@ -382,6 +453,9 @@ namespace sqlconduit::config {
                     return false;
                 }
                 const auto &as = j["async"];
+                if (!rejectUnknownFields(as, {
+                        "enabled", "threads", "queue_size", "statement_timeout_ms"
+                    }, "/async", error)) return false;
                 out.async.enabled = as.value("enabled", out.async.enabled);
                 out.async.threads = as.value("threads", out.async.threads);
                 out.async.queue_size = as.value("queue_size", out.async.queue_size);
@@ -398,12 +472,24 @@ namespace sqlconduit::config {
                 error = "missing 'datasources' array";
                 return false;
             }
+            if (j["datasources"].empty()) {
+                error = "config error [min_items] at /datasources: at least one datasource is required";
+                return false;
+            }
 
+            std::size_t datasourceIndex = 0;
             for (const auto &d: j["datasources"]) {
+                const std::string datasourcePath = "/datasources/" +
+                                                   std::to_string(datasourceIndex++);
                 if (!d.is_object()) {
-                    error = "datasource entry must be object";
+                    error = "config error [type] at " + datasourcePath + ": must be an object";
                     return false;
                 }
+                if (!rejectUnknownFields(d, {
+                        "name", "type", "host", "port", "user", "password", "password_env",
+                        "database", "dsn", "connection_timeout_ms", "socket_timeout_ms",
+                        "query_timeout_ms", "max_result_rows", "tls", "oracle", "extra"
+                    }, datasourcePath, error)) return false;
                 DataSourceConfig cfg;
                 cfg.name = d.value("name", std::string());
                 cfg.type = d.value("type", std::string());
@@ -418,6 +504,11 @@ namespace sqlconduit::config {
                 cfg.socket_timeout_ms = d.value("socket_timeout_ms", 0);
                 cfg.query_timeout_ms = d.value("query_timeout_ms", 0);
                 cfg.max_result_rows = d.value("max_result_rows", 0);
+                if (cfg.port < 0 || cfg.port > 65535) {
+                    error = "config error [range] at " + datasourcePath
+                            + "/port: must be in range 0..65535";
+                    return false;
+                }
                 if (cfg.connection_timeout_ms < 0 || cfg.socket_timeout_ms < 0 ||
                     cfg.query_timeout_ms < 0 || cfg.max_result_rows < 0) {
                     error = "datasource '" + cfg.name
@@ -439,16 +530,22 @@ namespace sqlconduit::config {
                         return false;
                     }
                     const auto &tls = d["tls"];
+                    if (!rejectUnknownFields(tls, {"enabled", "verify_peer", "ca", "cert", "key"},
+                                             datasourcePath + "/tls", error)) return false;
                     cfg.tls_enabled = tls.value("enabled", true);
                     cfg.tls_verify_peer = tls.value("verify_peer", true);
                     cfg.tls_ca = tls.value("ca", std::string());
                     cfg.tls_cert = tls.value("cert", std::string());
                     cfg.tls_key = tls.value("key", std::string());
                 }
-                if (d.contains("extra") && d["extra"].is_object()) {
-                    for (auto it = d["extra"].begin(); it != d["extra"].end(); ++it) {
-                        cfg.extra[it.key()] = it.value().get<std::string>();
+                if (d.contains("extra")) {
+                    if (!d["extra"].is_object()) {
+                        error = "config error [type] at " + datasourcePath
+                                + "/extra: must be an object";
+                        return false;
                     }
+                    for (auto it = d["extra"].begin(); it != d["extra"].end(); ++it)
+                        cfg.extra[it.key()] = it.value().get<std::string>();
                 }
                 if (cfg.name.empty()) {
                     error = "datasource missing 'name'";
@@ -477,6 +574,10 @@ namespace sqlconduit::config {
                             return false;
                         }
                         const auto &oracle = d["oracle"];
+                        if (!rejectUnknownFields(oracle, {
+                                "service_name", "sid", "wallet_location", "server_cert_dn",
+                                "charset_id", "lob_max_bytes", "blob_bind"
+                            }, datasourcePath + "/oracle", error)) return false;
                         cfg.oracle.service_name = oracle.value("service_name", std::string());
                         cfg.oracle.sid = oracle.value("sid", std::string());
                         cfg.oracle.wallet_location = oracle.value(
@@ -494,17 +595,6 @@ namespace sqlconduit::config {
                         hasCharset = oracle.contains("charset_id");
                         hasLobLimit = oracle.contains("lob_max_bytes");
                         hasBlobBind = oracle.contains("blob_bind");
-                        for (auto it = oracle.begin(); it != oracle.end(); ++it) {
-                            const auto &key = it.key();
-                            if (key != "service_name" && key != "sid" &&
-                                key != "wallet_location" && key != "server_cert_dn" &&
-                                key != "charset_id" && key != "lob_max_bytes" &&
-                                key != "blob_bind") {
-                                error = "unknown oracle field in datasource '" + cfg.name
-                                        + "': " + key;
-                                return false;
-                            }
-                        }
                     }
                     const auto legacy = [&cfg](const char *key) -> const std::string * {
                         const auto it = cfg.extra.find(key);
@@ -609,11 +699,17 @@ namespace sqlconduit::config {
                     error = "groups must be an array";
                     return false;
                 }
+                std::size_t groupIndex = 0;
                 for (const auto &g: j["groups"]) {
+                    const std::string groupPath = "/groups/" + std::to_string(groupIndex++);
                     if (!g.is_object()) {
-                        error = "group entry must be object";
+                        error = "config error [type] at " + groupPath + ": must be an object";
                         return false;
                     }
+                    if (!rejectUnknownFields(g, {
+                            "name", "primary", "replicas", "read_after_write_ms",
+                            "fallback_to_primary", "read_only", "failover", "shadow"
+                        }, groupPath, error)) return false;
                     DataSourceGroupConfig group;
                     group.name = g.value("name", std::string());
                     group.primary = g.value("primary", std::string());
@@ -629,11 +725,16 @@ namespace sqlconduit::config {
                             error = "group '" + group.name + "' replicas must be an array";
                             return false;
                         }
+                        std::size_t replicaIndex = 0;
                         for (const auto &r: g["replicas"]) {
                             ReplicaConfig replica;
                             if (r.is_string()) {
                                 replica.name = r.get<std::string>();
                             } else if (r.is_object()) {
+                                if (!rejectUnknownFields(
+                                        r, {"name", "weight"}, groupPath + "/replicas/" +
+                                                               std::to_string(replicaIndex), error))
+                                    return false;
                                 replica.name = r.value("name", std::string());
                                 replica.weight = r.value("weight", 1);
                             } else {
@@ -645,6 +746,7 @@ namespace sqlconduit::config {
                                 return false;
                             }
                             group.replicas.push_back(std::move(replica));
+                            ++replicaIndex;
                         }
                     }
                     group.read_only = g.value("read_only", false);
@@ -663,6 +765,10 @@ namespace sqlconduit::config {
                     }
                     if (g.contains("failover")) {
                         const auto &fo = g["failover"];
+                        if (!rejectUnknownFields(fo, {
+                                "primaries", "acknowledge_external_fencing", "require_healthy",
+                                "write_buffer"
+                            }, groupPath + "/failover", error)) return false;
                         if (fo.contains("primaries") && !fo["primaries"].is_array()) {
                             error = "group '" + group.name + "' failover.primaries must be an array";
                             return false;
@@ -686,6 +792,10 @@ namespace sqlconduit::config {
                         }
                         if (fo.contains("write_buffer")) {
                             const auto &wb = fo["write_buffer"];
+                            if (!rejectUnknownFields(wb, {
+                                    "enabled", "acknowledge_data_loss_and_duplicates", "max_queue",
+                                    "ttl_ms", "flush_interval_ms"
+                                }, groupPath + "/failover/write_buffer", error)) return false;
                             group.failover.write_buffer.enabled = wb.value("enabled", false);
                             group.failover.write_buffer.acknowledge_data_loss_and_duplicates =
                                     wb.value("acknowledge_data_loss_and_duplicates", false);

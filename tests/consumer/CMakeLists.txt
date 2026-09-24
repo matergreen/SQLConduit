@@ -8,6 +8,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(sqlconduit REQUIRED COMPONENTS ${SQLCONDUIT_CONSUMER_COMPONENT})
+if(NOT DEFINED sqlconduit_SCHEMA_FILE OR NOT EXISTS "${sqlconduit_SCHEMA_FILE}")
+    message(FATAL_ERROR "Installed SQLConduit package does not expose its JSON Schema")
+endif()
 
 add_executable(sqlconduit_consumer_smoke main.cpp)
 string(TOLOWER "${SQLCONDUIT_CONSUMER_COMPONENT}" _component_target)

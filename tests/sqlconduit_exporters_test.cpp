@@ -254,6 +254,51 @@ int main() {
               "histogram +Inf bucket = count = 7");
     }
 
+    std::cout << "== M3 指标导出：名称与类型稳定契约 ==\n";
+    {
+        PoolMetricsEvent evt;
+        evt.pools.push_back(makePool("contract", 1, 0, 5));
+        const std::string text = exporters::toPrometheusText(
+            evt, {makeSlow("contract", 42, 1)}, "sqlconduit", 1);
+        std::set<std::string> actual;
+        std::istringstream lines(text);
+        std::string line;
+        const std::regex typeLine(R"(^# TYPE ([^ ]+) ([^ ]+)$)");
+        while (std::getline(lines, line)) {
+            std::smatch match;
+            if (std::regex_match(line, match, typeLine))
+                actual.insert(match[1].str() + " " + match[2].str());
+        }
+        const std::set<std::string> expected{
+            "sqlconduit_pool_connections gauge",
+            "sqlconduit_pool_connections_max gauge",
+            "sqlconduit_pool_connections_min gauge",
+            "sqlconduit_pool_connections_idle gauge",
+            "sqlconduit_pool_connections_borrowed gauge",
+            "sqlconduit_pool_utilization_ratio gauge",
+            "sqlconduit_pool_waiting gauge",
+            "sqlconduit_pool_borrow_requests_total counter",
+            "sqlconduit_pool_borrow_successes_total counter",
+            "sqlconduit_pool_borrow_timeouts_total counter",
+            "sqlconduit_pool_connection_create_failures_total counter",
+            "sqlconduit_pool_invalidated_connections_total counter",
+            "sqlconduit_pool_validation_failures_total counter",
+            "sqlconduit_pool_leak_warnings_total counter",
+            "sqlconduit_pool_idle_evictions_total counter",
+            "sqlconduit_pool_lifetime_evictions_total counter",
+            "sqlconduit_pool_connections_created_total counter",
+            "sqlconduit_pool_connections_closed_total counter",
+            "sqlconduit_pool_borrow_wait_seconds_total counter",
+            "sqlconduit_pool_borrow_wait_seconds_max gauge",
+            "sqlconduit_slow_sql_count counter",
+            "sqlconduit_slow_sql_errors counter",
+            "sqlconduit_slow_sql_timeouts counter",
+            "sqlconduit_slow_sql_duration_seconds histogram",
+            "sqlconduit_slow_sql_duration_seconds_max gauge",
+        };
+        check(actual == expected, "指标名称和类型符合稳定契约");
+    }
+
     std::cout << "== M3 指标导出：Prometheus 转义 label 值 ==\n";
     {
         PoolMetricsEvent evt;
@@ -294,8 +339,19 @@ int main() {
         const int allUnique = countUnique(allText);
         const int cutUnique = countUnique(cutText);
 
-        check(allUnique == 5, "不限时 5 条 fingerprint 全部出现（unique 计数）");
+        check(allUnique == 5, "默认上限内 5 条 fingerprint 全部出现（unique 计数）");
         check(cutUnique == 2, "maxFingerprintLabels=2 时仅前 2 条出现（unique 计数）");
+
+        slow.clear();
+        for (std::uint64_t i = 0;
+             i < exporters::kPrometheusFingerprintSeriesHardLimit + 5; ++i)
+            slow.push_back(makeSlow("ds-app", 100000 + i, 1));
+        const std::string capped = exporters::toPrometheusText(evt, slow, "sqlconduit", 0);
+        check(countMatches(capped, std::string("# TYPE sqlconduit_slow_sql_count counter")) == 1,
+              "高基数硬上限下仍只声明一次指标类型");
+        check(contains(capped, "fingerprint=\"100999\"") &&
+              !contains(capped, "fingerprint=\"101000\""),
+              "fingerprint 系列始终受 1000 条硬上限约束");
     }
 
     std::cout << "== M3 指标导出：空输入 ==\n";

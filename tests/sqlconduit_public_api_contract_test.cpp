@@ -5,6 +5,7 @@
 #include "sqlconduit/common/sql_analyze.h"
 #include "sqlconduit/core/query_cache.h"
 #include "sqlconduit/core/sql_auditor.h"
+#include "sqlconduit/exporters/prometheus.h"
 #include "sqlconduit/mapping.h"
 #include "sqlconduit/sqlconduit.h"
 #include "sqlconduit/util.h"
@@ -29,8 +30,9 @@ using sqlconduit::common::ResultSet;
 using sqlconduit::common::Status;
 
 static_assert(SQLCONDUIT_VERSION_MAJOR == 0);
-static_assert(SQLCONDUIT_VERSION_MINOR == 7);
+static_assert(SQLCONDUIT_VERSION_MINOR == 8);
 static_assert(SQLCONDUIT_VERSION_PATCH == 0);
+static_assert(sqlconduit::exporters::kPrometheusFingerprintSeriesHardLimit == 1000);
 
 static_assert(std::is_final_v<Client>);
 static_assert(std::is_default_constructible_v<Client>);

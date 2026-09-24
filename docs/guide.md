@@ -1,6 +1,6 @@
 # SQLConduit 详细指南
 
-> English version: [guide_en.md](guide_en.md) · 快速入门：[README.md](../README.md)
+> English version: [guide_en.md](guide_en.md) · 快速入门：[README_zh.md](../README_zh.md)
 
 一个使用 C++17 开发的数据库连接中间件，支持：
 
@@ -1709,7 +1709,9 @@ const auto text  = sqlconduit::exporters::toPrometheusText(pools, slow);
 #### 3. 重要约束
 
 - **fingerprint 是高基数标签**：时序库会被撑爆。`toPrometheusText` 接 `maxFingerprintLabels`
-  参数限制导出数量（按传入顺序截断），强烈建议填一个合理上限（例如 50）。
+  参数限制导出数量（按传入顺序截断），强烈建议填一个合理上限（例如 50）；即使传 `0`
+  也始终受 `kPrometheusFingerprintSeriesHardLimit=1000` 的硬上限约束。完整名称、类型、标签
+  和兼容性承诺见 [指标契约](metrics.md)。
 - **所有 label value 都按 Prometheus 转义**：`\\` `\"` `\n` 与其它控制字符都不会破坏解析。
 - **`+Inf` 桶固定 = count**：histogram bucket 的累积在最后一个有限 bucket 终止，最后
   写入 `le="+Inf"` = 总样本数，符合 Prometheus 直方图惯例。
@@ -1846,6 +1848,26 @@ g++ main.cpp $(pkg-config --cflags sqlconduit-postgres) \
 
 `ConfigLoader` 根据扩展名读取 `.json`、`.yaml` 或 `.yml`；两种格式进入同一套字段解析、
 默认值与安全校验逻辑。YAML 支持嵌套对象、对象/标量列表、流式列表、单双引号和行尾注释。
+
+### JSON Schema 与错误契约
+
+正式配置契约位于 `config/sqlconduit.schema.json`，使用 JSON Schema 2020-12。安装后可在
+`${prefix}/share/sqlconduit/sqlconduit.schema.json` 找到；通过 CMake `find_package(sqlconduit)`
+引入时也可从 `sqlconduit_SCHEMA_FILE` 取得绝对路径。JSON 文件可用
+`"$schema": "./sqlconduit.schema.json"` 关联它；YAML 文件使用首行
+`# yaml-language-server: $schema=./sqlconduit.schema.json` 关联同一份 Schema，无需维护第二套契约。
+
+- 未提供的可选字段采用 Schema 标注的默认值；
+- 未知字段、错误类型、非法枚举和越界数值直接失败，不会被忽略或自动截断；
+- 运行时继续检查 Schema 难以表达的约束，包括 `pool.min <= pool.max`、重试退避顺序、直方图
+  严格递增、数据源名称唯一、组引用存在、Oracle 连接方式互斥以及故障转移风险确认；
+- `password_env` 在加载时解析，环境变量不存在属于配置错误，诊断信息不会输出密码；
+- YAML 使用相同字段、Schema 和运行时约束；仓库模板已带语言服务器关联声明。
+
+错误码边界保持稳定：语法、结构、取值、环境变量及引用错误返回 `ConfigError`；配置合法但当前
+`Client` 未注册相应驱动时返回 `UnknownDriver`；驱动已注册但无法连接时返回
+`ConnectionFailed`。结构诊断使用 `config error [类别] at /JSON/Pointer: 说明` 格式；调用方应以
+`ErrorCode` 作机器判断，将消息用于人工诊断，不应解析消息文本。
 
 | 字段 | 含义 |
 | --- | --- |

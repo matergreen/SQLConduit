@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(sqlconduit VERSION 0.7.0 LANGUAGES CXX)
+project(sqlconduit VERSION 0.8.0 LANGUAGES CXX)
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/public_api.cmake")
 file(GLOB_RECURSE _sqlconduit_header_inventory CONFIGURE_DEPENDS
@@ -54,6 +54,7 @@ option(SQLCONDUIT_ENABLE_POSTGRES "Build PostgreSQL driver (needs libpqxx + libp
 option(SQLCONDUIT_ENABLE_ODBC     "Build ODBC driver for SQL Server/Oracle"         OFF)
 option(SQLCONDUIT_ENABLE_ORACLE   "Build Oracle driver (needs OCI / Instant Client)" OFF)
 option(SQLCONDUIT_BUILD_TESTS     "Build core behaviour tests (no external deps)"   OFF)
+option(SQLCONDUIT_BUILD_BENCHMARKS "Build dependency-free performance benchmarks"   OFF)
 option(SQLCONDUIT_INSTALL         "Generate install and package config rules"       ON)
 option(SQLCONDUIT_BUILD_INTEGRATION_TESTS
        "Build integration tests that require live database services"          OFF)
@@ -246,6 +247,10 @@ if(SQLCONDUIT_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
+if(SQLCONDUIT_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
+endif()
+
 if(NOT SQLCONDUIT_INSTALL)
     return()
 endif()
@@ -266,12 +271,15 @@ install(DIRECTORY include/sqlconduit DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
         PATTERN "driver/postgres_driver.h" EXCLUDE
         PATTERN "driver/odbc_driver.h" EXCLUDE
         PATTERN "driver/oracle_driver.h" EXCLUDE)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/sqlconduit.schema.json"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/sqlconduit")
 
 set(_sqlconduit_cmake_dir "${CMAKE_INSTALL_LIBDIR}/cmake/sqlconduit")
 configure_package_config_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/sqlconduitConfig.cmake.in"
     "${CMAKE_CURRENT_BINARY_DIR}/sqlconduitConfig.cmake"
-    INSTALL_DESTINATION "${_sqlconduit_cmake_dir}")
+    INSTALL_DESTINATION "${_sqlconduit_cmake_dir}"
+    PATH_VARS CMAKE_INSTALL_DATADIR)
 write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/sqlconduitConfigVersion.cmake"
     VERSION ${PROJECT_VERSION}

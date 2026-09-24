@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=./sqlconduit.schema.json
 default_datasource: main
 heartbeat_interval_ms: 5000
 pool:

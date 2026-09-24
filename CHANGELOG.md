@@ -6,6 +6,34 @@ description.
 
 ## [Unreleased]
 
+## [0.8.0]
+
+### Configuration contract
+
+- Added a distributable JSON Schema 2020-12 contract covering every configuration block, field,
+  type, enum, range, default, and supported conditional constraint.
+- Configuration loading now rejects unknown fields and invalid pool/reporting ranges instead of
+  silently ignoring or normalizing them. Structural diagnostics include a category and JSON Pointer.
+- Added editor association and CI validation for the canonical JSON and YAML examples, and
+  documented the boundary between `ConfigError`, `UnknownDriver`, and `ConnectionFailed`.
+
+### Performance and operational contracts
+
+- Added dependency-free microbenchmarks for connection borrow/return, parameter binding, row
+  mapping, batching, cursor fetches, and the disabled SQL logging fast path. CI archives a JSON
+  baseline without applying unreliable hosted-runner thresholds.
+- Published a compatibility contract for Prometheus metric names, types, and labels. Fingerprint
+  series now have a hard limit of 1000; SQL text, trace IDs, tenant IDs, and errors remain forbidden
+  as labels.
+
+### Release engineering and governance
+
+- Release assets now include SHA-256 checksums, an SPDX JSON SBOM, and GitHub/Sigstore build
+  provenance plus SBOM attestation bundles.
+- Updated JavaScript actions to Node.js 24 releases and pinned every third-party action by immutable
+  commit SHA.
+- Added security reporting, contribution, supported-version, and release-checklist documentation.
+
 ## [0.7.0]
 
 ### Public API foundation

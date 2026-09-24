@@ -1,6 +1,6 @@
 # SQLConduit Detailed Guide
 
-> 中文版：[guide.md](guide.md) · Quick start: [README_en.md](../README_en.md)
+> 中文版：[guide.md](guide.md) · Quick start: [README.md](../README.md)
 
 A database connection middleware written in C++17, supporting:
 
@@ -1724,7 +1724,9 @@ const auto text  = sqlconduit::exporters::toPrometheusText(pools, slow);
 
 - **fingerprint is a high-cardinality label** that can blow up a TSDB. Pass
   `maxFingerprintLabels` to `toPrometheusText` to cap the number of slow SQL entries
-  (truncated in input order). A reasonable cap like 50 is strongly recommended.
+  (truncated in input order). A reasonable cap like 50 is strongly recommended. Even `0` remains
+  subject to the hard `kPrometheusFingerprintSeriesHardLimit=1000`. See the
+  [metrics contract](metrics.md) for stable names, types, labels, and compatibility rules.
 - **All label values are Prometheus-escaped**: `\\` `\"` `\n` and other control characters
   will not break parsing.
 - **The `+Inf` bucket always equals `count`**: the cumulative count terminates at the last
@@ -1859,6 +1861,33 @@ Two easy-to-trip contracts:
 `ConfigLoader` selects JSON, `.yaml`, or `.yml` from the file extension. Both formats use the same
 field mapping, defaults, and safety validation. YAML supports nested mappings, object/scalar
 sequences, flow sequences, single/double quotes, and trailing comments.
+
+### JSON Schema and error contract
+
+The formal contract is `config/sqlconduit.schema.json`, using JSON Schema 2020-12. Installed
+packages place it at `${prefix}/share/sqlconduit/sqlconduit.schema.json`; CMake consumers can obtain
+its absolute path from `sqlconduit_SCHEMA_FILE` after `find_package(sqlconduit)`. Associate a JSON
+file with it using `"$schema": "./sqlconduit.schema.json"`. YAML files use the same schema through
+the first-line directive `# yaml-language-server: $schema=./sqlconduit.schema.json`, avoiding a
+second contract that could drift.
+
+- omitted optional fields use defaults documented in the schema;
+- unknown fields, wrong types, invalid enums, and out-of-range values fail instead of being ignored
+  or silently clamped;
+- runtime validation covers constraints the schema cannot express conveniently, including
+  `pool.min <= pool.max`, retry backoff ordering, strictly increasing histogram buckets, unique
+  datasource names, valid group references, Oracle connection-mode conflicts, and failover risk
+  acknowledgements;
+- `password_env` is resolved while loading; a missing variable is a configuration error and
+  diagnostics do not reveal password contents;
+- YAML uses the same fields, schema, and runtime constraints; the repository template already
+  includes the language-server association.
+
+The stable error-code boundary is: syntax, structure, value, environment, and reference failures
+return `ConfigError`; a valid configuration whose driver is not registered on the current Client
+returns `UnknownDriver`; a registered driver that cannot connect returns `ConnectionFailed`.
+Structural diagnostics use `config error [category] at /JSON/Pointer: explanation`. Applications
+should branch on `ErrorCode` and treat message text as a human diagnostic rather than parsing it.
 
 | Field | Meaning |
 | --- | --- |

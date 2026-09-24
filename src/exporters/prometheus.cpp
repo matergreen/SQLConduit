@@ -251,9 +251,11 @@ namespace sqlconduit::exporters {
         }
 
         if (!slow.empty()) {
-            const std::size_t take = maxFingerprintLabels == 0
-                                         ? slow.size()
-                                         : (std::min)(slow.size(), maxFingerprintLabels);
+            const std::size_t requested = maxFingerprintLabels == 0
+                                              ? kPrometheusFingerprintSeriesHardLimit
+                                              : (std::min)(maxFingerprintLabels,
+                                                          kPrometheusFingerprintSeriesHardLimit);
+            const std::size_t take = (std::min)(slow.size(), requested);
 
             const std::string s_count = prefix + "_slow_sql_count";
             const std::string s_err = prefix + "_slow_sql_errors";

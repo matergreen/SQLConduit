@@ -15,7 +15,7 @@
 
 int main() {
     static_assert(SQLCONDUIT_VERSION_MAJOR == 0);
-    static_assert(SQLCONDUIT_VERSION_MINOR == 7);
+    static_assert(SQLCONDUIT_VERSION_MINOR == 8);
 
     sqlconduit::Client client;
     client.setObserver([](const sqlconduit::common::OperationEvent &) {

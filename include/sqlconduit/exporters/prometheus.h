@@ -8,6 +8,10 @@
 #include <vector>
 
 namespace sqlconduit::exporters {
+    // Fingerprint is the only intentionally high-cardinality label exported by
+    // SQLConduit. The hard limit applies even when maxFingerprintLabels is 0.
+    inline constexpr std::size_t kPrometheusFingerprintSeriesHardLimit = 1000;
+
     std::string toPrometheusText(const common::PoolMetricsEvent &pools,
                                  const std::vector<common::SlowSqlStats> &slow,
                                  const std::string &prefix = "sqlconduit",

@@ -3,6 +3,8 @@
 include(CMakeFindDependencyMacro)
 
 set(_sqlconduit_built_components "@SQLCONDUIT_BUILT_COMPONENTS@")
+set_and_check(sqlconduit_SCHEMA_FILE
+              "@PACKAGE_CMAKE_INSTALL_DATADIR@/sqlconduit/sqlconduit.schema.json")
 
 include("${CMAKE_CURRENT_LIST_DIR}/sqlconduitDriverDeps.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/sqlconduitTargets.cmake")

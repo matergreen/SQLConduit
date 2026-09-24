@@ -1,0 +1,2 @@
+add_executable(sqlconduit_benchmark sqlconduit_benchmark.cpp)
+target_link_libraries(sqlconduit_benchmark PRIVATE sqlconduit_core Threads::Threads)

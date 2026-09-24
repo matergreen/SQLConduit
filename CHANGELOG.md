@@ -6,6 +6,8 @@ description.
 
 ## [Unreleased]
 
+## [0.8.0]
+
 ### Performance
 
 - Reworked batch execution so PostgreSQL sends bounded chunks through `pqxx::pipeline`, ODBC uses
@@ -13,10 +15,6 @@ description.
   chunks for eligible DML. Safe fallbacks preserve atomic rollback, per-parameter-set affected counts, and generated
   keys. All batch paths now reject inconsistent parameter-group shapes before executing the first
   row and clear partial results on failure.
-
-## [0.8.0]
-
-### Performance
 
 - Bounded the prepared-statement cache to 128 entries per connection by default and changed all
   four driver LRU hit paths from linear list scans to constant-time iterator moves.

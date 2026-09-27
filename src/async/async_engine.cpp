@@ -27,7 +27,7 @@ namespace sqlconduit::async::detail {
     bool AsyncEngine::directLeafEligible(const core::DataSource &source,
                                          const bool query) {
         (void) query;
-        if (source.primary_ || source.shadow_ || source.retry_.max_attempts != 1)
+        if (source.primary_ || source.shadow_)
             return false;
         return !source.pool_.expired();
     }
@@ -41,21 +41,108 @@ namespace sqlconduit::async::detail {
             !directLeafEligible(*source, true))
             return false;
 
+        struct RetryState {
+            std::shared_ptr<core::DataSource> source;
+            std::string sql;
+            common::Params params;
+            common::SqlContext context;
+            std::chrono::milliseconds timeout;
+            std::chrono::steady_clock::time_point started;
+            core::AsyncIo io;
+            QueryCompletion completion;
+            int attempts = 1;
+            std::function<void(int, bool)> run;
+        };
+
+        auto state = std::make_shared<RetryState>();
+        state->source = source;
+        state->sql = std::move(sql);
+        state->params = std::move(params);
+        state->context = std::move(context);
+        state->timeout = borrowTimeout;
+        state->started = std::chrono::steady_clock::now();
+        state->io = std::move(io);
+        state->completion = std::move(completion);
+        state->attempts = std::max(1, source->retry_.max_attempts);
+
+        std::weak_ptr<RetryState> weak = state;
+        state->run = [weak](const int attempt, const bool applyPreGate) {
+            const auto state = weak.lock();
+            if (!state) return;
+            auto remaining = state->timeout;
+            if (state->timeout > std::chrono::milliseconds(0)) {
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - state->started);
+                remaining = state->timeout - elapsed;
+                if (remaining <= std::chrono::milliseconds(0)) {
+                    QueryResult result;
+                    result.status = common::Status::error(
+                        common::ErrorCode::QueryTimeout,
+                        "query retries exceeded client async statement timeout");
+                    result.status.retryable = true;
+                    result.mode = ExecutionMode::CompatibilityFallback;
+                    state->completion(std::move(result));
+                    return;
+                }
+            }
+            const bool started = AsyncEngine::queryOne(
+                state->source, state->sql, state->params, state->context,
+                remaining, state->io, applyPreGate,
+                [state, attempt](QueryResult result) mutable {
+                    const bool retry = !result.status.ok() && result.status.retryable &&
+                                       result.status.code != common::ErrorCode::CircuitOpen &&
+                                       result.status.code != common::ErrorCode::Overloaded &&
+                                       result.status.code != common::ErrorCode::QueryTimeout &&
+                                       attempt < state->attempts;
+                    if (!retry) {
+                        state->completion(std::move(result));
+                        return;
+                    }
+                    const auto delay = state->source->retryDelay(attempt);
+                    state->io.postAfter(
+                        [state, next = attempt + 1] { state->run(next, false); }, delay);
+                });
+            if (!started) {
+                QueryResult result;
+                result.status = common::Status::error(
+                    common::ErrorCode::PoolClosed,
+                    "datasource pool closed before an asynchronous query attempt");
+                result.status.retryable = true;
+                result.mode = ExecutionMode::CompatibilityFallback;
+                state->completion(std::move(result));
+            }
+        };
+        state->run(1, true);
+        return true;
+    }
+
+    bool AsyncEngine::queryOne(const std::shared_ptr<core::DataSource> &source,
+                               std::string sql, common::Params params,
+                               common::SqlContext context,
+                               const std::chrono::milliseconds borrowTimeout,
+                               core::AsyncIo io, const bool applyPreGate,
+                               QueryCompletion completion) {
+        if (!source || !io.usable() || !completion ||
+            !directLeafEligible(*source, true))
+            return false;
+
         auto pool = source->pool_.lock();
         if (!pool) return false;
         io = normalizedIo(std::move(io));
         const auto operationStarted = std::chrono::steady_clock::now();
         auto start = [source, pool = std::move(pool), sql = std::move(sql),
                  params = std::move(params), context = std::move(context),
-                 borrowTimeout, io, completion, operationStarted]() mutable {
+                 borrowTimeout, io, applyPreGate, completion, operationStarted]() mutable {
             const common::ContextScope scope(context);
             QueryResult rejected;
             rejected.mode = ExecutionMode::CompatibilityFallback;
-            if (auto status = source->preGate(sql, common::OperationType::Query);
-                !status.ok()) {
-                rejected.status = std::move(status);
-                completion(std::move(rejected));
-                return;
+            if (applyPreGate) {
+                if (auto status = source->preGate(sql, common::OperationType::Query);
+                    !status.ok()) {
+                    rejected.status = std::move(status);
+                    completion(std::move(rejected));
+                    return;
+                }
             }
             std::string cacheKey;
             common::ResultSet cachedRows;
@@ -354,19 +441,95 @@ namespace sqlconduit::async::detail {
         if (!source || !io.usable() || !completion ||
             !directLeafEligible(*source, false))
             return false;
+
+        int attempts = 1;
+        const auto idempotency = context.idempotency;
+        if (idempotency == common::Idempotency::Idempotent ||
+            (idempotency != common::Idempotency::NonIdempotent &&
+             source->retry_.retry_writes)) {
+            attempts = std::max(1, source->retry_.max_attempts);
+        }
+
+        struct RetryState {
+            std::shared_ptr<core::DataSource> source;
+            std::string sql;
+            common::Params params;
+            common::SqlContext context;
+            std::chrono::milliseconds timeout;
+            core::AsyncIo io;
+            ExecuteCompletion completion;
+            int attempts = 1;
+            std::function<void(int, bool)> run;
+        };
+
+        auto state = std::make_shared<RetryState>();
+        state->source = source;
+        state->sql = std::move(sql);
+        state->params = std::move(params);
+        state->context = std::move(context);
+        state->timeout = borrowTimeout;
+        state->io = std::move(io);
+        state->completion = std::move(completion);
+        state->attempts = attempts;
+
+        std::weak_ptr<RetryState> weak = state;
+        state->run = [weak](const int attempt, const bool applyPreGate) {
+            const auto state = weak.lock();
+            if (!state) return;
+            const bool started = AsyncEngine::executeOne(
+                state->source, state->sql, state->params, state->context,
+                state->timeout, state->io, applyPreGate,
+                [state, attempt](ExecResult result) mutable {
+                    const bool retry = !result.status.ok() && result.status.retryable &&
+                                       result.status.code != common::ErrorCode::CircuitOpen &&
+                                       result.status.code != common::ErrorCode::Overloaded &&
+                                       attempt < state->attempts;
+                    if (!retry) {
+                        state->completion(std::move(result));
+                        return;
+                    }
+                    const auto delay = state->source->retryDelay(attempt);
+                    state->io.postAfter(
+                        [state, next = attempt + 1] { state->run(next, false); }, delay);
+                });
+            if (!started) {
+                ExecResult result;
+                result.status = common::Status::error(
+                    common::ErrorCode::PoolClosed,
+                    "datasource pool closed before an asynchronous execute attempt");
+                result.status.retryable = true;
+                result.mode = ExecutionMode::CompatibilityFallback;
+                state->completion(std::move(result));
+            }
+        };
+        state->run(1, true);
+        return true;
+    }
+
+    bool AsyncEngine::executeOne(const std::shared_ptr<core::DataSource> &source,
+                                 std::string sql, common::Params params,
+                                 common::SqlContext context,
+                                 const std::chrono::milliseconds borrowTimeout,
+                                 core::AsyncIo io, const bool applyPreGate,
+                                 ExecuteCompletion completion) {
+        if (!source || !io.usable() || !completion ||
+            !directLeafEligible(*source, false))
+            return false;
         auto pool = source->pool_.lock();
         if (!pool) return false;
         auto start = [source, pool = std::move(pool), sql = std::move(sql),
                  params = std::move(params), context = std::move(context),
-                 borrowTimeout, io, completion]() mutable {
+                 borrowTimeout, io, applyPreGate, completion]() mutable {
             const common::ContextScope scope(context);
             ExecResult rejected;
             rejected.mode = ExecutionMode::CompatibilityFallback;
-            if (auto status = source->preGate(sql, common::OperationType::Execute);
-                !status.ok()) {
-                rejected.status = std::move(status);
-                completion(std::move(rejected));
-                return;
+            if (applyPreGate) {
+                if (auto status = source->preGate(sql, common::OperationType::Execute);
+                    !status.ok()) {
+                    rejected.status = std::move(status);
+                    completion(std::move(rejected));
+                    return;
+                }
             }
             if (auto status = source->beforeAttempt(); !status.ok()) {
                 rejected.status = std::move(status);

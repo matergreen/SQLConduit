@@ -49,6 +49,20 @@ namespace sqlconduit::async::detail {
 
     private:
         static bool directLeafEligible(const core::DataSource &source, bool query);
+
+        static bool queryOne(const std::shared_ptr<core::DataSource> &source,
+                             std::string sql, common::Params params,
+                             common::SqlContext context,
+                             std::chrono::milliseconds borrowTimeout,
+                             core::AsyncIo io, bool applyPreGate,
+                             QueryCompletion completion);
+
+        static bool executeOne(const std::shared_ptr<core::DataSource> &source,
+                               std::string sql, common::Params params,
+                               common::SqlContext context,
+                               std::chrono::milliseconds borrowTimeout,
+                               core::AsyncIo io, bool applyPreGate,
+                               ExecuteCompletion completion);
     };
 }
 

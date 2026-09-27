@@ -27,6 +27,10 @@ namespace {
         static std::atomic<int> queryDelayMs;
         static std::atomic<int> executeDelayMs;
         static std::atomic<int> cancelCalls;
+        static std::atomic<int> nativeQueryCalls;
+        static std::atomic<int> nativeExecuteCalls;
+        static std::atomic<int> retryableQueryFailures;
+        static std::atomic<int> retryableExecuteFailures;
 
         common::Status connect(const config::DataSourceConfig &config) override {
             identity_ = config.database;
@@ -65,10 +69,20 @@ namespace {
         bool queryAsync(const std::string &, const common::Params &,
                         AsyncQueryCompletion completion) override {
             if (!open_ || identity_.rfind("native", 0) != 0 || !completion) return false;
+            ++nativeQueryCalls;
             const auto identity = identity_;
             const auto delay = queryDelayMs.load();
-            std::thread([identity, delay, completion = std::move(completion)]() mutable {
+            const bool fail = retryableQueryFailures.fetch_sub(1) > 0;
+            std::thread([identity, delay, fail,
+                         completion = std::move(completion)]() mutable {
                 if (delay > 0) std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+                if (fail) {
+                    auto status = common::Status::error(
+                        common::ErrorCode::QueryError, "injected retryable query failure");
+                    status.retryable = true;
+                    completion(std::move(status), {});
+                    return;
+                }
                 common::ResultSet rows;
                 common::Row row;
                 row.set("client", identity);
@@ -81,9 +95,18 @@ namespace {
         bool executeAsync(const std::string &, const common::Params &,
                           AsyncExecuteCompletion completion) override {
             if (!open_ || identity_.rfind("native", 0) != 0 || !completion) return false;
+            ++nativeExecuteCalls;
             const auto delay = executeDelayMs.load();
-            std::thread([delay, completion = std::move(completion)]() mutable {
+            const bool fail = retryableExecuteFailures.fetch_sub(1) > 0;
+            std::thread([delay, fail, completion = std::move(completion)]() mutable {
                 if (delay > 0) std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+                if (fail) {
+                    auto status = common::Status::error(
+                        common::ErrorCode::QueryError, "injected retryable execute failure");
+                    status.retryable = true;
+                    completion(std::move(status), 0);
+                    return;
+                }
                 completion(common::Status::OK(), 1);
             }).detach();
             return true;
@@ -112,6 +135,10 @@ namespace {
     std::atomic<int> ClientTestConnection::queryDelayMs{0};
     std::atomic<int> ClientTestConnection::executeDelayMs{0};
     std::atomic<int> ClientTestConnection::cancelCalls{0};
+    std::atomic<int> ClientTestConnection::nativeQueryCalls{0};
+    std::atomic<int> ClientTestConnection::nativeExecuteCalls{0};
+    std::atomic<int> ClientTestConnection::retryableQueryFailures{0};
+    std::atomic<int> ClientTestConnection::retryableExecuteFailures{0};
 
     class ClientTestDriver final : public driver::IDriver {
     public:
@@ -282,6 +309,53 @@ int main() {
     check(nativeInterceptor->afterCalls.load() == 2,
           "native driver operations preserve the interceptor lifecycle");
     nativeAsync.shutdown(std::chrono::milliseconds(0));
+
+    Client nativeRetry;
+    auto nativeRetryConfig = makeConfig("native-retry");
+    nativeRetryConfig.retry.max_attempts = 2;
+    nativeRetryConfig.retry.initial_backoff_ms = 1;
+    nativeRetryConfig.retry.max_backoff_ms = 1;
+    check(nativeRetry.init(nativeRetryConfig).ok(),
+          "native async retry test client initializes");
+    const auto queryCallsBefore = ClientTestConnection::nativeQueryCalls.load();
+    ClientTestConnection::retryableQueryFailures = 1;
+    const auto retriedQuery = nativeRetry.queryAsync("SELECT native_retry").get();
+    check(retriedQuery.status.ok() &&
+          retriedQuery.mode == async::ExecutionMode::Native &&
+          ClientTestConnection::nativeQueryCalls.load() == queryCallsBefore + 2,
+          "retryable native query is retried by the async state machine");
+
+    const auto executeCallsBefore = ClientTestConnection::nativeExecuteCalls.load();
+    ClientTestConnection::retryableExecuteFailures = 1;
+    common::SqlContext idempotentContext;
+    idempotentContext.idempotency = common::Idempotency::Idempotent;
+    async::ExecResult retriedExecute;
+    {
+        const common::ContextScope scope(idempotentContext);
+        retriedExecute = nativeRetry.executeAsync(
+            "UPDATE t SET value = 4 WHERE id = 1").get();
+    }
+    check(retriedExecute.status.ok() &&
+          retriedExecute.mode == async::ExecutionMode::Native &&
+          ClientTestConnection::nativeExecuteCalls.load() == executeCallsBefore + 2,
+          "idempotent native write is retried by the async state machine");
+
+    const auto nonIdempotentCallsBefore = ClientTestConnection::nativeExecuteCalls.load();
+    ClientTestConnection::retryableExecuteFailures = 1;
+    common::SqlContext nonIdempotentContext;
+    nonIdempotentContext.idempotency = common::Idempotency::NonIdempotent;
+    async::ExecResult nonRetriedExecute;
+    {
+        const common::ContextScope scope(nonIdempotentContext);
+        nonRetriedExecute = nativeRetry.executeAsync(
+            "UPDATE t SET value = value + 1 WHERE id = 1").get();
+    }
+    check(!nonRetriedExecute.status.ok() &&
+          ClientTestConnection::nativeExecuteCalls.load() == nonIdempotentCallsBefore + 1,
+          "non-idempotent native write is never retried");
+    check(nativeRetry.asyncStats().nativeOperations == 3,
+          "native retries are accounted once per public operation");
+    nativeRetry.shutdown(std::chrono::milliseconds(0));
 
     Client nativeCache;
     auto nativeCacheConfig = makeConfig("native-cache", true);

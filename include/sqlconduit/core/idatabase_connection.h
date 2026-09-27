@@ -4,6 +4,7 @@
 #include "sqlconduit/common/types.h"
 #include "sqlconduit/config/datasource_config.h"
 #include "sqlconduit/core/cursor.h"
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -37,6 +38,11 @@ namespace sqlconduit::core {
 
     class IDatabaseConnection {
     public:
+        using AsyncQueryCompletion =
+                std::function<void(common::Status, common::ResultSet)>;
+        using AsyncExecuteCompletion =
+                std::function<void(common::Status, std::int64_t)>;
+
         virtual ~IDatabaseConnection() = default;
 
         virtual common::Status connect(const config::DataSourceConfig &cfg) = 0;
@@ -69,6 +75,25 @@ namespace sqlconduit::core {
 
         [[nodiscard]] virtual AsyncCapability asyncCapability() const {
             return AsyncCapability::ThreadPoolFallback;
+        }
+
+        // A native implementation must return immediately after starting the operation and
+        // invoke completion exactly once later. Returning false means that no operation was
+        // started and the caller may use the compatibility executor.
+        virtual bool queryAsync(const std::string &sql, const common::Params &params,
+                                AsyncQueryCompletion completion) {
+            (void) sql;
+            (void) params;
+            (void) completion;
+            return false;
+        }
+
+        virtual bool executeAsync(const std::string &sql, const common::Params &params,
+                                  AsyncExecuteCompletion completion) {
+            (void) sql;
+            (void) params;
+            (void) completion;
+            return false;
         }
 
         virtual common::Status queryEach(const std::string &sql,

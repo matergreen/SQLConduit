@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <iostream>
 #include <memory>
+#include <future>
 #include <string>
 #include <thread>
 
@@ -25,6 +26,7 @@ namespace {
         static std::atomic<int> secondQueries;
         static std::atomic<int> queryDelayMs;
         static std::atomic<int> executeDelayMs;
+        static std::atomic<int> cancelCalls;
 
         common::Status connect(const config::DataSourceConfig &config) override {
             identity_ = config.database;
@@ -54,6 +56,44 @@ namespace {
             return common::Status::OK();
         }
 
+        [[nodiscard]] core::AsyncCapability asyncCapability() const override {
+            return identity_.rfind("native", 0) == 0
+                       ? core::AsyncCapability::Native
+                       : core::AsyncCapability::ThreadPoolFallback;
+        }
+
+        bool queryAsync(const std::string &, const common::Params &,
+                        AsyncQueryCompletion completion) override {
+            if (!open_ || identity_.rfind("native", 0) != 0 || !completion) return false;
+            const auto identity = identity_;
+            const auto delay = queryDelayMs.load();
+            std::thread([identity, delay, completion = std::move(completion)]() mutable {
+                if (delay > 0) std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+                common::ResultSet rows;
+                common::Row row;
+                row.set("client", identity);
+                rows.addRow(std::move(row));
+                completion(common::Status::OK(), std::move(rows));
+            }).detach();
+            return true;
+        }
+
+        bool executeAsync(const std::string &, const common::Params &,
+                          AsyncExecuteCompletion completion) override {
+            if (!open_ || identity_.rfind("native", 0) != 0 || !completion) return false;
+            const auto delay = executeDelayMs.load();
+            std::thread([delay, completion = std::move(completion)]() mutable {
+                if (delay > 0) std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+                completion(common::Status::OK(), 1);
+            }).detach();
+            return true;
+        }
+
+        common::Status cancel() override {
+            ++cancelCalls;
+            return common::Status::OK();
+        }
+
         common::Status begin() override { return common::Status::OK(); }
         common::Status commit() override { return common::Status::OK(); }
         common::Status rollback() override { return common::Status::OK(); }
@@ -71,6 +111,7 @@ namespace {
     std::atomic<int> ClientTestConnection::secondQueries{0};
     std::atomic<int> ClientTestConnection::queryDelayMs{0};
     std::atomic<int> ClientTestConnection::executeDelayMs{0};
+    std::atomic<int> ClientTestConnection::cancelCalls{0};
 
     class ClientTestDriver final : public driver::IDriver {
     public:
@@ -219,6 +260,138 @@ int main() {
         return session.query("SELECT async_transaction", txRows);
     }).get();
     check(asyncTx.status.ok(), "client async transaction uses its instance session");
+
+    Client nativeAsync;
+    auto nativeConfig = makeConfig("native");
+    check(nativeAsync.init(nativeConfig).ok(), "native async test client initializes");
+    const auto nativeInterceptor = std::make_shared<CountingInterceptor>();
+    nativeAsync.addInterceptor(nativeInterceptor);
+    const auto nativeQuery = nativeAsync.queryAsync("SELECT native").get();
+    check(nativeQuery.status.ok() &&
+          nativeQuery.mode == async::ExecutionMode::Native &&
+          identityFrom(nativeQuery.rows) == "native",
+          "driver callback protocol completes a native async query");
+    const auto nativeExecute = nativeAsync.executeAsync(
+        "UPDATE t SET value = 3 WHERE id = 1").get();
+    check(nativeExecute.status.ok() && nativeExecute.affected == 1 &&
+          nativeExecute.mode == async::ExecutionMode::Native,
+          "driver callback protocol completes a native async execute");
+    check(nativeAsync.asyncStats().nativeOperations == 2 &&
+          nativeAsync.asyncStats().fallbackOperations == 0,
+          "native driver operations are accounted separately from fallback");
+    check(nativeInterceptor->afterCalls.load() == 2,
+          "native driver operations preserve the interceptor lifecycle");
+    nativeAsync.shutdown(std::chrono::milliseconds(0));
+
+    Client nativeCache;
+    auto nativeCacheConfig = makeConfig("native-cache", true);
+    check(nativeCache.init(nativeCacheConfig).ok(),
+          "native cache test client initializes");
+    const auto nativeCacheInterceptor = std::make_shared<CountingInterceptor>();
+    nativeCache.addInterceptor(nativeCacheInterceptor);
+    const auto cacheMiss = nativeCache.queryAsync("SELECT native_cache").get();
+    const auto cacheHit = nativeCache.queryAsync("SELECT native_cache").get();
+    check(cacheMiss.status.ok() && cacheMiss.mode == async::ExecutionMode::Native,
+          "async cache miss can use the native driver path");
+    check(cacheHit.status.ok() &&
+          cacheHit.mode == async::ExecutionMode::CompatibilityFallback &&
+          identityFrom(cacheHit.rows) == "native-cache",
+          "async cache hit completes without borrowing a driver connection");
+    check(nativeCache.asyncStats().nativeOperations == 1 &&
+          nativeCache.asyncStats().fallbackOperations == 1,
+          "async cache hit and miss execution modes are accounted separately");
+    check(nativeCacheInterceptor->afterCalls.load() == 2,
+          "async cache hit and native miss preserve interceptor lifecycle");
+    nativeCache.shutdown(std::chrono::milliseconds(0));
+
+    Client nativeTimeout;
+    auto nativeTimeoutConfig = makeConfig("native-timeout");
+    nativeTimeoutConfig.async.statement_timeout_ms = 5;
+    check(nativeTimeout.init(nativeTimeoutConfig).ok(),
+          "native timeout test client initializes");
+    ClientTestConnection::cancelCalls = 0;
+    ClientTestConnection::queryDelayMs = 50;
+    const auto nativeTimeoutStarted = std::chrono::steady_clock::now();
+    const auto nativeTimedResult = nativeTimeout.queryAsync("SELECT native_timeout").get();
+    const auto nativeTimeoutElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - nativeTimeoutStarted);
+    check(nativeTimedResult.status.code == common::ErrorCode::QueryTimeout &&
+          nativeTimedResult.mode == async::ExecutionMode::Native &&
+          nativeTimeoutElapsed < std::chrono::milliseconds(40),
+          "native query deadline resolves before the delayed driver callback");
+    check(ClientTestConnection::cancelCalls.load() == 1,
+          "native query deadline invokes driver cancellation exactly once");
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    check(nativeTimeout.asyncStats().nativeOperations == 1 &&
+          nativeTimeout.asyncStats().timedOutOperations == 1,
+          "native timeout completes and is accounted exactly once");
+    ClientTestConnection::queryDelayMs = 0;
+    nativeTimeout.shutdown(std::chrono::milliseconds(0));
+
+    Client asyncPoolWait;
+    auto asyncPoolConfig = makeConfig("async-pool-wait");
+    asyncPoolConfig.pool.max = 1;
+    check(asyncPoolWait.init(asyncPoolConfig).ok(),
+          "async pool-wait test client initializes");
+    auto waitSource = asyncPoolWait.dataSource();
+    std::promise<void> borrowedPromise;
+    auto borrowedFuture = borrowedPromise.get_future();
+    std::promise<void> releasePromise;
+    auto releaseFuture = releasePromise.get_future().share();
+    std::thread holder([waitSource, &borrowedPromise, releaseFuture] {
+        (void) waitSource->withSession([&](core::Session &) {
+            borrowedPromise.set_value();
+            releaseFuture.wait();
+            return common::Status::OK();
+        });
+    });
+    borrowedFuture.wait();
+    auto waitingQuery = asyncPoolWait.queryAsync("SELECT waits_for_handoff");
+    bool observedAsyncWaiter = false;
+    for (int i = 0; i < 100; ++i) {
+        core::ConnectionPool::Stats stats;
+        if (asyncPoolWait.poolStats(stats) && stats.asyncWaiting == 1 &&
+            stats.waiting == 0) {
+            observedAsyncWaiter = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    check(observedAsyncWaiter,
+          "Client queryAsync waits through pool asyncWaiting without a sync waiter");
+    releasePromise.set_value();
+    holder.join();
+    check(waitingQuery.get().status.ok(),
+          "Client queryAsync resumes after connection handoff");
+    asyncPoolWait.shutdown(std::chrono::milliseconds(0));
+
+    Client overloadedAsync;
+    auto overloadedConfig = makeConfig("overloaded");
+    overloadedConfig.pool.max = 1;
+    overloadedConfig.async.threads = 1;
+    overloadedConfig.async.queue_size = 1;
+    check(overloadedAsync.init(overloadedConfig).ok(),
+          "async overload test client initializes");
+    common::ResultSet warmedRows;
+    check(overloadedAsync.query("SELECT warm", warmedRows).ok(),
+          "async overload test prewarms its single connection");
+    ClientTestConnection::queryDelayMs = 100;
+    auto activeQuery = overloadedAsync.queryAsync("SELECT active");
+    for (int i = 0; i < 100 && overloadedAsync.asyncStats().active == 0; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    auto queuedQuery = overloadedAsync.queryAsync("SELECT queued");
+    for (int i = 0; i < 100 && overloadedAsync.asyncStats().queueDepth == 0; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    auto rejectedQuery = overloadedAsync.queryAsync("SELECT rejected");
+    check(rejectedQuery.wait_for(std::chrono::milliseconds(20)) ==
+              std::future_status::ready &&
+          rejectedQuery.get().status.code == common::ErrorCode::Overloaded,
+          "full async submission queue rejects without running on the caller thread");
+    check(activeQuery.get().status.ok() && queuedQuery.get().status.ok() &&
+          overloadedAsync.asyncStats().rejected >= 1,
+          "accepted work drains normally after an overload rejection");
+    ClientTestConnection::queryDelayMs = 0;
+    overloadedAsync.shutdown(std::chrono::milliseconds(0));
 
     Client asyncDisabled;
     check(asyncDisabled.init(makeConfig("async-disabled", false, false, false, false)).ok(),

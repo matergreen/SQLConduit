@@ -7,10 +7,12 @@
 #include <cstring>
 #include <cctype>
 #include <algorithm>
+#include <condition_variable>
 #include <iterator>
 #include <string>
 #include <memory>
 #include <optional>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -88,6 +90,128 @@ namespace sqlconduit::driver {
             unsigned long &slot_;
             unsigned long threadId_;
         };
+
+#ifdef SQLCONDUIT_MYSQL_HAS_NONBLOCKING
+        class MySQLAsyncReactor {
+        public:
+            using Completion = std::function<void(MYSQL_RES *, bool)>;
+
+            static MySQLAsyncReactor &instance() {
+                static MySQLAsyncReactor reactor;
+                return reactor;
+            }
+
+            void enqueue(MYSQL *connection, std::string sql, Completion completion) {
+                auto operation = std::make_shared<Operation>();
+                operation->connection = connection;
+                operation->sql = std::move(sql);
+                operation->completion = std::move(completion);
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    operations_.push_back(std::move(operation));
+                }
+                wake_.notify_one();
+            }
+
+            MySQLAsyncReactor(const MySQLAsyncReactor &) = delete;
+            MySQLAsyncReactor &operator=(const MySQLAsyncReactor &) = delete;
+
+        private:
+            enum class Phase { Query, StoreResult };
+
+            struct Operation {
+                MYSQL *connection = nullptr;
+                std::string sql;
+                Phase phase = Phase::Query;
+                MYSQL_RES *result = nullptr;
+                Completion completion;
+            };
+
+            MySQLAsyncReactor() : worker_([this] { run(); }) {}
+
+            ~MySQLAsyncReactor() {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    stopping_ = true;
+                }
+                wake_.notify_one();
+                if (worker_.joinable()) worker_.join();
+            }
+
+            void finish(const std::shared_ptr<Operation> &operation, const bool apiError) {
+                Completion completion;
+                MYSQL_RES *result = nullptr;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    const auto it = std::find(operations_.begin(), operations_.end(), operation);
+                    if (it == operations_.end()) return;
+                    operations_.erase(it);
+                    completion = std::move(operation->completion);
+                    result = operation->result;
+                    operation->result = nullptr;
+                }
+                if (!completion) {
+                    if (result) mysql_free_result(result);
+                    return;
+                }
+                try {
+                    completion(result, apiError);
+                } catch (...) {
+                    if (result) mysql_free_result(result);
+                }
+            }
+
+            void advance(const std::shared_ptr<Operation> &operation) {
+                if (operation->phase == Phase::Query) {
+                    const auto status = mysql_real_query_nonblocking(
+                        operation->connection, operation->sql.data(),
+                        static_cast<unsigned long>(operation->sql.size()));
+                    if (status == NET_ASYNC_NOT_READY) return;
+                    if (status == NET_ASYNC_ERROR) {
+                        finish(operation, true);
+                        return;
+                    }
+                    operation->phase = Phase::StoreResult;
+                }
+
+                const auto status = mysql_store_result_nonblocking(
+                    operation->connection, &operation->result);
+                if (status == NET_ASYNC_NOT_READY) return;
+                if (status == NET_ASYNC_ERROR) {
+                    finish(operation, true);
+                    return;
+                }
+                finish(operation, false);
+            }
+
+            void run() {
+                (void) mysql_thread_init();
+                for (;;) {
+                    std::vector<std::shared_ptr<Operation> > snapshot;
+                    {
+                        std::unique_lock<std::mutex> lock(mutex_);
+                        if (operations_.empty()) {
+                            wake_.wait(lock, [this] {
+                                return stopping_ || !operations_.empty();
+                            });
+                        } else {
+                            wake_.wait_for(lock, std::chrono::milliseconds(1));
+                        }
+                        if (stopping_ && operations_.empty()) break;
+                        snapshot = operations_;
+                    }
+                    for (const auto &operation: snapshot) advance(operation);
+                }
+                mysql_thread_end();
+            }
+
+            std::mutex mutex_;
+            std::condition_variable wake_;
+            std::vector<std::shared_ptr<Operation> > operations_;
+            bool stopping_ = false;
+            std::thread worker_;
+        };
+#endif
 
         struct ParamStorage {
             std::vector<MYSQL_BIND> bind;
@@ -850,6 +974,116 @@ namespace sqlconduit::driver {
 #endif
     }
 
+    bool MySQLConnection::queryAsync(const std::string &sql,
+                                     const common::Params &params,
+                                     AsyncQueryCompletion completion) {
+#ifdef SQLCONDUIT_MYSQL_HAS_NONBLOCKING
+        // The MySQL asynchronous C API does not expose a prepared-statement counterpart.
+        // Preserve native parameter binding by falling back whenever parameters are present.
+        if (!completion || !params.empty() || !open_ || !m_ || txOpen_ ||
+            common::sql::classifyStatement(sql) != common::sql::StatementKind::Select ||
+            common::sql::hasMultipleStatements(sql))
+            return false;
+        const unsigned long threadId = mysql_thread_id(m_);
+        {
+            std::lock_guard<std::mutex> lock(operationMtx_);
+            if (activeThreadId_ != 0) return false;
+            activeThreadId_ = threadId;
+            cancelRequested_ = false;
+        }
+        MySQLAsyncReactor::instance().enqueue(
+            m_, sql,
+            [this, threadId, completion = std::move(completion)](
+                MYSQL_RES *rawResult, const bool apiError) mutable {
+                std::unique_ptr<MYSQL_RES, void (*)(MYSQL_RES *)> result(
+                    rawResult, &freeMysqlResult);
+                common::ResultSet rows;
+                common::Status status = common::Status::OK();
+                if (apiError) {
+                    status = lastError("mysql_real_query_nonblocking");
+                } else if (!result && mysql_field_count(m_) != 0) {
+                    status = lastError("mysql_store_result_nonblocking");
+                } else if (result) {
+                    status = fillResultSet(result.get(), cfg_, rows);
+                }
+                bool cancelled = false;
+                {
+                    std::lock_guard<std::mutex> lock(operationMtx_);
+                    cancelled = cancelRequested_;
+                    cancelRequested_ = false;
+                    if (activeThreadId_ == threadId) activeThreadId_ = 0;
+                }
+                if (cancelled && status.ok()) {
+                    status = common::Status::databaseError(
+                        common::ErrorCode::Cancelled,
+                        "MySQL query cancelled by KILL QUERY", "70100", 1317);
+                    rows.clear();
+                }
+                completion(std::move(status), std::move(rows));
+            });
+        return true;
+#else
+        (void) sql;
+        (void) params;
+        (void) completion;
+        return false;
+#endif
+    }
+
+    bool MySQLConnection::executeAsync(const std::string &sql,
+                                       const common::Params &params,
+                                       AsyncExecuteCompletion completion) {
+#ifdef SQLCONDUIT_MYSQL_HAS_NONBLOCKING
+        const auto statementKind = common::sql::classifyStatement(sql);
+        if (!completion || !params.empty() || !open_ || !m_ || txOpen_ ||
+            statementKind == common::sql::StatementKind::Unknown ||
+            statementKind == common::sql::StatementKind::Other ||
+            statementKind == common::sql::StatementKind::Select ||
+            common::sql::hasMultipleStatements(sql))
+            return false;
+        const unsigned long threadId = mysql_thread_id(m_);
+        {
+            std::lock_guard<std::mutex> lock(operationMtx_);
+            if (activeThreadId_ != 0) return false;
+            activeThreadId_ = threadId;
+            cancelRequested_ = false;
+        }
+        MySQLAsyncReactor::instance().enqueue(
+            m_, sql,
+            [this, threadId, completion = std::move(completion)](
+                MYSQL_RES *rawResult, const bool apiError) mutable {
+                std::unique_ptr<MYSQL_RES, void (*)(MYSQL_RES *)> result(
+                    rawResult, &freeMysqlResult);
+                common::Status status = apiError
+                                            ? lastError("mysql_real_query_nonblocking")
+                                            : common::Status::OK();
+                std::int64_t affected = status.ok()
+                                            ? static_cast<std::int64_t>(mysql_affected_rows(m_))
+                                            : 0;
+                bool cancelled = false;
+                {
+                    std::lock_guard<std::mutex> lock(operationMtx_);
+                    cancelled = cancelRequested_;
+                    cancelRequested_ = false;
+                    if (activeThreadId_ == threadId) activeThreadId_ = 0;
+                }
+                if (cancelled && status.ok()) {
+                    status = common::Status::databaseError(
+                        common::ErrorCode::Cancelled,
+                        "MySQL execute cancelled by KILL QUERY", "70100", 1317);
+                    affected = 0;
+                }
+                completion(std::move(status), affected);
+            });
+        return true;
+#else
+        (void) sql;
+        (void) params;
+        (void) completion;
+        return false;
+#endif
+    }
+
     common::Status MySQLConnection::execute(const std::string &sql, std::int64_t &affected,
                                             common::GeneratedKeys &out) {
 #ifdef SQLCONDUIT_ENABLE_MYSQL
@@ -1407,6 +1641,7 @@ namespace sqlconduit::driver {
             mysql_close(m_);
             m_ = nullptr;
         }
+        cancelRequested_ = false;
 #endif
         open_ = false;
         txOpen_ = false;
@@ -1423,12 +1658,14 @@ namespace sqlconduit::driver {
         if (const auto status = control.connect(cfg_); !status.ok())
             return common::Status::error(common::ErrorCode::Cancelled,
                                          "MySQL cancel control connection failed: " + status.message);
-        if (mysql_kill(control.m_, activeThreadId_) != 0)
+        const std::string kill = "KILL QUERY " + std::to_string(activeThreadId_);
+        if (mysql_real_query(control.m_, kill.data(), kill.size()) != 0)
             return common::Status::databaseError(
                 common::ErrorCode::Cancelled,
-                std::string("MySQL mysql_kill: ") + mysql_error(control.m_),
+                std::string("MySQL KILL QUERY: ") + mysql_error(control.m_),
                 mysql_sqlstate(control.m_) ? mysql_sqlstate(control.m_) : "",
                 static_cast<std::int64_t>(mysql_errno(control.m_)));
+        cancelRequested_ = true;
         return common::Status::OK();
 #else
         return common::Status::error(common::ErrorCode::DriverDisabled, "MySQL driver disabled");
@@ -1437,13 +1674,25 @@ namespace sqlconduit::driver {
 
     common::Status MySQLConnection::lastError(const char *where) {
 #ifdef SQLCONDUIT_ENABLE_MYSQL
+        const auto native = static_cast<std::int64_t>(mysql_errno(m_));
         std::string msg = where;
         msg += ": ";
         msg += mysql_error(m_);
-        return common::Status::databaseError(
-            common::ErrorCode::QueryError, std::move(msg),
+        const common::ErrorCode fallback = native == 1317
+                                               ? common::ErrorCode::Cancelled
+                                               : (native == 3024
+                                                      ? common::ErrorCode::QueryTimeout
+                                                      : common::ErrorCode::QueryError);
+        auto status = common::Status::databaseError(
+            fallback, std::move(msg),
             mysql_sqlstate(m_) ? mysql_sqlstate(m_) : "",
-            static_cast<std::int64_t>(mysql_errno(m_)));
+            native);
+        if (native == 2002 || native == 2003 || native == 2006 || native == 2013) {
+            status.connectionBroken = true;
+            status.retryable = true;
+        }
+        if (native == 3024) status.retryable = true;
+        return status;
 #else
         (void) where;
         return common::Status::error(common::ErrorCode::QueryError, "MySQL error");

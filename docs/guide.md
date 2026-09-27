@@ -1027,6 +1027,23 @@ auto er = update.get(); // er.status / er.affected
 表示当前驱动仍通过 SQLConduit 兼容执行器完成。`client.asyncStats()` 会分别统计
 `nativeOperations`、`fallbackOperations` 和 `timedOutOperations`，方便确认线上实际走的路径。
 
+从 0.9 开始，符合条件的叶子数据源路径通过连接池异步借用连接：池满时请求进入 `asyncWaiting`，不会占用
+executor worker；连接归还后直接 handoff，或由主动 deadline 返回 `PoolExhausted`。数据源组
+路由、重试和影子路由仍暂时使用兼容状态机。叶子数据源的查询缓存命中无需借用连接即可完成，
+未命中则继续进入 native 驱动路径，并在结果改写拦截器运行前写入原始结果。PostgreSQL 的叶子数据源
+`queryAsync` / `executeAsync` 已通过共享 libpq socket reactor 实现 native 异步；事务、游标、
+批量及复杂拓扑路径仍走兼容状态机。MySQL 8.0.16+ 的无参数单语句 SELECT 和 DML/DDL
+也通过官方 nonblocking C API 与共享轮询 reactor 走 native；带参数语句为了保留 prepared
+statement 绑定而继续 fallback，旧 MySQL/MariaDB 以及 Oracle、ODBC 驱动也仍走兼容状态机。
+扩展驱动只有在实现
+`IDatabaseConnection::queryAsync` / `executeAsync` 回调协议并返回
+`AsyncCapability::Native` 后，结果才会标记为 `Native`。
+
+对于 native 读请求，`async.statement_timeout_ms` 是主动 deadline：SQLConduit 会让 future
+以 `QueryTimeout` 完成、只调用一次驱动取消，并继续隔离该连接，直到 native completion 回调
+到达后才安全归还或丢弃，避免仍在执行的连接提前回池。native 写请求不会在 deadline 后改写
+成功结果，因为服务端提交状态可能已经不确定。
+
 当前公共异步边界有意不提供全局回调门面、取消 `Handle`、自定义执行器注入或协程包装。单次语句超时通过本实例的 `async.statement_timeout_ms` 配置；兼容 fallback 只能在驱动返回后对读请求做 best-effort `QueryTimeout` 分类，写、批量和事务如果已经成功完成，不会再被事后重写为 timeout。事务回调运行在 worker 上，内部应直接使用同步 `Session` 方法，避免在小连接池上嵌套异步借用。
 
 ## 实体映射（v0.5.0：Row ↔ 业务实体，读写双向）

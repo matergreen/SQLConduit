@@ -19,10 +19,14 @@
 
 namespace sqlconduit::core {
     struct AsyncIo {
-        std::function<void(std::function<void()>)> post;
-        std::function<void(std::function<void()>)> deliver;
+        std::function<bool(std::function<void()>)> post;
+        std::function<bool(std::function<void()>)> deliver;
+        std::function<void(std::function<void()>, std::chrono::milliseconds)> postAfter;
 
-        [[nodiscard]] bool usable() const { return static_cast<bool>(post) && static_cast<bool>(deliver); }
+        [[nodiscard]] bool usable() const {
+            return static_cast<bool>(post) && static_cast<bool>(deliver) &&
+                   static_cast<bool>(postAfter);
+        }
     };
 
     class ConnectionPool : public std::enable_shared_from_this<ConnectionPool> {

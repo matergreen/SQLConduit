@@ -17,6 +17,10 @@ namespace sqlconduit::async {
 
         virtual bool tryPost(Task task) = 0;
 
+        // Internal completions belong to already accepted operations and must not be rejected
+        // merely because the public submission queue is full.
+        virtual bool tryPostContinuation(Task task) = 0;
+
         virtual void postAfter(Task task, std::chrono::milliseconds delay) = 0;
 
         virtual void shutdown(std::chrono::milliseconds grace = std::chrono::milliseconds(5000)) = 0;

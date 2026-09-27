@@ -412,6 +412,24 @@ namespace sqlconduit::core {
         return conn->executePrepared(handle, params, affected);
     }
 
+    common::Status Session::queryForAsyncEngine(const std::string &sql,
+                                                const common::Params &params,
+                                                common::ResultSet &out) const {
+        out.clear();
+        std::uint64_t rows = 0;
+        const auto status = observeSql(
+            services_->observability, dataSource_, common::OperationType::Query,
+            sql, params, h_->get(), &out, rows, [&] {
+                const auto result = params.empty()
+                                        ? (*h_)->query(sql, out)
+                                        : runPreparedQuery(sql, params, out);
+                rows = out.rowCount();
+                return result;
+            });
+        if (status.connectionBroken) h_->invalidate();
+        return status;
+    }
+
     common::Status Session::query(const std::string &sql, common::ResultSet &out) const {
         out.clear();
         if (const auto a = auditStatement(sql, common::OperationType::Query); !a.ok()) return a;
@@ -2017,6 +2035,21 @@ namespace sqlconduit::core {
         if (const auto st = borrowSession(h, borrowTimeout); !st.ok()) {
             afterAttempt(st);
             return st;
+        }
+
+        return transactionWithHandle(std::move(h), options, fn, enforceReadOnly);
+    }
+
+    common::Status DataSource::transactionWithHandle(
+        std::unique_ptr<ConnectionPool::Handle> h,
+        const common::TransactionOptions &options,
+        const SessionFn &fn, const bool enforceReadOnly) const {
+        if (!h) {
+            auto status = common::Status::error(
+                common::ErrorCode::PoolClosed,
+                "datasource '" + name_ + "' has no transaction connection");
+            afterAttempt(status);
+            return status;
         }
 
         Session s(std::move(h), name_,

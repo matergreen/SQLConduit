@@ -11,10 +11,26 @@
 #include <utility>
 #include <vector>
 #include <atomic>
+#include <condition_variable>
+#include <cstdlib>
+#include <functional>
+#include <thread>
 #include <stdexcept>
 
 #ifdef SQLCONDUIT_ENABLE_POSTGRES
+#ifdef _WIN32
+#include <winsock2.h>
+#endif
 #include <pqxx/pqxx>
+#if __has_include(<libpq-fe.h>)
+#include <libpq-fe.h>
+#else
+#include <postgresql/libpq-fe.h>
+#endif
+
+#ifndef _WIN32
+#include <sys/select.h>
+#endif
 
 #if defined(PQXX_VERSION_MAJOR) && defined(PQXX_VERSION_MINOR)
 #  if (PQXX_VERSION_MAJOR > 7) || (PQXX_VERSION_MAJOR == 7 && PQXX_VERSION_MINOR >= 10)
@@ -48,6 +64,184 @@ namespace sqlconduit::driver {
             return common::Status::databaseError(
                 fallback, std::string("PostgreSQL ") + where + ": " + error.what(),
                 std::move(state));
+        }
+
+        struct PgResultDeleter {
+            void operator()(PGresult *result) const noexcept {
+                if (result) PQclear(result);
+            }
+        };
+
+        using PgResultPtr = std::unique_ptr<PGresult, PgResultDeleter>;
+
+        class PgAsyncReactor {
+        public:
+            using Completion = std::function<void(std::vector<PgResultPtr>, std::string)>;
+
+            static PgAsyncReactor &instance() {
+                static PgAsyncReactor reactor;
+                return reactor;
+            }
+
+            void enqueue(PGconn *connection, Completion completion) {
+                auto operation = std::make_shared<Operation>();
+                operation->connection = connection;
+                operation->socket = PQsocket(connection);
+                operation->completion = std::move(completion);
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    operations_.push_back(std::move(operation));
+                }
+                wake_.notify_one();
+            }
+
+            PgAsyncReactor(const PgAsyncReactor &) = delete;
+            PgAsyncReactor &operator=(const PgAsyncReactor &) = delete;
+
+        private:
+            struct Operation {
+                PGconn *connection = nullptr;
+                int socket = -1;
+                bool writePending = true;
+                std::vector<PgResultPtr> results;
+                Completion completion;
+            };
+
+            PgAsyncReactor() : worker_([this] { run(); }) {}
+
+            ~PgAsyncReactor() {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    stopping_ = true;
+                }
+                wake_.notify_one();
+                if (worker_.joinable()) worker_.join();
+            }
+
+            void finish(const std::shared_ptr<Operation> &operation, std::string error) {
+                Completion completion;
+                std::vector<PgResultPtr> results;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    const auto it = std::find(operations_.begin(), operations_.end(), operation);
+                    if (it == operations_.end()) return;
+                    operations_.erase(it);
+                    completion = std::move(operation->completion);
+                    results = std::move(operation->results);
+                }
+                if (completion) {
+                    try {
+                        completion(std::move(results), std::move(error));
+                    } catch (...) {
+                        // Completion failures must not terminate the shared reactor.
+                    }
+                }
+            }
+
+            void advance(const std::shared_ptr<Operation> &operation,
+                         const bool readable, const bool writable) {
+                PGconn *const connection = operation->connection;
+                if (operation->writePending && writable) {
+                    const int flushed = PQflush(connection);
+                    if (flushed < 0) {
+                        finish(operation, PQerrorMessage(connection));
+                        return;
+                    }
+                    operation->writePending = flushed != 0;
+                }
+                if (!readable) return;
+                if (PQconsumeInput(connection) == 0) {
+                    finish(operation, PQerrorMessage(connection));
+                    return;
+                }
+                while (PQisBusy(connection) == 0) {
+                    PGresult *result = PQgetResult(connection);
+                    if (!result) {
+                        finish(operation, {});
+                        return;
+                    }
+                    operation->results.emplace_back(result);
+                }
+            }
+
+            void run() {
+                for (;;) {
+                    std::vector<std::shared_ptr<Operation> > snapshot;
+                    {
+                        std::unique_lock<std::mutex> lock(mutex_);
+                        wake_.wait(lock, [this] { return stopping_ || !operations_.empty(); });
+                        if (stopping_ && operations_.empty()) return;
+                        snapshot = operations_;
+                    }
+
+                    fd_set readSet;
+                    fd_set writeSet;
+                    FD_ZERO(&readSet);
+                    FD_ZERO(&writeSet);
+                    int maxSocket = -1;
+                    for (const auto &operation: snapshot) {
+                        if (operation->socket < 0) continue;
+#ifdef _WIN32
+                        const SOCKET socket = static_cast<SOCKET>(operation->socket);
+#else
+                        const int socket = operation->socket;
+#endif
+                        FD_SET(socket, &readSet);
+                        if (operation->writePending) FD_SET(socket, &writeSet);
+                        maxSocket = std::max(maxSocket, operation->socket);
+                    }
+
+                    if (maxSocket < 0) {
+                        for (const auto &operation: snapshot)
+                            finish(operation, "PostgreSQL returned an invalid socket");
+                        continue;
+                    }
+
+                    timeval timeout{};
+                    timeout.tv_usec = 20000;
+#ifdef _WIN32
+                    const int ready = ::select(0, &readSet, &writeSet, nullptr, &timeout);
+#else
+                    const int ready = ::select(maxSocket + 1, &readSet, &writeSet, nullptr,
+                                               &timeout);
+#endif
+                    if (ready < 0) continue;
+                    for (const auto &operation: snapshot) {
+#ifdef _WIN32
+                        const SOCKET socket = static_cast<SOCKET>(operation->socket);
+#else
+                        const int socket = operation->socket;
+#endif
+                        advance(operation, FD_ISSET(socket, &readSet) != 0,
+                                FD_ISSET(socket, &writeSet) != 0);
+                    }
+                }
+            }
+
+            std::mutex mutex_;
+            std::condition_variable wake_;
+            std::vector<std::shared_ptr<Operation> > operations_;
+            bool stopping_ = false;
+            std::thread worker_;
+        };
+
+        common::Status nativePostgresError(const common::ErrorCode fallback,
+                                           const char *where, PGconn *connection,
+                                           PGresult *result, std::string transportError = {}) {
+            const char *state = result ? PQresultErrorField(result, PG_DIAG_SQLSTATE) : nullptr;
+            const char *detail = result ? PQresultErrorMessage(result) : nullptr;
+            std::string message = "PostgreSQL ";
+            message += where;
+            message += ": ";
+            if (!transportError.empty()) message += std::move(transportError);
+            else if (detail && *detail) message += detail;
+            else message += PQerrorMessage(connection);
+            while (!message.empty() && (message.back() == '\n' || message.back() == '\r'))
+                message.pop_back();
+            auto status = common::Status::databaseError(
+                fallback, std::move(message), state ? std::string(state) : std::string{});
+            status.connectionBroken = PQstatus(connection) != CONNECTION_OK;
+            return status;
         }
 
         class ActiveOperation {
@@ -320,6 +514,56 @@ namespace sqlconduit::driver {
                 }
                 out.addRow(std::move(out_row));
             }
+        }
+
+        common::Status fillNativeResultSet(PGresult *result, common::ResultSet &out,
+                                           const int maxRows, PgTypeCache *cache) {
+            const int rowCount = PQntuples(result);
+            if (maxRows > 0 && rowCount > maxRows) {
+                return common::Status::error(
+                    common::ErrorCode::QueryError,
+                    "result set exceeded max_result_rows (" + std::to_string(rowCount)
+                    + " > " + std::to_string(maxRows)
+                    + "); use queryEach() to stream the result instead");
+            }
+            const int columnCount = PQnfields(result);
+            std::vector<std::string> fields;
+            fields.reserve(static_cast<std::size_t>(columnCount));
+            for (int column = 0; column < columnCount; ++column) {
+                const char *name = PQfname(result, column);
+                fields.emplace_back(name ? name : "");
+            }
+            out.setFields(std::move(fields));
+            for (int rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
+                common::Row row;
+                for (int column = 0; column < columnCount; ++column) {
+                    const char *name = PQfname(result, column);
+                    if (PQgetisnull(result, rowIndex, column)) {
+                        row.set(name ? name : "", common::Value{nullptr});
+                        continue;
+                    }
+                    const char *value = PQgetvalue(result, rowIndex, column);
+                    const int length = PQgetlength(result, rowIndex, column);
+                    row.set(name ? name : "",
+                            valueFromText(static_cast<pqxx::oid>(PQftype(result, column)),
+                                          std::string(value, static_cast<std::size_t>(length)),
+                                          cache, 0));
+                }
+                out.addRow(std::move(row));
+            }
+            return common::Status::OK();
+        }
+
+        bool bindNativeParams(const common::Params &params,
+                              std::vector<std::optional<std::string> > &storage,
+                              std::vector<const char *> &values) {
+            storage.clear();
+            values.clear();
+            storage.reserve(params.size());
+            values.reserve(params.size());
+            for (const auto &value: params) storage.push_back(valueToPgText(value));
+            for (const auto &value: storage) values.push_back(value ? value->c_str() : nullptr);
+            return true;
         }
 
         void appendParams(pqxx::params &p, const common::Params &ps) {
@@ -684,9 +928,24 @@ namespace sqlconduit::driver {
             if (!cfg.tls_key.empty()) cs += " sslkey=" + connValue(cfg.tls_key);
         }
 
+        PGconn *rawConnection = PQconnectdb(cs.c_str());
+        if (!rawConnection) {
+            return common::Status::error(common::ErrorCode::ConnectionFailed,
+                                         "PostgreSQL connect: libpq could not allocate a connection");
+        }
+        if (PQstatus(rawConnection) != CONNECTION_OK) {
+            auto status = nativePostgresError(common::ErrorCode::ConnectionFailed,
+                                              "connect", rawConnection, nullptr);
+            status.message = cfg.redact(std::move(status.message));
+            PQfinish(rawConnection);
+            return status;
+        }
         try {
-            conn_ = std::make_unique<pqxx::connection>(cs);
+            conn_ = std::make_unique<pqxx::connection>(
+                pqxx::connection::seize_raw_connection(rawConnection));
+            rawConn_ = rawConnection;
         } catch (std::exception const &e) {
+            PQfinish(rawConnection);
             auto status = postgresError(common::ErrorCode::ConnectionFailed, "connect", e);
             status.message = cfg.redact(std::move(status.message));
             return status;
@@ -705,6 +964,7 @@ namespace sqlconduit::driver {
                 const auto status = postgresError(common::ErrorCode::ConnectionFailed,
                                                   "set statement_timeout", e);
                 conn_.reset();
+                rawConn_ = nullptr;
                 return status;
             }
         }
@@ -714,8 +974,11 @@ namespace sqlconduit::driver {
             try {
                 conn_->set_client_encoding(it->second);
             } catch (std::exception const &e) {
-                return postgresError(common::ErrorCode::ConnectionFailed,
-                                     "set_client_encoding", e);
+                auto status = postgresError(common::ErrorCode::ConnectionFailed,
+                                            "set_client_encoding", e);
+                conn_.reset();
+                rawConn_ = nullptr;
+                return status;
             }
         }
 
@@ -855,6 +1118,174 @@ namespace sqlconduit::driver {
         (void) params;
         affected = 0;
         return common::Status::error(common::ErrorCode::DriverDisabled, "PostgreSQL driver disabled");
+#endif
+    }
+
+    bool PostgresConnection::queryAsync(const std::string &sql,
+                                        const common::Params &params,
+                                        AsyncQueryCompletion completion) {
+#ifdef SQLCONDUIT_ENABLE_POSTGRES
+        if (!completion || !open_ || !conn_ || !rawConn_ || tx_) return false;
+        std::size_t found = 0;
+        const std::string pgSql = replacePlaceholders(
+            sql, [](const std::size_t index) { return "$" + std::to_string(index + 1); }, found);
+        if (found != params.size()) return false;
+
+        auto *const rawConnection = static_cast<PGconn *>(rawConn_);
+        {
+            std::lock_guard<std::mutex> lock(operationMtx_);
+            if (operationActive_) return false;
+            operationActive_ = true;
+        }
+        if (PQsetnonblocking(rawConnection, 1) != 0) {
+            std::lock_guard<std::mutex> lock(operationMtx_);
+            operationActive_ = false;
+            return false;
+        }
+
+        std::vector<std::optional<std::string> > storage;
+        std::vector<const char *> values;
+        bindNativeParams(params, storage, values);
+        if (PQsendQueryParams(rawConnection, pgSql.c_str(), static_cast<int>(params.size()),
+                              nullptr, values.empty() ? nullptr : values.data(), nullptr,
+                              nullptr, 0) == 0) {
+            (void) PQsetnonblocking(rawConnection, 0);
+            std::lock_guard<std::mutex> lock(operationMtx_);
+            operationActive_ = false;
+            return false;
+        }
+
+        PgAsyncReactor::instance().enqueue(
+            rawConnection,
+            [this, rawConnection, completion = std::move(completion)](
+                std::vector<PgResultPtr> results, std::string transportError) mutable {
+                common::ResultSet rows;
+                common::Status status = common::Status::OK();
+                if (!transportError.empty()) {
+                    status = nativePostgresError(common::ErrorCode::QueryError, "queryAsync",
+                                                 rawConnection, nullptr,
+                                                 std::move(transportError));
+                } else if (results.empty()) {
+                    status = common::Status::error(common::ErrorCode::QueryError,
+                                                   "PostgreSQL queryAsync: no result returned");
+                } else {
+                    for (const auto &result: results) {
+                        const ExecStatusType resultStatus = PQresultStatus(result.get());
+                        if (resultStatus == PGRES_TUPLES_OK) {
+                            status = fillNativeResultSet(result.get(), rows,
+                                                         cfg_.max_result_rows, &types_);
+                        } else if (resultStatus != PGRES_COMMAND_OK &&
+                                   resultStatus != PGRES_EMPTY_QUERY) {
+                            status = nativePostgresError(common::ErrorCode::QueryError,
+                                                         "queryAsync", rawConnection,
+                                                         result.get());
+                        }
+                        if (!status.ok()) break;
+                    }
+                }
+                if (PQsetnonblocking(rawConnection, 0) != 0 && status.ok()) {
+                    status = nativePostgresError(common::ErrorCode::QueryError,
+                                                 "restore blocking mode", rawConnection,
+                                                 nullptr);
+                }
+                {
+                    std::lock_guard<std::mutex> lock(operationMtx_);
+                    operationActive_ = false;
+                }
+                completion(std::move(status), std::move(rows));
+            });
+        return true;
+#else
+        (void) sql;
+        (void) params;
+        (void) completion;
+        return false;
+#endif
+    }
+
+    bool PostgresConnection::executeAsync(const std::string &sql,
+                                          const common::Params &params,
+                                          AsyncExecuteCompletion completion) {
+#ifdef SQLCONDUIT_ENABLE_POSTGRES
+        if (!completion || !open_ || !conn_ || !rawConn_ || tx_) return false;
+        std::size_t found = 0;
+        const std::string pgSql = replacePlaceholders(
+            sql, [](const std::size_t index) { return "$" + std::to_string(index + 1); }, found);
+        if (found != params.size()) return false;
+
+        auto *const rawConnection = static_cast<PGconn *>(rawConn_);
+        {
+            std::lock_guard<std::mutex> lock(operationMtx_);
+            if (operationActive_) return false;
+            operationActive_ = true;
+        }
+        if (PQsetnonblocking(rawConnection, 1) != 0) {
+            std::lock_guard<std::mutex> lock(operationMtx_);
+            operationActive_ = false;
+            return false;
+        }
+
+        std::vector<std::optional<std::string> > storage;
+        std::vector<const char *> values;
+        bindNativeParams(params, storage, values);
+        if (PQsendQueryParams(rawConnection, pgSql.c_str(), static_cast<int>(params.size()),
+                              nullptr, values.empty() ? nullptr : values.data(), nullptr,
+                              nullptr, 0) == 0) {
+            (void) PQsetnonblocking(rawConnection, 0);
+            std::lock_guard<std::mutex> lock(operationMtx_);
+            operationActive_ = false;
+            return false;
+        }
+
+        PgAsyncReactor::instance().enqueue(
+            rawConnection,
+            [this, rawConnection, completion = std::move(completion)](
+                std::vector<PgResultPtr> results, std::string transportError) mutable {
+                std::int64_t affected = 0;
+                common::Status status = common::Status::OK();
+                if (!transportError.empty()) {
+                    status = nativePostgresError(common::ErrorCode::QueryError, "executeAsync",
+                                                 rawConnection, nullptr,
+                                                 std::move(transportError));
+                } else if (results.empty()) {
+                    status = common::Status::error(common::ErrorCode::QueryError,
+                                                   "PostgreSQL executeAsync: no result returned");
+                } else {
+                    for (const auto &result: results) {
+                        const ExecStatusType resultStatus = PQresultStatus(result.get());
+                        if (resultStatus != PGRES_COMMAND_OK && resultStatus != PGRES_TUPLES_OK &&
+                            resultStatus != PGRES_EMPTY_QUERY) {
+                            status = nativePostgresError(common::ErrorCode::QueryError,
+                                                         "executeAsync", rawConnection,
+                                                         result.get());
+                            break;
+                        }
+                        const char *tuples = PQcmdTuples(result.get());
+                        if (tuples && *tuples) {
+                            char *end = nullptr;
+                            const long long count = std::strtoll(tuples, &end, 10);
+                            if (end != tuples && *end == '\0')
+                                affected += static_cast<std::int64_t>(count);
+                        }
+                    }
+                }
+                if (PQsetnonblocking(rawConnection, 0) != 0 && status.ok()) {
+                    status = nativePostgresError(common::ErrorCode::QueryError,
+                                                 "restore blocking mode", rawConnection,
+                                                 nullptr);
+                }
+                {
+                    std::lock_guard<std::mutex> lock(operationMtx_);
+                    operationActive_ = false;
+                }
+                completion(std::move(status), affected);
+            });
+        return true;
+#else
+        (void) sql;
+        (void) params;
+        (void) completion;
+        return false;
 #endif
     }
 
@@ -1397,6 +1828,7 @@ namespace sqlconduit::driver {
             }
             conn_.reset();
         }
+        rawConn_ = nullptr;
 #endif
         open_ = false;
     }

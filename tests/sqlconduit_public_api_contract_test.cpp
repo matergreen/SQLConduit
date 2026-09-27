@@ -31,7 +31,7 @@ using sqlconduit::common::ResultSet;
 using sqlconduit::common::Status;
 
 static_assert(SQLCONDUIT_VERSION_MAJOR == 0);
-static_assert(SQLCONDUIT_VERSION_MINOR == 8);
+static_assert(SQLCONDUIT_VERSION_MINOR == 9);
 static_assert(SQLCONDUIT_VERSION_PATCH == 0);
 static_assert(sqlconduit::exporters::kPrometheusFingerprintSeriesHardLimit == 1000);
 

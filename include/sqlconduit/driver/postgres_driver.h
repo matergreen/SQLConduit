@@ -149,6 +149,20 @@ namespace sqlconduit::driver {
 
         common::Status cancel() override;
 
+        [[nodiscard]] core::AsyncCapability asyncCapability() const override {
+#ifdef SQLCONDUIT_ENABLE_POSTGRES
+            return core::AsyncCapability::Native;
+#else
+            return core::AsyncCapability::ThreadPoolFallback;
+#endif
+        }
+
+        bool queryAsync(const std::string &sql, const common::Params &params,
+                        AsyncQueryCompletion completion) override;
+
+        bool executeAsync(const std::string &sql, const common::Params &params,
+                          AsyncExecuteCompletion completion) override;
+
         common::Status refreshTypeCache();
 
 #ifdef SQLCONDUIT_ENABLE_POSTGRES
@@ -177,6 +191,7 @@ namespace sqlconduit::driver {
         bool operationActive_ = false;
 #ifdef SQLCONDUIT_ENABLE_POSTGRES
         std::unique_ptr<pqxx::connection> conn_;
+        void *rawConn_ = nullptr;
         std::unique_ptr<PgTx> tx_;
         PgTypeCache types_;
 #endif

@@ -1,6 +1,7 @@
 #include "sqlconduit/client.h"
 
 #include "sqlconduit/async/executor.h"
+#include "async/async_engine.h"
 #include "sqlconduit/common/context.h"
 #include "sqlconduit/config/config_loader.h"
 #include "sqlconduit/core/runtime_services.h"
@@ -160,6 +161,296 @@ namespace sqlconduit {
                 promise->set_value(std::move(result));
             }
             return future;
+        }
+
+        std::future<async::QueryResult> submitQueryAsync(
+            const std::string &requested, std::string sql, common::Params params) const {
+            std::shared_ptr<core::DataSource> source;
+            if (auto status = resolve(requested, source); !status.ok()) {
+                std::promise<async::QueryResult> promise;
+                auto future = promise.get_future();
+                async::QueryResult result;
+                result.status = std::move(status);
+                result.mode = async::ExecutionMode::CompatibilityFallback;
+                promise.set_value(std::move(result));
+                return future;
+            }
+
+            std::shared_ptr<async::IExecutor> executor;
+            {
+                std::lock_guard<std::mutex> lock(asyncMutex);
+                executor = asyncExecutor;
+            }
+            if (!executor) {
+                std::promise<async::QueryResult> promise;
+                auto future = promise.get_future();
+                async::QueryResult result;
+                result.status = common::Status::error(
+                    common::ErrorCode::ConfigError,
+                    "async execution is disabled for this client");
+                result.mode = async::ExecutionMode::CompatibilityFallback;
+                promise.set_value(std::move(result));
+                return future;
+            }
+
+            auto promise = std::make_shared<std::promise<async::QueryResult> >();
+            auto future = promise->get_future();
+            core::AsyncIo io;
+            io.post = [executor](std::function<void()> task) {
+                return executor->tryPost(std::move(task));
+            };
+            io.deliver = [executor](std::function<void()> task) {
+                return executor->tryPostContinuation(std::move(task));
+            };
+            io.postAfter = [executor](std::function<void()> task,
+                                      const std::chrono::milliseconds delay) {
+                executor->postAfter(std::move(task), delay);
+            };
+            const auto context = common::ContextScope::current();
+            const auto timeoutMs = asyncTimeoutMs.load(std::memory_order_acquire);
+            const auto started = std::chrono::steady_clock::now();
+            const bool accepted = async::detail::AsyncEngine::query(
+                source, sql, params, context,
+                timeoutMs > 0 ? std::chrono::milliseconds(timeoutMs)
+                              : std::chrono::milliseconds(-1),
+                io,
+                [promise, executor, timeoutMs, started](async::QueryResult result) mutable {
+                    if (result.mode == async::ExecutionMode::Native)
+                        executor->recordNativeOperation();
+                    else
+                        executor->recordFallbackOperation();
+                    if (timeoutMs > 0 &&
+                        std::chrono::steady_clock::now() - started >=
+                            std::chrono::milliseconds(timeoutMs)) {
+                        result.status = common::Status::error(
+                            common::ErrorCode::QueryTimeout,
+                            "operation exceeded client async statement timeout");
+                        result.status.retryable = true;
+                        executor->recordTimedOutOperation();
+                    }
+                    promise->set_value(std::move(result));
+                });
+            if (accepted) return future;
+
+            return submitAsync<async::QueryResult>(
+                requested,
+                [sql = std::move(sql), params = std::move(params)](
+                    core::DataSource &dataSource, async::QueryResult &result) {
+                    result.status = params.empty()
+                                        ? dataSource.query(sql, result.rows)
+                                        : dataSource.query(sql, params, result.rows);
+                }, true);
+        }
+
+        std::future<async::ExecResult> submitExecuteAsync(
+            const std::string &requested, std::string sql, common::Params params) const {
+            std::shared_ptr<core::DataSource> source;
+            if (auto status = resolve(requested, source); !status.ok()) {
+                std::promise<async::ExecResult> promise;
+                auto future = promise.get_future();
+                async::ExecResult result;
+                result.status = std::move(status);
+                result.mode = async::ExecutionMode::CompatibilityFallback;
+                promise.set_value(std::move(result));
+                return future;
+            }
+            std::shared_ptr<async::IExecutor> executor;
+            {
+                std::lock_guard<std::mutex> lock(asyncMutex);
+                executor = asyncExecutor;
+            }
+            if (!executor) {
+                std::promise<async::ExecResult> promise;
+                auto future = promise.get_future();
+                async::ExecResult result;
+                result.status = common::Status::error(
+                    common::ErrorCode::ConfigError,
+                    "async execution is disabled for this client");
+                result.mode = async::ExecutionMode::CompatibilityFallback;
+                promise.set_value(std::move(result));
+                return future;
+            }
+
+            auto promise = std::make_shared<std::promise<async::ExecResult> >();
+            auto future = promise->get_future();
+            core::AsyncIo io;
+            io.post = [executor](std::function<void()> task) {
+                return executor->tryPost(std::move(task));
+            };
+            io.deliver = [executor](std::function<void()> task) {
+                return executor->tryPostContinuation(std::move(task));
+            };
+            io.postAfter = [executor](std::function<void()> task,
+                                      const std::chrono::milliseconds delay) {
+                executor->postAfter(std::move(task), delay);
+            };
+            const auto context = common::ContextScope::current();
+            const auto timeoutMs = asyncTimeoutMs.load(std::memory_order_acquire);
+            const bool accepted = async::detail::AsyncEngine::execute(
+                source, sql, params, context,
+                timeoutMs > 0 ? std::chrono::milliseconds(timeoutMs)
+                              : std::chrono::milliseconds(-1),
+                io,
+                [promise, executor](async::ExecResult result) mutable {
+                    if (result.mode == async::ExecutionMode::Native)
+                        executor->recordNativeOperation();
+                    else
+                        executor->recordFallbackOperation();
+                    promise->set_value(std::move(result));
+                });
+            if (accepted) return future;
+
+            return submitAsync<async::ExecResult>(
+                requested,
+                [sql = std::move(sql), params = std::move(params)](
+                    core::DataSource &dataSource, async::ExecResult &result) {
+                    result.status = params.empty()
+                                        ? dataSource.execute(sql, result.affected)
+                                        : dataSource.execute(sql, params, result.affected);
+                }, false);
+        }
+
+        template<typename Result, typename SessionFn, typename FallbackFn>
+        std::future<Result> submitSessionAsync(
+            const std::string &requested, std::string sql,
+            const common::OperationType type, const bool write,
+            SessionFn sessionFn, FallbackFn fallbackFn,
+            const bool lateTimeoutIsError) const {
+            std::shared_ptr<core::DataSource> source;
+            if (auto status = resolve(requested, source); !status.ok()) {
+                std::promise<Result> promise;
+                auto future = promise.get_future();
+                Result result;
+                result.status = std::move(status);
+                result.mode = async::ExecutionMode::CompatibilityFallback;
+                promise.set_value(std::move(result));
+                return future;
+            }
+            std::shared_ptr<async::IExecutor> executor;
+            {
+                std::lock_guard<std::mutex> lock(asyncMutex);
+                executor = asyncExecutor;
+            }
+            if (!executor) {
+                std::promise<Result> promise;
+                auto future = promise.get_future();
+                Result result;
+                result.status = common::Status::error(
+                    common::ErrorCode::ConfigError,
+                    "async execution is disabled for this client");
+                result.mode = async::ExecutionMode::CompatibilityFallback;
+                promise.set_value(std::move(result));
+                return future;
+            }
+
+            auto promise = std::make_shared<std::promise<Result> >();
+            auto future = promise->get_future();
+            auto result = std::make_shared<Result>();
+            result->mode = async::ExecutionMode::CompatibilityFallback;
+            core::AsyncIo io;
+            io.post = [executor](std::function<void()> task) {
+                return executor->tryPost(std::move(task));
+            };
+            io.deliver = [executor](std::function<void()> task) {
+                return executor->tryPostContinuation(std::move(task));
+            };
+            io.postAfter = [executor](std::function<void()> task,
+                                      const std::chrono::milliseconds delay) {
+                executor->postAfter(std::move(task), delay);
+            };
+            const auto timeoutMs = asyncTimeoutMs.load(std::memory_order_acquire);
+            const auto started = std::chrono::steady_clock::now();
+            const bool accepted = async::detail::AsyncEngine::runSession(
+                source, sql, type, write, common::ContextScope::current(),
+                timeoutMs > 0 ? std::chrono::milliseconds(timeoutMs)
+                              : std::chrono::milliseconds(-1),
+                io,
+                [result, sessionFn = std::move(sessionFn)](core::Session &session) mutable {
+                    return sessionFn(session, *result);
+                },
+                [promise, result, executor, timeoutMs, started,
+                 lateTimeoutIsError](common::Status status) mutable {
+                    result->status = std::move(status);
+                    executor->recordFallbackOperation();
+                    if (timeoutMs > 0 && lateTimeoutIsError &&
+                        std::chrono::steady_clock::now() - started >=
+                            std::chrono::milliseconds(timeoutMs)) {
+                        result->status = common::Status::error(
+                            common::ErrorCode::QueryTimeout,
+                            "operation exceeded client async statement timeout");
+                        result->status.retryable = true;
+                        executor->recordTimedOutOperation();
+                    }
+                    promise->set_value(std::move(*result));
+                });
+            if (accepted) return future;
+            return submitAsync<Result>(requested, std::move(fallbackFn), lateTimeoutIsError);
+        }
+
+        std::future<async::OpResult> submitTransactionAsync(
+            const std::string &requested, common::TransactionOptions options,
+            core::SessionFn fn) const {
+            std::shared_ptr<core::DataSource> source;
+            if (auto status = resolve(requested, source); !status.ok()) {
+                std::promise<async::OpResult> promise;
+                auto future = promise.get_future();
+                async::OpResult result;
+                result.status = std::move(status);
+                result.mode = async::ExecutionMode::CompatibilityFallback;
+                promise.set_value(std::move(result));
+                return future;
+            }
+            std::shared_ptr<async::IExecutor> executor;
+            {
+                std::lock_guard<std::mutex> lock(asyncMutex);
+                executor = asyncExecutor;
+            }
+            if (!executor) {
+                std::promise<async::OpResult> promise;
+                auto future = promise.get_future();
+                async::OpResult result;
+                result.status = common::Status::error(
+                    common::ErrorCode::ConfigError,
+                    "async execution is disabled for this client");
+                result.mode = async::ExecutionMode::CompatibilityFallback;
+                promise.set_value(std::move(result));
+                return future;
+            }
+
+            auto promise = std::make_shared<std::promise<async::OpResult> >();
+            auto future = promise->get_future();
+            core::AsyncIo io;
+            io.post = [executor](std::function<void()> task) {
+                return executor->tryPost(std::move(task));
+            };
+            io.deliver = [executor](std::function<void()> task) {
+                return executor->tryPostContinuation(std::move(task));
+            };
+            io.postAfter = [executor](std::function<void()> task,
+                                      const std::chrono::milliseconds delay) {
+                executor->postAfter(std::move(task), delay);
+            };
+            auto fallbackFn = fn;
+            const auto timeoutMs = asyncTimeoutMs.load(std::memory_order_acquire);
+            const bool accepted = async::detail::AsyncEngine::transaction(
+                source, options, std::move(fn), common::ContextScope::current(),
+                timeoutMs > 0 ? std::chrono::milliseconds(timeoutMs)
+                              : std::chrono::milliseconds(-1),
+                io,
+                [promise, executor](common::Status status) mutable {
+                    async::OpResult result;
+                    result.status = std::move(status);
+                    result.mode = async::ExecutionMode::CompatibilityFallback;
+                    executor->recordFallbackOperation();
+                    promise->set_value(std::move(result));
+                });
+            if (accepted) return future;
+            return submitAsync<async::OpResult>(
+                requested,
+                [options, fn = std::move(fallbackFn)](
+                    core::DataSource &dataSource, async::OpResult &result) {
+                    result.status = dataSource.transaction(options, fn);
+                }, false);
         }
 
         std::shared_ptr<core::detail::RuntimeServices> services;
@@ -440,15 +731,7 @@ namespace sqlconduit {
             promise.set_value(std::move(result));
             return future;
         }
-        return impl_->submitAsync<async::QueryResult>(source,
-                                                      [sql, params](core::DataSource &dataSource,
-                                                                    async::QueryResult &result) {
-                                                          result.status = params.empty()
-                                                                              ? dataSource.query(sql, result.rows)
-                                                                              : dataSource.query(
-                                                                                  sql, params, result.rows);
-                                                      },
-                                                      true);
+        return impl_->submitQueryAsync(source, sql, params);
     }
 
     std::future<async::MultiQueryResult> Client::queryAllAsync(
@@ -468,13 +751,15 @@ namespace sqlconduit {
             promise.set_value(std::move(result));
             return future;
         }
-        return impl_->submitAsync<async::MultiQueryResult>(source,
-                                                           [sql, params](
-                                                       core::DataSource &dataSource, async::MultiQueryResult &result) {
-                                                               result.status = dataSource.queryAll(
-                                                                   sql, params, result.sets);
-                                                           },
-                                                           true);
+        return impl_->submitSessionAsync<async::MultiQueryResult>(
+            source, sql, common::OperationType::Query, false,
+            [sql, params](core::Session &session, async::MultiQueryResult &result) {
+                return session.queryAll(sql, params, result.sets);
+            },
+            [sql, params](core::DataSource &dataSource,
+                          async::MultiQueryResult &result) {
+                result.status = dataSource.queryAll(sql, params, result.sets);
+            }, true);
     }
 
     std::future<async::ExecResult> Client::executeAsync(const std::string &sql) const {
@@ -498,15 +783,7 @@ namespace sqlconduit {
             promise.set_value(std::move(result));
             return future;
         }
-        return impl_->submitAsync<async::ExecResult>(source,
-                                                     [sql, params](core::DataSource &dataSource,
-                                                                   async::ExecResult &result) {
-                                                         result.status = params.empty()
-                                                                             ? dataSource.execute(sql, result.affected)
-                                                                             : dataSource.execute(
-                                                                                 sql, params, result.affected);
-                                                     },
-                                                     false);
+        return impl_->submitExecuteAsync(source, sql, params);
     }
 
     std::future<async::ExecKeysResult> Client::executeKeysAsync(
@@ -526,17 +803,20 @@ namespace sqlconduit {
             promise.set_value(std::move(result));
             return future;
         }
-        return impl_->submitAsync<async::ExecKeysResult>(source,
-                                                         [sql, params](core::DataSource &dataSource,
-                                                                       async::ExecKeysResult &result) {
-                                                             result.status = params.empty()
-                                                                                 ? dataSource.execute(
-                                                                                     sql, result.affected, result.keys)
-                                                                                 : dataSource.execute(
-                                                                                     sql, params, result.affected,
-                                                                                     result.keys);
-                                                         },
-                                                         false);
+        return impl_->submitSessionAsync<async::ExecKeysResult>(
+            source, sql, common::OperationType::Execute, true,
+            [sql, params](core::Session &session, async::ExecKeysResult &result) {
+                return params.empty()
+                           ? session.execute(sql, result.affected, result.keys)
+                           : session.execute(sql, params, result.affected, result.keys);
+            },
+            [sql, params](core::DataSource &dataSource,
+                          async::ExecKeysResult &result) {
+                result.status = params.empty()
+                                    ? dataSource.execute(sql, result.affected, result.keys)
+                                    : dataSource.execute(sql, params, result.affected,
+                                                         result.keys);
+            }, false);
     }
 
     std::future<async::EachResult> Client::queryEachAsync(
@@ -557,13 +837,18 @@ namespace sqlconduit {
             promise.set_value(std::move(result));
             return future;
         }
-        return impl_->submitAsync<async::EachResult>(source,
-                                                     [sql, params, rowCallback = std::move(rowCallback)](
-                                                 core::DataSource &dataSource, async::EachResult &result) {
-                                                         result.status = dataSource.queryEach(
-                                                             sql, params, rowCallback, result.rows);
-                                                     },
-                                                     true);
+        auto fallbackCallback = rowCallback;
+        return impl_->submitSessionAsync<async::EachResult>(
+            source, sql, common::OperationType::Query, false,
+            [sql, params, rowCallback = std::move(rowCallback)](
+                core::Session &session, async::EachResult &result) {
+                return session.queryEach(sql, params, rowCallback, result.rows);
+            },
+            [sql, params, rowCallback = std::move(fallbackCallback)](
+                core::DataSource &dataSource, async::EachResult &result) {
+                result.status = dataSource.queryEach(
+                    sql, params, rowCallback, result.rows);
+            }, true);
     }
 
     std::future<async::BatchResult> Client::executeBatchAsync(
@@ -583,13 +868,14 @@ namespace sqlconduit {
             promise.set_value(std::move(result));
             return future;
         }
-        return impl_->submitAsync<async::BatchResult>(source,
-                                                      [sql, batch](core::DataSource &dataSource,
-                                                                   async::BatchResult &result) {
-                                                          result.status = dataSource.executeBatch(
-                                                              sql, batch, result.batch);
-                                                      },
-                                                      false);
+        return impl_->submitSessionAsync<async::BatchResult>(
+            source, sql, common::OperationType::Execute, true,
+            [sql, batch](core::Session &session, async::BatchResult &result) {
+                return session.executeBatch(sql, batch, result.batch);
+            },
+            [sql, batch](core::DataSource &dataSource, async::BatchResult &result) {
+                result.status = dataSource.executeBatch(sql, batch, result.batch);
+            }, false);
     }
 
     std::future<async::OpResult> Client::transactionAsync(core::SessionFn fn) const {
@@ -608,12 +894,7 @@ namespace sqlconduit {
             promise.set_value(std::move(result));
             return future;
         }
-        return impl_->submitAsync<async::OpResult>(source,
-                                                   [options, fn = std::move(fn)](
-                                               core::DataSource &dataSource, async::OpResult &result) {
-                                                       result.status = dataSource.transaction(options, fn);
-                                                   },
-                                                   false);
+        return impl_->submitTransactionAsync(source, options, std::move(fn));
     }
 
     async::ExecutorStats Client::asyncStats() const {

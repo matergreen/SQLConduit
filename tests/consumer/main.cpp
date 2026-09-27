@@ -16,7 +16,7 @@
 
 int main() {
     static_assert(SQLCONDUIT_VERSION_MAJOR == 0);
-    static_assert(SQLCONDUIT_VERSION_MINOR == 8);
+    static_assert(SQLCONDUIT_VERSION_MINOR == 9);
 
     const auto statement = sqlconduit::sql::Builder::select("consumer_probe")
         .columns({"id"})

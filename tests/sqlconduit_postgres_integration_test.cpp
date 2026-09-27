@@ -471,12 +471,119 @@ namespace {
         requireOk(asyncRows.status, "async future query");
         require(asInt(asyncRows.rows.rows()[0].at("n")) >= 5, "async query returned wrong count");
 
+        auto asyncWrite = g_client.executeAsync(
+            "UPDATE " + f.table + " SET qty = qty + 1 WHERE name = ?",
+            Params{std::string("alpha")});
+        auto writeResult = asyncWrite.get();
+        requireOk(writeResult.status, "native async client write");
+        require(writeResult.mode == sqlconduit::async::ExecutionMode::Native,
+                "eligible PostgreSQL client write did not use native async mode");
+        require(writeResult.affected == 1, "native async client write affected mismatch");
+
         sqlconduit::core::ConnectionPool::Stats stats;
         require(g_client.poolStats(stats), "pool stats unavailable after async test");
         require(stats.borrowRequests > 0 && stats.borrowSuccesses > 0 && stats.connectionsCreated > 0,
                 "pool counters were not populated");
         require(!g_client.slowSqlStats(100).empty(), "slow SQL aggregates are empty");
         require(!g_client.recentSlowSql(100).empty(), "recent slow SQL records are empty");
+    }
+
+    sqlconduit::config::DataSourceConfig directPostgresConfig() {
+        sqlconduit::config::DataSourceConfig config;
+        config.name = "native_async";
+        config.type = "postgres";
+        config.host = env("SQLCONDUIT_TEST_PG_HOST", "127.0.0.1");
+        config.port = std::stoi(env("SQLCONDUIT_TEST_PG_PORT", "5432"));
+        config.user = env("SQLCONDUIT_TEST_PG_USER", "postgres");
+        config.password = env("SQLCONDUIT_TEST_PG_PASSWORD");
+        config.database = env("SQLCONDUIT_TEST_PG_DATABASE", "postgres");
+        config.connection_timeout_ms = 3000;
+        return config;
+    }
+
+    void testNativeAsyncDriver() {
+        using AsyncQueryValue = std::pair<Status, ResultSet>;
+        const auto config = directPostgresConfig();
+        const auto registration = sqlconduit::drivers::postgres();
+        auto driver = registration.factory();
+        auto connection = driver->createConnection();
+        requireOk(connection->connect(config), "connect native async PostgreSQL driver");
+        require(connection->asyncCapability() == sqlconduit::core::AsyncCapability::Native,
+                "PostgreSQL driver did not advertise native async support");
+
+        auto queryPromise = std::make_shared<std::promise<AsyncQueryValue> >();
+        auto queryFuture = queryPromise->get_future();
+        require(connection->queryAsync(
+                    "SELECT ?::bigint AS value", Params{std::int64_t{42}},
+                    [queryPromise](Status status, ResultSet rows) {
+                        queryPromise->set_value({std::move(status), std::move(rows)});
+                    }), "native queryAsync was not started");
+        require(queryFuture.wait_for(std::chrono::seconds(3)) == std::future_status::ready,
+                "native queryAsync did not complete");
+        auto queryResult = queryFuture.get();
+        requireOk(queryResult.first, "native queryAsync");
+        require(queryResult.second.rowCount() == 1 &&
+                asInt(queryResult.second.rows()[0].at("value")) == 42,
+                "native queryAsync returned the wrong value");
+
+        auto executePromise = std::make_shared<std::promise<std::pair<Status, std::int64_t> > >();
+        auto executeFuture = executePromise->get_future();
+        require(connection->executeAsync(
+                    "CREATE TEMP TABLE sqlconduit_native_async (id BIGINT)", {},
+                    [executePromise](Status status, const std::int64_t affected) {
+                        executePromise->set_value({std::move(status), affected});
+                    }), "native executeAsync was not started");
+        require(executeFuture.wait_for(std::chrono::seconds(3)) == std::future_status::ready,
+                "native executeAsync did not complete");
+        requireOk(executeFuture.get().first, "native executeAsync");
+
+        constexpr std::size_t kConcurrentQueries = 4;
+        std::vector<std::unique_ptr<sqlconduit::core::IDatabaseConnection> > connections;
+        std::vector<std::future<AsyncQueryValue> > futures;
+        connections.reserve(kConcurrentQueries);
+        futures.reserve(kConcurrentQueries);
+        const auto startedAt = std::chrono::steady_clock::now();
+        for (std::size_t index = 0; index < kConcurrentQueries; ++index) {
+            auto current = driver->createConnection();
+            requireOk(current->connect(config), "connect concurrent native async driver");
+            auto promise = std::make_shared<std::promise<AsyncQueryValue> >();
+            futures.push_back(promise->get_future());
+            require(current->queryAsync(
+                        "SELECT pg_sleep(0.2), ?::bigint AS value",
+                        Params{static_cast<std::int64_t>(index)},
+                        [promise](Status status, ResultSet rows) {
+                            promise->set_value({std::move(status), std::move(rows)});
+                        }), "concurrent native queryAsync was not started");
+            connections.push_back(std::move(current));
+        }
+        for (std::size_t index = 0; index < futures.size(); ++index) {
+            require(futures[index].wait_for(std::chrono::seconds(3)) ==
+                    std::future_status::ready, "concurrent native query did not complete");
+            auto result = futures[index].get();
+            requireOk(result.first, "concurrent native query");
+            require(asInt(result.second.rows()[0].at("value")) ==
+                    static_cast<std::int64_t>(index),
+                    "concurrent native query returned the wrong value");
+        }
+        const auto elapsed = std::chrono::steady_clock::now() - startedAt;
+        require(elapsed < std::chrono::milliseconds(650),
+                "PostgreSQL native async reactor serialized independent connections");
+
+        auto cancelPromise = std::make_shared<std::promise<AsyncQueryValue> >();
+        auto cancelFuture = cancelPromise->get_future();
+        require(connection->queryAsync(
+                    "SELECT pg_sleep(5)", {},
+                    [cancelPromise](Status status, ResultSet rows) {
+                        cancelPromise->set_value({std::move(status), std::move(rows)});
+                    }), "cancellable native queryAsync was not started");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        requireOk(connection->cancel(), "cancel native queryAsync");
+        require(cancelFuture.wait_for(std::chrono::seconds(3)) == std::future_status::ready,
+                "cancelled native queryAsync did not complete");
+        const auto cancelled = cancelFuture.get();
+        require(cancelled.first.code == ErrorCode::Cancelled &&
+                cancelled.first.sqlState == "57014",
+                "native query cancellation was not classified as Cancelled/57014");
     }
 
 
@@ -756,6 +863,7 @@ int main() {
         testTransactions(fixture);
         testErrorsLimitsAndCursor(fixture);
         testCacheAsyncAndObservability(fixture);
+        testNativeAsyncDriver();
         testEntityMapping(fixture);
         testScriptExecution(fixture);
         testRoutinesAndCall(fixture);

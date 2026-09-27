@@ -15,6 +15,11 @@
 #ifdef SQLCONDUIT_ENABLE_MYSQL
 #include <mysql.h>
 
+#if defined(MYSQL_VERSION_ID) && MYSQL_VERSION_ID >= 80016 && \
+    !defined(MARIADB_VERSION_ID) && !defined(MARIADB_BASE_VERSION)
+#define SQLCONDUIT_MYSQL_HAS_NONBLOCKING 1
+#endif
+
 #if defined(MYSQL_VERSION_ID) && MYSQL_VERSION_ID >= 80000
 using MysqlBool = bool;
 #else
@@ -126,6 +131,20 @@ namespace sqlconduit::driver {
 
         common::Status cancel() override;
 
+        [[nodiscard]] core::AsyncCapability asyncCapability() const override {
+#ifdef SQLCONDUIT_MYSQL_HAS_NONBLOCKING
+            return core::AsyncCapability::Native;
+#else
+            return core::AsyncCapability::ThreadPoolFallback;
+#endif
+        }
+
+        bool queryAsync(const std::string &sql, const common::Params &params,
+                        AsyncQueryCompletion completion) override;
+
+        bool executeAsync(const std::string &sql, const common::Params &params,
+                          AsyncExecuteCompletion completion) override;
+
     private:
         common::Status lastError(const char *where);
 
@@ -155,6 +174,7 @@ namespace sqlconduit::driver {
         MYSQL *m_ = nullptr;
         mutable std::mutex operationMtx_;
         unsigned long activeThreadId_ = 0;
+        bool cancelRequested_ = false;
 #endif
     };
 

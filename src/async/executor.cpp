@@ -44,6 +44,17 @@ namespace sqlconduit::async {
                 return true;
             }
 
+            bool tryPostContinuation(Task task) override {
+                if (!task) return false;
+                std::unique_lock<std::mutex> lk(mtx_);
+                ensureStartedLocked();
+                if (stopping_.load(std::memory_order_relaxed)) return false;
+                queue_.push_back(std::move(task));
+                ++submitted_;
+                cvWork_.notify_one();
+                return true;
+            }
+
             void postAfter(Task task, std::chrono::milliseconds delay) override {
                 if (!task) return;
                 std::unique_lock<std::mutex> lk(mtx_);

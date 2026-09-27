@@ -165,6 +165,7 @@ namespace sqlconduit {
 
         private:
             friend class DataSource;
+            friend class async::detail::AsyncEngine;
 
             explicit Session(std::unique_ptr<ConnectionPool::Handle> h, std::string dataSource,
                              std::string driverType,
@@ -193,6 +194,10 @@ namespace sqlconduit {
                                                          const common::Params &params,
                                                          std::int64_t &affected,
                                                          common::GeneratedKeys *keys) const;
+
+            common::Status queryForAsyncEngine(const std::string &sql,
+                                               const common::Params &params,
+                                               common::ResultSet &out) const;
 
             void cleanupOpenTransaction() noexcept;
 
@@ -513,6 +518,11 @@ namespace sqlconduit {
                                                const SessionFn &fn,
                                                std::chrono::milliseconds borrowTimeout,
                                                bool enforceReadOnly) const;
+
+            common::Status transactionWithHandle(
+                std::unique_ptr<ConnectionPool::Handle> handle,
+                const common::TransactionOptions &options,
+                const SessionFn &fn, bool enforceReadOnly) const;
 
             std::weak_ptr<ConnectionPool> pool_;
             std::string name_;

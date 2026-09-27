@@ -14,12 +14,13 @@ namespace sqlconduit::core {
                                                     common::Status)> complete,
                                  std::unique_ptr<ConnectionPool::Handle> handle,
                                  common::Status status) {
-            io.deliver([handle = std::make_shared<std::unique_ptr<ConnectionPool::Handle> >(
-                        std::move(handle)),
+            auto task = [handle = std::make_shared<std::unique_ptr<ConnectionPool::Handle> >(
+                         std::move(handle)),
                     complete = std::move(complete),
                     status = std::move(status)]() mutable {
                     complete(std::move(*handle), std::move(status));
-                });
+                };
+            if (!io.deliver(task)) task();
         }
 
         std::string poolExhaustedMessage(const std::string &poolName, int maxConn,
@@ -390,8 +391,19 @@ namespace sqlconduit::core {
                                      const AsyncIo &io,
                                      std::function<void(std::unique_ptr<Handle>,
                                                         common::Status)> complete) const {
-        if (!io.usable() || !complete) {
+        if (!complete) {
             SQLCONDUIT_LOG_WARN("pool [" + name() + "] borrowAsync called with unusable AsyncIo");
+            return;
+        }
+        if (!io.usable()) {
+            SQLCONDUIT_LOG_WARN("pool [" + name() + "] borrowAsync called with unusable AsyncIo");
+            auto status = common::Status::error(
+                common::ErrorCode::ConfigError,
+                "async pool I/O requires post, deliver, and postAfter callbacks");
+            if (io.deliver)
+                deliverBorrowResult(io, std::move(complete), nullptr, std::move(status));
+            else
+                complete(nullptr, std::move(status));
             return;
         }
         auto effective = timeout;
@@ -453,9 +465,9 @@ namespace sqlconduit::core {
             lk.unlock();
             auto connBox = std::make_shared<std::unique_ptr<IDatabaseConnection> >(
                 std::move(item.conn));
-            io.post([self = shared_from_this(), st = state_, connBox,
+            auto validateTask = [self = shared_from_this(), st = state_, connBox,
                     createdAt = item.createdAt,
-                    io, complete = std::move(complete),
+                    io, complete,
                     effective]() mutable {
                     auto &conn = *connBox;
                     const bool alive = static_cast<bool>(conn) && conn->ping().ok();
@@ -499,7 +511,28 @@ namespace sqlconduit::core {
                     }
                     if (conn) conn->close();
                     self->borrowAsync(effective, io, std::move(complete));
-                });
+                };
+            if (!io.post(validateTask)) {
+                auto conn = std::move(*connBox);
+                bool close = false;
+                {
+                    std::lock_guard<std::mutex> lk2(state_->mtx);
+                    if (state_->closed) {
+                        close = true;
+                        if (state_->total > 0) --state_->total;
+                        ++state_->connectionsClosed;
+                    } else {
+                        state_->idle.push(State::IdleConnection{
+                            std::move(conn), item.createdAt, now, item.lastValidated});
+                    }
+                }
+                if (close && conn) conn->close();
+                auto status = common::Status::error(
+                    common::ErrorCode::Overloaded,
+                    "async executor rejected connection validation");
+                status.retryable = true;
+                deliverBorrowResult(io, std::move(complete), nullptr, std::move(status));
+            }
             return;
         }
 
@@ -522,14 +555,20 @@ namespace sqlconduit::core {
         }
         state_->asyncWaiters.push_back(
             State::AsyncWaiter{now, deadline, std::move(complete), io});
+        lk.unlock();
+
+        // Keep the deadline active even if no connection is returned and no heartbeat runs.
+        io.postAfter([weak = weak_from_this()] {
+            if (const auto self = weak.lock()) self->expireWaiters();
+        }, effective);
     }
 
     void ConnectionPool::postCreateTask(
         const AsyncIo &io,
         std::function<void(std::unique_ptr<Handle>, common::Status)> complete,
         const bool slotReserved) const {
-        io.post([self = shared_from_this(), st = state_, io,
-                complete = std::move(complete), slotReserved]() mutable {
+        auto createTask = [self = shared_from_this(), st = state_, io,
+                complete, slotReserved]() mutable {
                 common::ErrorCode code = common::ErrorCode::Ok;
                 std::string err;
                 auto conn = self->createConnection(code, err);
@@ -574,7 +613,19 @@ namespace sqlconduit::core {
                 if (doClose && conn) conn->close();
                 deliverBorrowResult(io, std::move(complete), std::move(handle),
                                     std::move(status));
-            });
+            };
+        if (!io.post(createTask)) {
+            if (slotReserved) {
+                std::lock_guard<std::mutex> lk(state_->mtx);
+                if (state_->total > 0) --state_->total;
+                ++state_->connectionCreateFailures;
+            }
+            auto status = common::Status::error(
+                common::ErrorCode::Overloaded,
+                "async executor rejected connection creation");
+            status.retryable = true;
+            deliverBorrowResult(io, std::move(complete), nullptr, std::move(status));
+        }
     }
 
     void ConnectionPool::healthCheck() const {

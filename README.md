@@ -175,6 +175,17 @@ result exposes `mode`: `Native` for a driver-native asynchronous operation and
 `client.asyncStats()` reports native, fallback, and timeout counts. With `async.enabled: false`,
 async calls return a ready future containing a `ConfigError` status.
 
+In 0.9, eligible leaf-data-source paths acquire connections through the pool's asynchronous handoff
+queue, so a pool wait does not occupy an executor worker. Leaf query-cache hits complete without a
+connection and cache misses may continue into a native driver operation. Group routing, retries,
+and shadow routing still use the compatibility state machine. PostgreSQL query/execute operations on an
+eligible leaf data source use the bundled libpq socket reactor and report `Native`. MySQL
+8.0.16+ also reports `Native` for eligible parameter-free SELECT and DML/DDL through its
+nonblocking C API; parameterized MySQL statements retain prepared-statement fallback. Oracle and
+ODBC, plus transaction/cursor/batch and complex topology paths, currently report
+`CompatibilityFallback`. Driver extensions can opt into `Native` by implementing the same
+nonblocking query/execute callback contract.
+
 See the [public API stability policy](docs/api_stability.md) for compatibility levels, the 0.x
 versioning rules, and the current asynchronous boundary.
 

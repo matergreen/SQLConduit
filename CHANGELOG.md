@@ -6,6 +6,49 @@ description.
 
 ## [Unreleased]
 
+## [0.9.0]
+
+### Async execution
+
+- Added the driver-native query/execute callback protocol to `IDatabaseConnection`. Drivers report
+  `AsyncCapability::Native` only when they start work without blocking and complete the callback
+  exactly once; otherwise SQLConduit keeps the explicit compatibility path.
+- Routed eligible leaf-datasource future APIs through asynchronous pool borrowing. Pool exhaustion now
+  parks requests in `asyncWaiting` without consuming a worker, hands a returned connection directly
+  to the oldest waiter, and releases the handle normally after query, write, batch, stream, or
+  transaction completion. Complex group, retry, cache, and shadow paths retain their existing
+  compatibility execution semantics until their asynchronous state machines are migrated.
+- Added active deadlines for asynchronous pool waiters. A waiter now completes with
+  `PoolExhausted` even when no connection is returned and no heartbeat runs after it is queued.
+- Preserved bounded-executor backpressure across the new bridge: rejected submissions return
+  retryable `Overloaded` without executing database work on the caller thread, and rejected
+  connection-creation tasks release their reserved pool capacity.
+- Added regression coverage for native driver callbacks, native/fallback accounting, client-level
+  pool handoff, active waiter timeout, and the 0.9.0 public version contract.
+- Native query and execute completions now run the same route, before-execution,
+  after-execution, completion, SQL-audit, rate-limit, and observability lifecycle as synchronous
+  operations; enabling interceptors no longer forces a native-capable driver back to a worker.
+- Native reads now enforce `async.statement_timeout_ms` with an active deadline: the future resolves
+  once with `QueryTimeout`, driver cancellation is requested exactly once, and the borrowed
+  connection remains quarantined until the driver's eventual completion callback makes it safe to
+  return or discard. Writes retain the existing no-late-reclassification rule because commit state
+  may be ambiguous.
+- Added the first bundled native adapter for PostgreSQL. Eligible query and execute operations now
+  use one shared libpq socket reactor instead of occupying executor workers; parameter binding,
+  typed result conversion, concurrent connections, cancellation, and broken-connection reporting
+  are covered by live PostgreSQL integration tests. Transaction, cursor, batch, cache, retry,
+  group, and shadow paths intentionally remain on the compatibility state machine.
+- Added a MySQL 8.0.16+ native adapter using the official nonblocking C API and a shared polling
+  reactor. Single-statement, parameter-free SELECT and DML/DDL operations can run in `Native` mode;
+  parameterized statements deliberately retain prepared-statement fallback because MySQL exposes
+  no asynchronous prepared-statement API. Older MySQL/MariaDB clients, routines, multi-statements,
+  transactions, cursors, and batches remain compatible fallbacks. Live MySQL 8.4 tests cover
+  concurrent connections, execution-mode reporting, `KILL QUERY` cancellation, and error mapping.
+- Migrated leaf-data-source query-cache handling into the asynchronous state machine. Cache hits
+  now complete without borrowing a connection, while misses can continue into a driver-native
+  operation and populate the cache before result-transforming interceptors run. Hit/miss execution
+  modes and interceptor lifecycle are covered by client regression tests.
+
 ## [0.8.0]
 
 ### Async execution

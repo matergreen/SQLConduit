@@ -11,9 +11,12 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <vector>
 
 static sqlconduit::Client g_client;
 
@@ -225,7 +228,7 @@ namespace {
                 "multi-statement batch did not preserve per-row results across chunks");
         ResultSet escapedCount;
         requireOk(g_client.query("SELECT COUNT(*) n FROM " + f.table + " WHERE name=?",
-                                 {std::string("batch-quote-'\\-semicolon;")}, escapedCount),
+                                 Params{std::string("batch-quote-'\\-semicolon;")}, escapedCount),
                   "verify escaped batch value");
         require(asInt(escapedCount.rows()[0].at("n")) == 1,
                 "multi-statement batch did not preserve escaped parameter bytes");
@@ -281,6 +284,41 @@ namespace {
         const auto asyncRows = future.get();
         requireOk(asyncRows.status, "async query");
         require(asInt(asyncRows.rows.rows()[0].at("n")) >= 3, "async count mismatch");
+        require(asyncRows.mode == sqlconduit::async::ExecutionMode::Native,
+                "eligible MySQL query did not use native async mode");
+
+        auto parameterized = g_client.queryAsync("SELECT ? AS n", Params{std::int64_t{7}}).get();
+        requireOk(parameterized.status, "parameterized async query fallback");
+        require(parameterized.mode == sqlconduit::async::ExecutionMode::CompatibilityFallback,
+                "parameterized MySQL query must retain prepared-statement fallback");
+        require(asInt(parameterized.rows.rows()[0].at("n")) == 7,
+                "parameterized async query fallback returned wrong value");
+
+        auto asyncWrite = g_client.executeAsync(
+            "UPDATE " + f.table + " SET qty=qty+1 WHERE name='alpha'").get();
+        requireOk(asyncWrite.status, "native async write");
+        require(asyncWrite.mode == sqlconduit::async::ExecutionMode::Native,
+                "eligible MySQL write did not use native async mode");
+        require(asyncWrite.affected == 1, "native async write affected mismatch");
+
+        constexpr std::size_t kConcurrentQueries = 4;
+        std::vector<std::future<sqlconduit::async::QueryResult> > concurrent;
+        concurrent.reserve(kConcurrentQueries);
+        const auto startedAt = std::chrono::steady_clock::now();
+        for (std::size_t index = 0; index < kConcurrentQueries; ++index)
+            concurrent.push_back(g_client.queryAsync(
+                "SELECT SLEEP(0.2), " + std::to_string(index) + " AS n"));
+        for (std::size_t index = 0; index < concurrent.size(); ++index) {
+            auto result = concurrent[index].get();
+            requireOk(result.status, "concurrent native MySQL query");
+            require(result.mode == sqlconduit::async::ExecutionMode::Native,
+                    "concurrent MySQL query did not use native mode");
+            require(asInt(result.rows.rows()[0].at("n")) ==
+                    static_cast<std::int64_t>(index),
+                    "concurrent native MySQL query returned wrong value");
+        }
+        require(std::chrono::steady_clock::now() - startedAt < std::chrono::milliseconds(700),
+                "MySQL native async reactor serialized independent connections");
 
         std::int64_t affected = 0;
         const auto duplicate = g_client.execute(
@@ -290,6 +328,47 @@ namespace {
         sqlconduit::core::ConnectionPool::Stats pool;
         require(g_client.poolStats(pool) && pool.borrowRequests > 0, "pool metrics empty");
         require(!g_client.slowSqlStats().empty(), "slow SQL metrics empty");
+    }
+
+    sqlconduit::config::DataSourceConfig directMySQLConfig() {
+        sqlconduit::config::DataSourceConfig config;
+        config.name = "native_async";
+        config.type = "mysql";
+        config.host = env("SQLCONDUIT_TEST_MYSQL_HOST", "127.0.0.1");
+        config.port = std::stoi(env("SQLCONDUIT_TEST_MYSQL_PORT", "3306"));
+        config.user = env("SQLCONDUIT_TEST_MYSQL_USER", "root");
+        config.password = env("SQLCONDUIT_TEST_MYSQL_PASSWORD");
+        config.database = env("SQLCONDUIT_TEST_MYSQL_DATABASE", "sqlconduit_test");
+        config.connection_timeout_ms = 3000;
+        return config;
+    }
+
+    void testNativeAsyncCancellation() {
+        using AsyncQueryValue = std::pair<Status, ResultSet>;
+        const auto registration = sqlconduit::drivers::mysql();
+        auto driver = registration.factory();
+        auto connection = driver->createConnection();
+        requireOk(connection->connect(directMySQLConfig()),
+                  "connect native async MySQL driver");
+        require(connection->asyncCapability() == sqlconduit::core::AsyncCapability::Native,
+                "MySQL 8 driver did not advertise native async support");
+        auto promise = std::make_shared<std::promise<AsyncQueryValue> >();
+        auto future = promise->get_future();
+        require(connection->queryAsync(
+                    "SELECT SLEEP(5)", {},
+                    [promise](Status status, ResultSet rows) {
+                        promise->set_value({std::move(status), std::move(rows)});
+                    }), "cancellable native MySQL query was not started");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        requireOk(connection->cancel(), "cancel native MySQL query");
+        require(future.wait_for(std::chrono::seconds(3)) == std::future_status::ready,
+                "cancelled native MySQL query did not complete");
+        const auto result = future.get();
+        require(result.first.code == ErrorCode::Cancelled && result.first.nativeCode == 1317,
+                "native MySQL cancellation was not classified as Cancelled/1317: code="
+                + std::string(sqlconduit::common::errorCodeToString(result.first.code))
+                + " native=" + std::to_string(result.first.nativeCode)
+                + " state=" + result.first.sqlState + " message=" + result.first.message);
     }
 
 
@@ -486,6 +565,7 @@ int main() {
                       }),
                   "SQL Builder CRUD");
         testTransactionsBatchCursorAndAsync(fixture);
+        testNativeAsyncCancellation();
         testEntityMapping(fixture);
         testScriptExecution(fixture);
         testRoutinesAndCall(fixture);

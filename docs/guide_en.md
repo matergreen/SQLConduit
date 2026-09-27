@@ -999,6 +999,27 @@ compatibility executor because the selected driver has not exposed native async 
 `client.asyncStats()` reports `nativeOperations`, `fallbackOperations`, and `timedOutOperations` so
 applications can verify which path they are actually exercising.
 
+Since 0.9, eligible leaf-data-source paths borrow connections asynchronously. When the pool is full, the request
+is parked in `asyncWaiting` and does not occupy an executor worker; it is resumed by direct handoff
+when a connection returns, or by an active pool-wait deadline. Leaf query-cache hits complete
+without borrowing a connection; misses may continue into a native driver and cache the raw result
+before transforming interceptors run. Group routing, retry, and shadow paths still use the
+compatibility state machine. PostgreSQL `queryAsync` and
+`executeAsync` on eligible leaf data sources now use a shared libpq socket reactor and report
+`Native`. MySQL 8.0.16+ also uses its official nonblocking C API and a shared polling reactor for
+parameter-free, single-statement SELECT and DML/DDL. Parameterized MySQL operations deliberately
+retain prepared-statement fallback. PostgreSQL/MySQL transaction, cursor, batch, and complex
+topology paths, older MySQL/MariaDB clients, Oracle, and ODBC still use compatibility execution.
+A driver extension may return `Native` only after implementing the
+`IDatabaseConnection::queryAsync` / `executeAsync` callback contract and reporting
+`AsyncCapability::Native`.
+
+For native reads, `async.statement_timeout_ms` is an active deadline: SQLConduit resolves the
+future with `QueryTimeout`, invokes the driver's cancellation primitive once, and keeps the
+connection borrowed until the native completion callback arrives. This prevents a timed-out
+operation from returning a still-busy connection to the pool. Native writes are not rewritten after
+their deadline because the server-side commit outcome may already be ambiguous.
+
 The public async boundary deliberately has no global callback facade, cancellation `Handle`,
 custom-executor injection, or coroutine wrapper. Per-statement timeout comes from this client's
 `async.statement_timeout_ms`. Compatibility fallback can only classify a late read as

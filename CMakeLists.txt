@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(sqlconduit VERSION 0.8.0 LANGUAGES CXX)
+project(sqlconduit VERSION 0.9.0 LANGUAGES CXX)
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/public_api.cmake")
 file(GLOB_RECURSE _sqlconduit_header_inventory CONFIGURE_DEPENDS
@@ -91,6 +91,7 @@ set(SQLCONDUIT_CORE_SOURCES
     src/config/config_loader.cpp
     src/config/yaml_parser.cpp
     src/async/executor.cpp
+    src/async/async_engine.cpp
     src/core/idatabase_connection.cpp
     src/core/connection_pool.cpp
     src/core/heartbeat_manager.cpp

@@ -14,6 +14,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <numeric>
@@ -269,6 +270,118 @@ int main() {
               "连接池统计记录一次借出超时且无遗留等待者");
         check(ms >= 140 && ms < 2000, "在超时后返回而非死等（实测 " + std::to_string(ms) + "ms）");
         h1.reset();
+        pool->shutdown(std::chrono::milliseconds(0));
+    }
+
+    std::cout << "== 2b. 异步借用：池满时挂起等待，归还后直接 handoff ==\n";
+    {
+        MockConnection::alive = 0;
+        auto pool = makePool(0, 1, 1000);
+        common::ErrorCode ec;
+        std::string err;
+        auto h1 = pool->borrow(ec, err);
+        check(h1 != nullptr, "同步借出唯一连接");
+
+        std::promise<std::pair<std::unique_ptr<core::ConnectionPool::Handle>, common::Status> > promise;
+        auto future = promise.get_future();
+        core::AsyncIo io;
+        io.post = [](std::function<void()> fn) {
+            std::thread(std::move(fn)).detach();
+            return true;
+        };
+        io.deliver = [](std::function<void()> fn) {
+            fn();
+            return true;
+        };
+        io.postAfter = [](std::function<void()> fn, std::chrono::milliseconds delay) {
+            std::thread([fn = std::move(fn), delay]() mutable {
+                std::this_thread::sleep_for(delay);
+                fn();
+            }).detach();
+        };
+        pool->borrowAsync(std::chrono::milliseconds(1000), io,
+                          [&promise](std::unique_ptr<core::ConnectionPool::Handle> h,
+                                     common::Status st) mutable {
+                              promise.set_value(std::make_pair(std::move(h), std::move(st)));
+                          });
+        check(pool->stats().asyncWaiting == 1 && pool->stats().waiting == 0,
+              "异步借用进入 asyncWaiting，不占同步 waiting");
+        check(future.wait_for(std::chrono::milliseconds(25)) == std::future_status::timeout,
+              "池满时异步借用不会立即完成");
+
+        h1.reset();
+        auto delivered = future.get();
+        check(delivered.second.ok() && delivered.first != nullptr,
+              "连接归还后直接交付给异步等待者");
+        check(pool->stats().asyncWaiting == 0 && pool->borrowedCount() == 1,
+              "handoff 后 asyncWaiting 清零且连接仍处于借出状态");
+        delivered.first.reset();
+        check(pool->borrowedCount() == 0, "异步借出的句柄析构后归还连接");
+        pool->shutdown(std::chrono::milliseconds(0));
+    }
+
+    std::cout << "== 2c. 异步借用：无连接归还时也会主动超时 ==\n";
+    {
+        MockConnection::alive = 0;
+        auto pool = makePool(0, 1, 1000);
+        common::ErrorCode ec;
+        std::string err;
+        auto held = pool->borrow(ec, err);
+        check(held != nullptr, "主动超时场景借出唯一连接");
+
+        std::promise<common::Status> promise;
+        auto future = promise.get_future();
+        core::AsyncIo io;
+        io.post = [](std::function<void()> fn) {
+            std::thread(std::move(fn)).detach();
+            return true;
+        };
+        io.deliver = [](std::function<void()> fn) {
+            fn();
+            return true;
+        };
+        io.postAfter = [](std::function<void()> fn, std::chrono::milliseconds delay) {
+            std::thread([fn = std::move(fn), delay]() mutable {
+                std::this_thread::sleep_for(delay);
+                fn();
+            }).detach();
+        };
+        pool->borrowAsync(std::chrono::milliseconds(30), io,
+                          [&promise](std::unique_ptr<core::ConnectionPool::Handle>,
+                                     common::Status status) mutable {
+                              promise.set_value(std::move(status));
+                          });
+        check(future.wait_for(std::chrono::milliseconds(500)) == std::future_status::ready,
+              "没有连接归还也能按 deadline 完成异步等待");
+        check(future.get().code == common::ErrorCode::PoolExhausted &&
+              pool->stats().asyncWaiting == 0,
+              "主动超时返回 PoolExhausted 并清理 asyncWaiting");
+        held.reset();
+        pool->shutdown(std::chrono::milliseconds(0));
+    }
+
+    std::cout << "== 2d. 异步投递拒绝：返回 Overloaded 且不泄漏建连名额 ==\n";
+    {
+        MockConnection::alive = 0;
+        auto pool = makePool(0, 1, 1000);
+        std::promise<common::Status> promise;
+        auto future = promise.get_future();
+        core::AsyncIo io;
+        io.post = [](std::function<void()>) { return false; };
+        io.deliver = [](std::function<void()> fn) {
+            fn();
+            return true;
+        };
+        io.postAfter = [](std::function<void()>, std::chrono::milliseconds) {};
+        pool->borrowAsync(std::chrono::milliseconds(100), io,
+                          [&promise](std::unique_ptr<core::ConnectionPool::Handle>,
+                                     common::Status status) mutable {
+                              promise.set_value(std::move(status));
+                          });
+        check(future.get().code == common::ErrorCode::Overloaded,
+              "建连任务投递被拒绝时返回 Overloaded");
+        check(pool->totalCount() == 0 && pool->borrowedCount() == 0,
+              "投递拒绝后释放预留连接名额");
         pool->shutdown(std::chrono::milliseconds(0));
     }
 

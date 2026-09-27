@@ -104,6 +104,11 @@ namespace sqlconduit::core {
 
         void runAfterExecution(const ExecutionView &view);
 
+        void runOnCompletion(InterceptorRegistryState &registry,
+                             const ExecutionView &view);
+
+        void runOnCompletion(const ExecutionView &view);
+
         void runOnRow(InterceptorRegistryState &registry,
                       const ExecutionView &view, common::Row &row);
 

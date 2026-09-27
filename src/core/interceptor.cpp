@@ -174,6 +174,20 @@ namespace sqlconduit::core {
             runAfterExecution(defaultRegistry(), view);
         }
 
+        void runOnCompletion(InterceptorRegistryState &registry,
+                             const ExecutionView &view) {
+            if (!registry.enabled() || depth(g_executionStack, registry) > 0 ||
+                depth(g_callbackStack, registry) > 0)
+                return;
+            CallbackGuard callbackGuard(registry);
+            for (auto &interceptor: registry.snapshot())
+                safeCall([&] { interceptor->onCompletion(view); });
+        }
+
+        void runOnCompletion(const ExecutionView &view) {
+            runOnCompletion(defaultRegistry(), view);
+        }
+
         void runOnRow(InterceptorRegistryState &registry,
                       const ExecutionView &view, common::Row &row) {
             if (!registry.enabled() || depth(g_executionStack, registry) > 1 ||

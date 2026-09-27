@@ -9,6 +9,12 @@
 #include <vector>
 
 namespace sqlconduit::core {
+    enum class AsyncCapability {
+        None = 0,
+        ThreadPoolFallback = 1,
+        Native = 2
+    };
+
     class PreparedStatementHandle {
     public:
         PreparedStatementHandle() = default;
@@ -60,6 +66,10 @@ namespace sqlconduit::core {
         [[nodiscard]] virtual bool isOpen() const = 0;
 
         virtual common::Status cancel();
+
+        [[nodiscard]] virtual AsyncCapability asyncCapability() const {
+            return AsyncCapability::ThreadPoolFallback;
+        }
 
         virtual common::Status queryEach(const std::string &sql,
                                          const common::Params &params,

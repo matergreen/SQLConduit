@@ -88,7 +88,8 @@ namespace sqlconduit {
         }
 
         template<typename Result, typename Fn>
-        std::future<Result> submitAsync(const std::string &requested, Fn fn) const {
+        std::future<Result> submitAsync(const std::string &requested, Fn fn,
+                                        const bool lateTimeoutIsError) const {
             auto promise = std::make_shared<std::promise<Result> >();
             auto future = promise->get_future();
 
@@ -96,6 +97,7 @@ namespace sqlconduit {
             if (auto status = resolve(requested, source); !status.ok()) {
                 Result result;
                 result.status = std::move(status);
+                result.mode = async::ExecutionMode::CompatibilityFallback;
                 promise->set_value(std::move(result));
                 return future;
             }
@@ -110,15 +112,18 @@ namespace sqlconduit {
                 result.status = common::Status::error(
                     common::ErrorCode::ConfigError,
                     "async execution is disabled for this client");
+                result.mode = async::ExecutionMode::CompatibilityFallback;
                 promise->set_value(std::move(result));
                 return future;
             }
 
             const auto& context = common::ContextScope::current();
             const auto timeoutMs = asyncTimeoutMs.load(std::memory_order_acquire);
-            auto task = [promise, source = std::move(source), context,
-                        timeoutMs, fn = std::move(fn)]() mutable {
+            auto task = [promise, executor, source = std::move(source), context,
+                        timeoutMs, lateTimeoutIsError, fn = std::move(fn)]() mutable {
                 Result result;
+                result.mode = async::ExecutionMode::CompatibilityFallback;
+                executor->recordFallbackOperation();
                 const auto started = std::chrono::steady_clock::now();
                 try {
                     const common::ContextScope scope(context);
@@ -132,7 +137,7 @@ namespace sqlconduit {
                         common::ErrorCode::Unknown,
                         "client async operation threw an unknown exception");
                 }
-                if (timeoutMs > 0 &&
+                if (timeoutMs > 0 && lateTimeoutIsError &&
                     std::chrono::steady_clock::now() - started >=
                     std::chrono::milliseconds(timeoutMs)) {
                     result.status = common::Status::error(
@@ -140,6 +145,7 @@ namespace sqlconduit {
                         "operation exceeded client async statement timeout; "
                         "driver cancellation is not available in the future API");
                     result.status.retryable = true;
+                    executor->recordTimedOutOperation();
                 }
                 promise->set_value(std::move(result));
             };
@@ -150,6 +156,7 @@ namespace sqlconduit {
                     common::ErrorCode::Overloaded,
                     "client async executor queue is full or stopped");
                 result.status.retryable = true;
+                result.mode = async::ExecutionMode::CompatibilityFallback;
                 promise->set_value(std::move(result));
             }
             return future;
@@ -429,6 +436,7 @@ namespace sqlconduit {
             auto future = promise.get_future();
             async::QueryResult result;
             result.status = clientClosed();
+            result.mode = async::ExecutionMode::CompatibilityFallback;
             promise.set_value(std::move(result));
             return future;
         }
@@ -439,7 +447,8 @@ namespace sqlconduit {
                                                                               ? dataSource.query(sql, result.rows)
                                                                               : dataSource.query(
                                                                                   sql, params, result.rows);
-                                                      });
+                                                      },
+                                                      true);
     }
 
     std::future<async::MultiQueryResult> Client::queryAllAsync(
@@ -455,6 +464,7 @@ namespace sqlconduit {
             auto future = promise.get_future();
             async::MultiQueryResult result;
             result.status = clientClosed();
+            result.mode = async::ExecutionMode::CompatibilityFallback;
             promise.set_value(std::move(result));
             return future;
         }
@@ -463,7 +473,8 @@ namespace sqlconduit {
                                                        core::DataSource &dataSource, async::MultiQueryResult &result) {
                                                                result.status = dataSource.queryAll(
                                                                    sql, params, result.sets);
-                                                           });
+                                                           },
+                                                           true);
     }
 
     std::future<async::ExecResult> Client::executeAsync(const std::string &sql) const {
@@ -483,6 +494,7 @@ namespace sqlconduit {
             auto future = promise.get_future();
             async::ExecResult result;
             result.status = clientClosed();
+            result.mode = async::ExecutionMode::CompatibilityFallback;
             promise.set_value(std::move(result));
             return future;
         }
@@ -493,7 +505,8 @@ namespace sqlconduit {
                                                                              ? dataSource.execute(sql, result.affected)
                                                                              : dataSource.execute(
                                                                                  sql, params, result.affected);
-                                                     });
+                                                     },
+                                                     false);
     }
 
     std::future<async::ExecKeysResult> Client::executeKeysAsync(
@@ -509,6 +522,7 @@ namespace sqlconduit {
             auto future = promise.get_future();
             async::ExecKeysResult result;
             result.status = clientClosed();
+            result.mode = async::ExecutionMode::CompatibilityFallback;
             promise.set_value(std::move(result));
             return future;
         }
@@ -521,7 +535,8 @@ namespace sqlconduit {
                                                                                  : dataSource.execute(
                                                                                      sql, params, result.affected,
                                                                                      result.keys);
-                                                         });
+                                                         },
+                                                         false);
     }
 
     std::future<async::EachResult> Client::queryEachAsync(
@@ -538,6 +553,7 @@ namespace sqlconduit {
             auto future = promise.get_future();
             async::EachResult result;
             result.status = clientClosed();
+            result.mode = async::ExecutionMode::CompatibilityFallback;
             promise.set_value(std::move(result));
             return future;
         }
@@ -546,7 +562,8 @@ namespace sqlconduit {
                                                  core::DataSource &dataSource, async::EachResult &result) {
                                                          result.status = dataSource.queryEach(
                                                              sql, params, rowCallback, result.rows);
-                                                     });
+                                                     },
+                                                     true);
     }
 
     std::future<async::BatchResult> Client::executeBatchAsync(
@@ -562,6 +579,7 @@ namespace sqlconduit {
             auto future = promise.get_future();
             async::BatchResult result;
             result.status = clientClosed();
+            result.mode = async::ExecutionMode::CompatibilityFallback;
             promise.set_value(std::move(result));
             return future;
         }
@@ -570,7 +588,8 @@ namespace sqlconduit {
                                                                    async::BatchResult &result) {
                                                           result.status = dataSource.executeBatch(
                                                               sql, batch, result.batch);
-                                                      });
+                                                      },
+                                                      false);
     }
 
     std::future<async::OpResult> Client::transactionAsync(core::SessionFn fn) const {
@@ -585,6 +604,7 @@ namespace sqlconduit {
             auto future = promise.get_future();
             async::OpResult result;
             result.status = clientClosed();
+            result.mode = async::ExecutionMode::CompatibilityFallback;
             promise.set_value(std::move(result));
             return future;
         }
@@ -592,7 +612,8 @@ namespace sqlconduit {
                                                    [options, fn = std::move(fn)](
                                                core::DataSource &dataSource, async::OpResult &result) {
                                                        result.status = dataSource.transaction(options, fn);
-                                                   });
+                                                   },
+                                                   false);
     }
 
     async::ExecutorStats Client::asyncStats() const {

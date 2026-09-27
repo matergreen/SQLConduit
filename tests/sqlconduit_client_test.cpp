@@ -24,6 +24,7 @@ namespace {
         static std::atomic<int> firstQueries;
         static std::atomic<int> secondQueries;
         static std::atomic<int> queryDelayMs;
+        static std::atomic<int> executeDelayMs;
 
         common::Status connect(const config::DataSourceConfig &config) override {
             identity_ = config.database;
@@ -47,6 +48,8 @@ namespace {
         }
 
         common::Status execute(const std::string &, std::int64_t &affected) override {
+            if (const auto delay = executeDelayMs.load(); delay > 0)
+                std::this_thread::sleep_for(std::chrono::milliseconds(delay));
             affected = 1;
             return common::Status::OK();
         }
@@ -67,6 +70,7 @@ namespace {
     std::atomic<int> ClientTestConnection::firstQueries{0};
     std::atomic<int> ClientTestConnection::secondQueries{0};
     std::atomic<int> ClientTestConnection::queryDelayMs{0};
+    std::atomic<int> ClientTestConnection::executeDelayMs{0};
 
     class ClientTestDriver final : public driver::IDriver {
     public:
@@ -198,9 +202,13 @@ int main() {
     const auto secondAsyncResult = secondAsync.get();
     check(firstAsyncResult.status.ok() && identityFrom(firstAsyncResult.rows) == "first",
           "first client async query resolves its own datasource");
+    check(firstAsyncResult.mode == async::ExecutionMode::CompatibilityFallback,
+          "client async query exposes compatibility fallback mode");
     check(secondAsyncResult.status.ok() && identityFrom(secondAsyncResult.rows) == "second",
           "second client async query resolves its own datasource");
-    check(first.asyncStats().submitted >= 1 && second.asyncStats().submitted >= 1,
+    check(first.asyncStats().submitted >= 1 && second.asyncStats().submitted >= 1 &&
+          first.asyncStats().fallbackOperations >= 1 &&
+          second.asyncStats().fallbackOperations >= 1,
           "each client owns an active async executor");
     const auto asyncExec = second.executeAsync(
         "UPDATE t SET value = 2 WHERE id = 1").get();
@@ -234,8 +242,22 @@ int main() {
     check(timedAsync.queryAsync("SELECT timeout").get().status.code ==
           common::ErrorCode::QueryTimeout,
           "client async future reports configured statement timeout");
+    check(timedAsync.asyncStats().timedOutOperations >= 1,
+          "client async timeout is visible in executor stats");
     ClientTestConnection::queryDelayMs = 0;
     timedAsync.shutdown(std::chrono::milliseconds(0));
+
+    Client timedWrite;
+    auto timedWriteConfig = makeConfig("timed-write");
+    timedWriteConfig.async.statement_timeout_ms = 1;
+    check(timedWrite.init(timedWriteConfig).ok(), "client accepts async write timeout config");
+    ClientTestConnection::executeDelayMs = 10;
+    const auto lateWrite = timedWrite.executeAsync(
+        "UPDATE t SET value = 2 WHERE id = 1").get();
+    check(lateWrite.status.ok() && lateWrite.affected == 1,
+          "client async execute keeps committed success despite late fallback timeout");
+    ClientTestConnection::executeDelayMs = 0;
+    timedWrite.shutdown(std::chrono::milliseconds(0));
 
     check(!first.slowSqlStats().empty() && !first.recentSlowSql().empty(),
           "first client retains its enabled slow SQL statistics");

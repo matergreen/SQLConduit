@@ -993,7 +993,19 @@ auto er = update.get(); // er.status / er.affected
 
 The available methods are `queryAsync()`, `queryAllAsync()`, `executeAsync()`, `executeKeysAsync()`, `queryEachAsync()`, `executeBatchAsync()`, and `transactionAsync()`. They return standard `std::future` objects; destroying an unconsumed future is valid.
 
-The public async boundary deliberately has no global callback facade, cancellation `Handle`, custom-executor injection, or coroutine wrapper. Per-statement timeout comes from this client's `async.statement_timeout_ms`; when a driver cannot actively cancel a blocking call, SQLConduit can only report `QueryTimeout` on a best-effort basis after that call returns. Transaction callbacks run on workers and should use synchronous `Session` methods directly rather than nesting asynchronous pool borrows.
+Every async result carries an execution `mode`. `Native` means the driver completed through a
+driver-native asynchronous path. `CompatibilityFallback` means the operation used SQLConduit's
+compatibility executor because the selected driver has not exposed native async execution yet.
+`client.asyncStats()` reports `nativeOperations`, `fallbackOperations`, and `timedOutOperations` so
+applications can verify which path they are actually exercising.
+
+The public async boundary deliberately has no global callback facade, cancellation `Handle`,
+custom-executor injection, or coroutine wrapper. Per-statement timeout comes from this client's
+`async.statement_timeout_ms`. Compatibility fallback can only classify a late read as
+`QueryTimeout` after the driver call returns; write, batch, and transaction fallbacks preserve a
+successful completion instead of rewriting a committed result to timeout. Transaction callbacks run
+on workers and should use synchronous `Session` methods directly rather than nesting asynchronous
+pool borrows.
 
 ## Entity mapping (v0.5.0: row <-> business entity, read and write)
 

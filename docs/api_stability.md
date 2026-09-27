@@ -78,9 +78,11 @@ applies to source-tree-only headers or names in a `detail` namespace.
 
 The future-returning `Client::*Async` methods use an executor, data-source topology, cache, audit
 policy, interceptors, and observability state owned by that client. Shutting down one client drains
-only its executor. These methods intentionally expose no cancellation handle or per-operation
-timeout yet; they do honor the client's configured `async.statement_timeout_ms` and report a
-best-effort `QueryTimeout` after a driver call returns.
+only its executor. Async result types expose whether an operation completed through a driver-native
+path or SQLConduit's compatibility fallback; `asyncStats()` reports native, fallback, and timeout
+counts. These methods intentionally expose no cancellation handle or coroutine wrapper yet.
+Compatibility fallback honors `async.statement_timeout_ms` for late read classification but does not
+rewrite successful write, batch, or transaction results after the driver call has already completed.
 
 There is no process-wide async facade. Callback, cancellation-handle, and coroutine wrappers were
 removed before the 0.7 API freeze; asynchronous work starts from an explicit `Client` and returns a
@@ -141,7 +143,9 @@ CHANGELOG 中给出迁移方式。1.0 前的预览 API 可以在新次版本中�
 统计返回类型和全部 `ErrorCode` 数值。
 
 返回 future 的 `Client::*Async` 方法使用本实例拥有的执行器、数据源拓扑、缓存、审计、
-拦截器和观测状态；关闭一个实例只排空自己的执行器。这组接口目前有意不提供取消句柄或
-单次操作超时，但会遵守本实例配置的 `async.statement_timeout_ms`，并在驱动调用返回后以
-best-effort 方式报告 `QueryTimeout`。0.7 冻结前已移除进程级 `SQLConduit`、异步自由函数、
+拦截器和观测状态；关闭一个实例只排空自己的执行器。异步结果会标明本次操作使用驱动
+native 异步路径还是 SQLConduit 兼容 fallback，`asyncStats()` 也会分别统计 native、
+fallback 和 timeout 数。这组接口目前有意不提供取消句柄或协程包装；兼容 fallback 会用
+`async.statement_timeout_ms` 对超时读请求做 late classification，但不会在写、批量或事务已经
+成功完成后把结果重写成 timeout。0.7 冻结前已移除进程级 `SQLConduit`、异步自由函数、
 取消句柄和协程包装；所有异步操作都从显式 `Client` 发起并返回标准 future。

@@ -169,9 +169,11 @@ if (!result.status.ok()) return 1;
 ```
 
 `queryAsync()`, `queryAllAsync()`, `executeAsync()`, `executeKeysAsync()`, `queryEachAsync()`,
-`executeBatchAsync()`, and `transactionAsync()` never resolve through another `Client`. With
-`async.enabled: false`, they return a ready future containing a
-`ConfigError` status.
+`executeBatchAsync()`, and `transactionAsync()` never resolve through another `Client`. Each async
+result exposes `mode`: `Native` for a driver-native asynchronous operation and
+`CompatibilityFallback` when the driver still runs through SQLConduit's compatibility executor.
+`client.asyncStats()` reports native, fallback, and timeout counts. With `async.enabled: false`,
+async calls return a ready future containing a `ConfigError` status.
 
 See the [public API stability policy](docs/api_stability.md) for compatibility levels, the 0.x
 versioning rules, and the current asynchronous boundary.

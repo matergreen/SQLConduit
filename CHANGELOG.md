@@ -8,6 +8,17 @@ description.
 
 ## [0.8.0]
 
+### Async execution
+
+- Made the async execution mode explicit on every future result. `mode=Native` is reserved for
+  driver-native asynchronous paths; current compatibility execution reports
+  `mode=CompatibilityFallback` instead of silently looking like native async.
+- Added `nativeOperations`, `fallbackOperations`, and `timedOutOperations` to `asyncStats()` so
+  applications can verify which async path they are exercising.
+- Tightened compatibility fallback timeout semantics: late read fallback can still report
+  `QueryTimeout`, but successful write, batch, and transaction fallback results are no longer
+  rewritten to timeout after the database call has already completed.
+
 ### Performance
 
 - Reworked batch execution so PostgreSQL sends bounded chunks through `pqxx::pipeline`, ODBC uses

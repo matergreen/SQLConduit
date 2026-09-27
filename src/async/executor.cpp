@@ -76,6 +76,12 @@ namespace sqlconduit::async {
                 (void) grace;
             }
 
+            void recordNativeOperation() override { ++nativeOperations_; }
+
+            void recordFallbackOperation() override { ++fallbackOperations_; }
+
+            void recordTimedOutOperation() override { ++timedOutOperations_; }
+
             [[nodiscard]] ExecutorStats stats() const override {
                 std::lock_guard<std::mutex> lk(mtx_);
                 ExecutorStats out;
@@ -86,6 +92,9 @@ namespace sqlconduit::async {
                 out.completed = completed_;
                 out.rejected = rejected_;
                 out.delayedPending = delayed_.size();
+                out.nativeOperations = nativeOperations_;
+                out.fallbackOperations = fallbackOperations_;
+                out.timedOutOperations = timedOutOperations_;
                 return out;
             }
 
@@ -195,6 +204,9 @@ namespace sqlconduit::async {
             std::uint64_t submitted_ = 0;
             std::uint64_t completed_ = 0;
             std::uint64_t rejected_ = 0;
+            std::uint64_t nativeOperations_ = 0;
+            std::uint64_t fallbackOperations_ = 0;
+            std::uint64_t timedOutOperations_ = 0;
             bool threadsStarted_ = false;
             std::atomic<bool> stopping_{false};
         };

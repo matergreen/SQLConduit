@@ -21,6 +21,12 @@ namespace sqlconduit::async {
 
         virtual void shutdown(std::chrono::milliseconds grace = std::chrono::milliseconds(5000)) = 0;
 
+        virtual void recordNativeOperation() = 0;
+
+        virtual void recordFallbackOperation() = 0;
+
+        virtual void recordTimedOutOperation() = 0;
+
         [[nodiscard]] virtual ExecutorStats stats() const = 0;
     };
 

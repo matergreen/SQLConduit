@@ -1023,7 +1023,11 @@ auto er = update.get(); // er.status / er.affected
 
 可用方法包括 `queryAsync()`、`queryAllAsync()`、`executeAsync()`、`executeKeysAsync()`、`queryEachAsync()`、`executeBatchAsync()` 和 `transactionAsync()`。它们返回标准 `std::future`；未取值直接析构是合法用法。
 
-当前公共异步边界有意不提供全局回调门面、取消 `Handle`、自定义执行器注入或协程包装。单次语句超时通过本实例的 `async.statement_timeout_ms` 配置；若驱动不能主动取消阻塞调用，只能在驱动返回后以 best-effort 方式报告 `QueryTimeout`。事务回调运行在 worker 上，内部应直接使用同步 `Session` 方法，避免在小连接池上嵌套异步借用。
+每个异步结果都会携带执行 `mode`：`Native` 表示驱动 native 异步路径，`CompatibilityFallback`
+表示当前驱动仍通过 SQLConduit 兼容执行器完成。`client.asyncStats()` 会分别统计
+`nativeOperations`、`fallbackOperations` 和 `timedOutOperations`，方便确认线上实际走的路径。
+
+当前公共异步边界有意不提供全局回调门面、取消 `Handle`、自定义执行器注入或协程包装。单次语句超时通过本实例的 `async.statement_timeout_ms` 配置；兼容 fallback 只能在驱动返回后对读请求做 best-effort `QueryTimeout` 分类，写、批量和事务如果已经成功完成，不会再被事后重写为 timeout。事务回调运行在 worker 上，内部应直接使用同步 `Session` 方法，避免在小连接池上嵌套异步借用。
 
 ## 实体映射（v0.5.0：Row ↔ 业务实体，读写双向）
 

@@ -195,6 +195,8 @@ namespace {
         sqlconduit::common::BatchResult result;
         requireOk(g_client.executeBatch(
                       "INSERT INTO " + f.table + " (name,qty) VALUES (?,?)", batch, result), "batch");
+        require(result.affected == std::vector<std::int64_t>({1, 1}),
+                "batch did not preserve per-parameter-set affected rows");
         require(result.totalAffected() == 2, "batch affected mismatch");
 
         sqlconduit::common::BatchResult invalidResult;

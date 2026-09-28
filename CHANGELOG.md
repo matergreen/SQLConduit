@@ -8,6 +8,14 @@ description.
 
 ## [0.9.0]
 
+### Fixed
+
+- Disabled ODBC parameter-array batching for FreeTDS, which advertises per-parameter-set row
+  counts but returns only an aggregate result. FreeTDS now uses the transactional per-row fallback
+  so `BatchResult::affected` remains exact and portable.
+
+
+
 ### Async execution
 
 - Added the driver-native query/execute callback protocol to `IDatabaseConnection`. Drivers report

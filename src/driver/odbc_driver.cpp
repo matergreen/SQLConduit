@@ -986,6 +986,7 @@ namespace sqlconduit::driver {
         open_ = true;
         txOpen_ = false;
         utf8NarrowBinding_ = false;
+        parameterArrayResultsReliable_ = true;
         SQLCHAR driverName[256] = {};
         SQLSMALLINT driverNameLength = 0;
         if (succeeded(SQLGetInfo(dbc, SQL_DRIVER_NAME, driverName, sizeof(driverName),
@@ -999,6 +1000,11 @@ namespace sqlconduit::driver {
             });
             utf8NarrowBinding_ = name.find("tdsodbc") != std::string::npos ||
                                  name.find("freetds") != std::string::npos;
+            // FreeTDS reports SQL_PARC_BATCH but returns one aggregate row count for an
+            // array execution instead of one result per parameter set. BatchResult's
+            // per-set affected-row contract cannot be reconstructed from that aggregate,
+            // so use the transactional per-row path for this driver.
+            parameterArrayResultsReliable_ = !utf8NarrowBinding_;
         }
         if (const auto mode = cfg.extra.find("unicode_binding"); mode != cfg.extra.end()) {
             if (mode->second == "wide") {
@@ -1364,6 +1370,7 @@ namespace sqlconduit::driver {
         txOpen_ = false;
         defaultIsolation_ = 0;
         utf8NarrowBinding_ = false;
+        parameterArrayResultsReliable_ = true;
         open_ = false;
     }
 
@@ -1542,6 +1549,7 @@ namespace sqlconduit::driver {
             rowCountMode == SQL_PARC_BATCH;
         std::vector<BatchColumn> batchColumns;
         const bool useParameterArrays = batch.size() > 1 && reportsPerSetRows &&
+            parameterArrayResultsReliable_ &&
             buildBatchColumns(batch, batchColumns, utf8NarrowBinding_);
 
         const bool ownTransaction = !inTransaction();

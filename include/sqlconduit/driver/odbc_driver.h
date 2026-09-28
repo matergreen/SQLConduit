@@ -108,6 +108,7 @@ namespace sqlconduit::driver {
         std::mutex activeStmtMtx_;
         std::uint64_t defaultIsolation_ = 0;
         bool utf8NarrowBinding_ = false;
+        bool parameterArrayResultsReliable_ = true;
 
         using PreparedLru = std::list<std::string>;
         struct PreparedEntry {

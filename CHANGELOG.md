@@ -6,7 +6,7 @@ description.
 
 ## [Unreleased]
 
-## [1.0.0-rc.1]
+## [1.0.0-rc.2]
 
 ### Compatibility contract
 
@@ -24,6 +24,8 @@ description.
 
 ### Release quality
 
+- Fixed Windows release ZIP creation to use portable forward-slash entry names, and made SBOM ZIP
+  extraction normalize legacy backslash entries with traversal checks.
 - Added warning-as-error ASan/UBSan validation, live MySQL/PostgreSQL/SQL Server integration jobs,
   and per-component installed-package consumer checks to the release gate. Oracle remains a
   recorded manual release-candidate validation because GitHub-hosted runners do not provide OCI.

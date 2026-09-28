@@ -196,7 +196,7 @@ jobs:
           cp docs/feature_coverage.md dist/FEATURE_COVERAGE.md
           cp docs/feature_coverage_zh.md dist/FEATURE_COVERAGE_zh.md
           if [ "$ext" = "zip" ]; then
-            powershell -NoProfile -Command "Compress-Archive -Path 'dist/*' -DestinationPath '${pkg}'"
+            (cd dist && cmake -E tar cf "../${pkg}" --format=zip -- .)
           else
             tar -czf "${pkg}" -C dist .
           fi
@@ -399,7 +399,28 @@ jobs:
             [ -e "$package" ] || continue
             name="$(basename "$package" .zip)"
             mkdir -p "sbom-root/$name"
-            unzip -q "$package" -d "sbom-root/$name"
+            python3 - "$package" "sbom-root/$name" <<'PY'
+          import pathlib
+          import shutil
+          import sys
+          import zipfile
+
+          archive_path = pathlib.Path(sys.argv[1])
+          output_root = pathlib.Path(sys.argv[2])
+          with zipfile.ZipFile(archive_path) as archive:
+              for entry in archive.infolist():
+                  normalized = entry.filename.replace("\\", "/")
+                  relative = pathlib.PurePosixPath(normalized)
+                  if relative.is_absolute() or ".." in relative.parts:
+                      raise RuntimeError(f"unsafe ZIP entry: {entry.filename}")
+                  target = output_root.joinpath(*relative.parts)
+                  if entry.is_dir() or normalized.endswith("/"):
+                      target.mkdir(parents=True, exist_ok=True)
+                      continue
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  with archive.open(entry) as source, target.open("wb") as destination:
+                      shutil.copyfileobj(source, destination)
+          PY
           done
           test -n "$(find sbom-root -type f -print -quit)"
 

@@ -244,7 +244,7 @@ if (statement.ok())
 
 ## 预编译语句 / 生成键 / 大参数流式
 
-三个官方驱动都具备、此前 `IDatabaseConnection` 尚未封装的高频能力，现已统一接入。三者都**不破坏现有架构不变量**
+四种内置驱动中具备相应 vendor 能力的实现，已统一接入此前 `IDatabaseConnection` 尚未封装的高频接口。所有实现都**不破坏现有架构不变量**
 （闸门只在 `DataSource` 入口过一次、结果缓存键不变、故障转移/写缓冲不用于事务）。
 
 > 注意：`prepare` / `executePrepared` 显式句柄 API 只存在于 `Session`（句柄绑定具体连接，`Client` 无法跨池借用持有该句柄）；
@@ -1027,7 +1027,7 @@ auto er = update.get(); // er.status / er.affected
 表示当前驱动仍通过 SQLConduit 兼容执行器完成。`client.asyncStats()` 会分别统计
 `nativeOperations`、`fallbackOperations` 和 `timedOutOperations`，方便确认线上实际走的路径。
 
-从 0.9 开始，符合条件的叶子数据源路径通过连接池异步借用连接：池满时请求进入 `asyncWaiting`，不会占用
+符合条件的叶子数据源路径通过连接池异步借用连接：池满时请求进入 `asyncWaiting`，不会占用
 executor worker；连接归还后直接 handoff，或由主动 deadline 返回 `PoolExhausted`。数据源组
 路由、重试和影子路由仍暂时使用兼容状态机。叶子数据源的查询缓存命中无需借用连接即可完成，
 未命中则继续进入 native 驱动路径，并在结果改写拦截器运行前写入原始结果。PostgreSQL 的叶子数据源

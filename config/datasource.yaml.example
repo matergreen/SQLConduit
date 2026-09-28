@@ -86,7 +86,7 @@ datasources:
     host: 127.0.0.1
     port: 3306
     user: root
-    password: pwd
+    password_env: SQLCONDUIT_DB_PASSWORD
     database: test
     connection_timeout_ms: 5000
     query_timeout_ms: 30000
@@ -95,7 +95,7 @@ datasources:
     host: 127.0.0.1
     port: 3307
     user: root
-    password: pwd
+    password_env: SQLCONDUIT_DB_PASSWORD
     database: test
     connection_timeout_ms: 5000
   - name: pg
@@ -103,7 +103,7 @@ datasources:
     host: 127.0.0.1
     port: 5432
     user: postgres
-    password: pwd
+    password_env: SQLCONDUIT_DB_PASSWORD
     database: test
     max_result_rows: 50000
   - name: ora
@@ -111,7 +111,7 @@ datasources:
     host: 127.0.0.1
     port: 1521
     user: system
-    password: pwd
+    password_env: SQLCONDUIT_DB_PASSWORD
     connection_timeout_ms: 5000
     oracle:
       service_name: FREEPDB1
@@ -123,13 +123,13 @@ datasources:
     host: 127.0.0.1
     port: 3308
     user: ro
-    password: pwd
+    password_env: SQLCONDUIT_DB_PASSWORD
     database: test
   - name: mssql
     type: odbc
     dsn: MSSQL
     user: sa
-    password: pwd
+    password_env: SQLCONDUIT_DB_PASSWORD
 groups:
   - name: app
     primary: main

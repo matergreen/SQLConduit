@@ -5,10 +5,10 @@ This document is the compatibility contract for the Prometheus text produced by
 
 ## Stability policy
 
-- Starting with 0.8, a patch release will not rename a metric, change its type, remove a label,
-  or change the meaning or unit of an existing series.
-- Before 1.0, an incompatible metric change requires a new minor release and a migration note in
-  `CHANGELOG.md`. Starting with 1.0, it requires a new major release.
+- Throughout 1.x, minor and patch releases will not rename or remove a metric, change its type,
+  add/remove a stable label, or change the meaning or unit of an existing series.
+- An incompatible metric change requires a new major release and a migration note in
+  `CHANGELOG.md`.
 - New metric families may be added in a backward-compatible release. A new label is treated as an
   incompatible change because it changes series identity.
 - The caller-selected prefix is intentionally outside this promise. The contract below uses the

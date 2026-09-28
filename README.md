@@ -1,6 +1,8 @@
 # SQLConduit — C++ Database Connection Middleware
 
-> [中文](README_zh.md) · [Detailed guide](docs/guide_en.md)
+> [中文](README_zh.md) · [Detailed guide](docs/guide_en.md) ·
+> [Feature coverage and roadmap](docs/feature_coverage.md) · [Support matrix](SUPPORT.md) ·
+> [Known limitations](docs/known_limitations.md)
 
 SQLConduit gives C++ applications a unified database access layer. The same API works with MySQL,
 PostgreSQL, Oracle, and ODBC databases while the middleware centrally manages connection pooling,
@@ -175,7 +177,7 @@ result exposes `mode`: `Native` for a driver-native asynchronous operation and
 `client.asyncStats()` reports native, fallback, and timeout counts. With `async.enabled: false`,
 async calls return a ready future containing a `ConfigError` status.
 
-In 0.9, eligible leaf-data-source paths acquire connections through the pool's asynchronous handoff
+Eligible leaf-data-source paths acquire connections through the pool's asynchronous handoff
 queue, so a pool wait does not occupy an executor worker. Leaf query-cache hits complete without a
 connection and cache misses may continue into a native driver operation. Group routing, retries,
 and shadow routing still use the compatibility state machine. PostgreSQL query/execute operations on an
@@ -186,8 +188,10 @@ ODBC, plus transaction/cursor/batch and complex topology paths, currently report
 `CompatibilityFallback`. Driver extensions can opt into `Native` by implementing the same
 nonblocking query/execute callback contract.
 
-See the [public API stability policy](docs/api_stability.md) for compatibility levels, the 0.x
-versioning rules, and the current asynchronous boundary.
+ODBC and Oracle compatibility fallback is a supported, observable 1.0 behavior; it is not reported
+as native async. See the [public API stability policy](docs/api_stability.md) for the 1.x
+compatibility contract and [known limitations](docs/known_limitations.md) for the exact capability
+and packaging boundaries.
 
 ### 4. Transactions
 

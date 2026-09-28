@@ -73,17 +73,6 @@ namespace sqlconduit::common {
             return b;
         }
 
-        std::string blobToHex(const Blob &b) {
-            static const char *kHex = "0123456789ABCDEF";
-            std::string s;
-            s.reserve(b.size() * 2);
-            for (const std::uint8_t byte: b) {
-                s.push_back(kHex[(byte >> 4) & 0x0F]);
-                s.push_back(kHex[byte & 0x0F]);
-            }
-            return s;
-        }
-
         bool parseInt64Strict(const std::string &s, std::int64_t &out) {
             if (s.empty()) return false;
             errno = 0;

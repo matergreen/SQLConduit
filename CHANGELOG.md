@@ -6,6 +6,43 @@ description.
 
 ## [Unreleased]
 
+## [1.0.0-rc.1]
+
+### Compatibility contract
+
+- Declared the first stable public API and configuration contract. All `1.x` releases preserve
+  source compatibility for documented application and extension APIs; incompatible changes require
+  a new major version. Public enum and `ErrorCode` numeric values remain stable.
+- Changed CMake package compatibility to `SameMajorVersion` and exported the C++17 and threads
+  usage requirements so installed-package consumers receive the same build contract as in-tree
+  targets.
+- Documented supported platforms, database validation coverage, native/fallback asynchronous
+  behavior, binary-package components, and known limitations for production adoption.
+- Added an explicit feature-coverage and evolution matrix separating implemented, expanding
+  validation, scheduled, evaluating, and out-of-scope work, with 1.x API-preservation rules for
+  every planned optimization.
+
+### Release quality
+
+- Added warning-as-error ASan/UBSan validation, live MySQL/PostgreSQL/SQL Server integration jobs,
+  and per-component installed-package consumer checks to the release gate. Oracle remains a
+  recorded manual release-candidate validation because GitHub-hosted runners do not provide OCI.
+- Removed credentials from checked-in configuration examples and aligned the JSON Schema identity,
+  public version macros, consumer contract, and project version at `1.0.0`.
+- Release archives include support, security, contribution, and known-limitations documents in
+  addition to checksums, SPDX SBOM, and build provenance already produced by the release workflow.
+
+### Included since 0.7
+
+- Introduced the move-only `Client` entry point and removed the process-wide facade; split the
+  monolithic archive into opt-in Core, MySQL, PostgreSQL, Oracle, and ODBC components.
+- Added strict JSON/YAML configuration validation, portable SQL Builder CRUD construction,
+  consistent NULL mapping, real batch execution with safe fallbacks, cursor/streaming APIs,
+  observability contracts, and performance baselines.
+- Added explicit asynchronous execution modes. PostgreSQL and eligible MySQL operations support
+  native nonblocking execution; unsupported driver and topology paths use the documented bounded
+  compatibility executor rather than implying native behavior.
+
 ## [0.9.0]
 
 ### Fixed

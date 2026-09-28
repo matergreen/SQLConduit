@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
-project(sqlconduit VERSION 0.9.0 LANGUAGES CXX)
+project(sqlconduit VERSION 1.0.0 LANGUAGES CXX)
+set(SQLCONDUIT_VERSION_PRERELEASE "rc.1")
+set(SQLCONDUIT_VERSION_FULL "${PROJECT_VERSION}-${SQLCONDUIT_VERSION_PRERELEASE}")
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/public_api.cmake")
 file(GLOB_RECURSE _sqlconduit_header_inventory CONFIGURE_DEPENDS
@@ -18,8 +20,9 @@ set(_sqlconduit_frozen_headers "${SQLCONDUIT_FROZEN_PUBLIC_HEADERS}")
 list(SORT _sqlconduit_frozen_headers)
 if(NOT _sqlconduit_header_inventory STREQUAL _sqlconduit_frozen_headers)
     message(FATAL_ERROR
-        "Installed public headers differ from cmake/public_api.cmake. "
-        "Public API changes must update the frozen inventory and changelog.\n"
+        "Installed headers differ from cmake/public_api.cmake. "
+        "Header inventory changes must update the frozen list, review the stability boundary, "
+        "and update the changelog.\n"
         "Expected: ${_sqlconduit_frozen_headers}\n"
         "Actual:   ${_sqlconduit_header_inventory}")
 endif()
@@ -34,9 +37,14 @@ foreach(_part MAJOR MINOR PATCH)
     endif()
 endforeach()
 if(NOT _sqlconduit_version_header MATCHES
-   "#define SQLCONDUIT_VERSION_STRING \"${PROJECT_VERSION}\"")
+   "#define SQLCONDUIT_VERSION_PRERELEASE \"${SQLCONDUIT_VERSION_PRERELEASE}\"")
     message(FATAL_ERROR
-        "SQLCONDUIT_VERSION_STRING does not match project version ${PROJECT_VERSION}")
+        "SQLCONDUIT_VERSION_PRERELEASE does not match ${SQLCONDUIT_VERSION_PRERELEASE}")
+endif()
+if(NOT _sqlconduit_version_header MATCHES
+   "#define SQLCONDUIT_VERSION_STRING \"${SQLCONDUIT_VERSION_FULL}\"")
+    message(FATAL_ERROR
+        "SQLCONDUIT_VERSION_STRING does not match ${SQLCONDUIT_VERSION_FULL}")
 endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL "" FORCE)
@@ -51,7 +59,7 @@ endif()
 
 option(SQLCONDUIT_ENABLE_MYSQL    "Build MySQL driver (needs libmysqlclient)"      OFF)
 option(SQLCONDUIT_ENABLE_POSTGRES "Build PostgreSQL driver (needs libpqxx + libpq)" OFF)
-option(SQLCONDUIT_ENABLE_ODBC     "Build ODBC driver for SQL Server/Oracle"         OFF)
+option(SQLCONDUIT_ENABLE_ODBC     "Build ODBC driver (for example SQL Server)"      OFF)
 option(SQLCONDUIT_ENABLE_ORACLE   "Build Oracle driver (needs OCI / Instant Client)" OFF)
 option(SQLCONDUIT_BUILD_TESTS     "Build core behaviour tests (no external deps)"   OFF)
 option(SQLCONDUIT_BUILD_BENCHMARKS "Build dependency-free performance benchmarks"   OFF)
@@ -110,6 +118,7 @@ set(SQLCONDUIT_CORE_SOURCES
 add_library(sqlconduit_core STATIC ${SQLCONDUIT_CORE_SOURCES})
 add_library(sqlconduit::core ALIAS sqlconduit_core)
 set_target_properties(sqlconduit_core PROPERTIES EXPORT_NAME core)
+target_compile_features(sqlconduit_core PUBLIC cxx_std_17)
 target_include_directories(sqlconduit_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -120,9 +129,7 @@ target_include_directories(sqlconduit_core
 # The library owns worker threads, so static consumers need the thread flag too.
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
-if(CMAKE_THREAD_LIBS_INIT)
-    target_link_libraries(sqlconduit_core PUBLIC ${CMAKE_THREAD_LIBS_INIT})
-endif()
+target_link_libraries(sqlconduit_core PUBLIC Threads::Threads)
 
 # Each optional driver is its own static component. Its database client dependency
 # stays off the core target and is re-discovered only when a consumer requests that
@@ -285,7 +292,7 @@ configure_package_config_file(
 write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/sqlconduitConfigVersion.cmake"
     VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMinorVersion)
+    COMPATIBILITY SameMajorVersion)
 install(FILES
     "${CMAKE_CURRENT_BINARY_DIR}/sqlconduitConfig.cmake"
     "${CMAKE_CURRENT_BINARY_DIR}/sqlconduitConfigVersion.cmake"

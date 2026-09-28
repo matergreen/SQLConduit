@@ -33,6 +33,8 @@ namespace {
         static std::atomic<int> nativeExecuteCalls;
         static std::atomic<int> retryableQueryFailures;
         static std::atomic<int> retryableExecuteFailures;
+        static std::mutex fallbackQueryGateMutex;
+        static std::shared_future<void> fallbackQueryGate;
         static std::mutex nativeQueryGateMutex;
         static std::shared_future<void> nativeQueryGate;
 
@@ -49,7 +51,13 @@ namespace {
                 return common::Status::error(common::ErrorCode::NotConnected, "closed");
             if (identity_ == "first") ++firstQueries;
             if (identity_ == "second") ++secondQueries;
-            if (const auto delay = queryDelayMs.load(); delay > 0)
+            std::shared_future<void> gate;
+            {
+                std::lock_guard<std::mutex> lock(fallbackQueryGateMutex);
+                gate = fallbackQueryGate;
+            }
+            if (gate.valid()) gate.wait();
+            else if (const auto delay = queryDelayMs.load(); delay > 0)
                 std::this_thread::sleep_for(std::chrono::milliseconds(delay));
             common::Row row;
             row.set("client", identity_);
@@ -152,6 +160,8 @@ namespace {
     std::atomic<int> ClientTestConnection::nativeExecuteCalls{0};
     std::atomic<int> ClientTestConnection::retryableQueryFailures{0};
     std::atomic<int> ClientTestConnection::retryableExecuteFailures{0};
+    std::mutex ClientTestConnection::fallbackQueryGateMutex;
+    std::shared_future<void> ClientTestConnection::fallbackQueryGate;
     std::mutex ClientTestConnection::nativeQueryGateMutex;
     std::shared_future<void> ClientTestConnection::nativeQueryGate;
 
@@ -480,22 +490,30 @@ int main() {
     common::ResultSet warmedRows;
     check(overloadedAsync.query("SELECT warm", warmedRows).ok(),
           "async overload test prewarms its single connection");
-    ClientTestConnection::queryDelayMs = 100;
+    std::promise<void> releaseFallbackQueries;
+    {
+        std::lock_guard<std::mutex> lock(ClientTestConnection::fallbackQueryGateMutex);
+        ClientTestConnection::fallbackQueryGate = releaseFallbackQueries.get_future().share();
+    }
     auto activeQuery = overloadedAsync.queryAsync("SELECT active");
-    for (int i = 0; i < 100 && overloadedAsync.asyncStats().active == 0; ++i)
+    for (int i = 0; i < 1000 && overloadedAsync.asyncStats().active == 0; ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     auto queuedQuery = overloadedAsync.queryAsync("SELECT queued");
-    for (int i = 0; i < 100 && overloadedAsync.asyncStats().queueDepth == 0; ++i)
+    for (int i = 0; i < 1000 && overloadedAsync.asyncStats().queueDepth == 0; ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     auto rejectedQuery = overloadedAsync.queryAsync("SELECT rejected");
     check(rejectedQuery.wait_for(std::chrono::milliseconds(20)) ==
               std::future_status::ready &&
           rejectedQuery.get().status.code == common::ErrorCode::Overloaded,
           "full async submission queue rejects without running on the caller thread");
+    releaseFallbackQueries.set_value();
     check(activeQuery.get().status.ok() && queuedQuery.get().status.ok() &&
           overloadedAsync.asyncStats().rejected >= 1,
           "accepted work drains normally after an overload rejection");
-    ClientTestConnection::queryDelayMs = 0;
+    {
+        std::lock_guard<std::mutex> lock(ClientTestConnection::fallbackQueryGateMutex);
+        ClientTestConnection::fallbackQueryGate = {};
+    }
     overloadedAsync.shutdown(std::chrono::milliseconds(0));
 
     Client asyncDisabled;

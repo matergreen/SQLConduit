@@ -496,7 +496,7 @@ int main() {
         MockConnection::resetLog();
         auto pool = makePool(0, 2);
         core::DataSource ds(pool, "mock");
-        auto st = ds.transaction([](core::Session &s) -> Status {
+        auto st = ds.transaction([](core::Session &) -> Status {
             throw std::runtime_error("kaboom");
         });
         check(!st.ok(), "异常被捕获，未逃逸出 transaction");
@@ -712,8 +712,10 @@ int main() {
                 (std::filesystem::temp_directory_path() / "sqlconduit_config_loader_test.json").string();
 #ifdef _WIN32
         (void) _putenv_s("SQLCONDUIT_TEST_PASSWORD", "from-env");
+        (void) _putenv_s("SQLCONDUIT_DB_PASSWORD", "example-secret");
 #else
         setenv("SQLCONDUIT_TEST_PASSWORD", "from-env", 1);
+        setenv("SQLCONDUIT_DB_PASSWORD", "example-secret", 1);
 #endif
         {
             std::ofstream file(path);
@@ -847,8 +849,10 @@ groups:
         std::remove(oraclePath.c_str());
 #ifdef _WIN32
         (void) _putenv_s("SQLCONDUIT_TEST_PASSWORD", "");
+        (void) _putenv_s("SQLCONDUIT_DB_PASSWORD", "");
 #else
         unsetenv("SQLCONDUIT_TEST_PASSWORD");
+        unsetenv("SQLCONDUIT_DB_PASSWORD");
 #endif
     }
 

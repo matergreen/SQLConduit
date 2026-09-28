@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/matergreen/SQLConduit/raw/v0.8.0/config/sqlconduit.schema.json",
+  "$id": "https://github.com/matergreen/SQLConduit/raw/v1.0.0-rc.1/config/sqlconduit.schema.json",
   "title": "SQLConduit configuration",
-  "description": "Configuration contract for SQLConduit 0.8.x. Unknown fields are rejected. Cross-reference and environment checks are performed by ConfigLoader/Client at runtime.",
+  "description": "Configuration contract for SQLConduit 1.x. Unknown fields are rejected. Cross-reference and environment checks are performed by ConfigLoader/Client at runtime.",
   "type": "object",
   "additionalProperties": false,
   "required": ["datasources"],

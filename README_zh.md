@@ -1,6 +1,8 @@
 # SQLConduit — C++ 数据库连接中间件
 
-> English: [README.md](README.md) · [详细指南](docs/guide.md)
+> English: [README.md](README.md) · [详细指南](docs/guide.md) ·
+> [功能覆盖与路线图](docs/feature_coverage_zh.md) · [支持矩阵](SUPPORT.md) ·
+> [已知限制](docs/known_limitations.md)
 
 SQLConduit 为 C++ 应用提供统一的数据库访问层。应用通过同一套 API 使用 MySQL、PostgreSQL、Oracle
 和 ODBC 数据库，并由中间件集中处理连接池、参数绑定、事务、超时、路由和运行指标。
@@ -168,8 +170,9 @@ if (!result.status.ok()) return 1;
 `Client` 的状态。`async.enabled: false` 时会返回一个已经就绪且状态为
 `ConfigError` 的 future。
 
-公共头文件的稳定性分层、0.x 兼容规则和当前异步边界见
-[公共 API 稳定性约定](docs/api_stability.md)。
+ODBC 和 Oracle 的兼容 fallback 是 1.0 支持且可观测的行为，不会被标成 native 异步。
+公共头文件的稳定性分层和 1.x 兼容规则见[公共 API 稳定性约定](docs/api_stability.md)，
+能力与打包边界见[已知限制](docs/known_limitations.md)。
 
 ### 4. 事务
 

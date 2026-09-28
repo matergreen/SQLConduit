@@ -1,6 +1,7 @@
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
+find_dependency(Threads)
 
 set(_sqlconduit_built_components "@SQLCONDUIT_BUILT_COMPONENTS@")
 set_and_check(sqlconduit_SCHEMA_FILE

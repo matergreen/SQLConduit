@@ -1,5 +1,6 @@
-# Frozen installed-header inventory. Adding, removing, or renaming a public
-# header requires an intentional update to this file and the changelog.
+# Frozen installed-header inventory. Installation is not by itself a stability promise; the
+# stable application and extension entry points are defined in docs/api_stability.md. Adding,
+# removing, or renaming an installed header requires an intentional review and changelog entry.
 set(SQLCONDUIT_FROZEN_PUBLIC_HEADERS
     sqlconduit/api.h
     sqlconduit/async/async_types.h

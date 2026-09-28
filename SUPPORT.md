@@ -1,19 +1,61 @@
 # Version support
 
-SQLConduit is still a preview release. The support window is intentionally simple and is reviewed
-at every minor release.
+SQLConduit uses semantic versioning from 1.0 onward. Support means that the project evaluates
+applicable reports and may publish a patch; it does not promise an SLA.
 
 | Version line | Status | Support level |
 | --- | --- | --- |
-| `0.8.x` | Development | Fixes land here before the 0.8.0 release; not a production support line yet |
-| `0.7.x` | Supported | Security fixes and critical correctness/build fixes |
-| `0.6.x` and older | Unsupported | Upgrade to a supported line before reporting a version-specific issue |
+| `1.0.0-rc.x` | Release candidate | Public evaluation and production-readiness validation; upgrade to the final release when available |
+| `1.0.x` | Planned supported line | Security, correctness, build, and documented compatibility fixes begin with the final 1.0.0 release |
+| `0.7.x` | Transition | Security fixes for 90 days after the 1.0.0 release |
+| `0.8.x`, `0.9.x` | Development snapshots | Upgrade to 1.0; these were not production support lines |
+| `0.6.x` and older | Unsupported | Upgrade before reporting a version-specific issue |
 
-When 0.8.0 is released, `0.8.x` becomes supported and `0.7.x` receives security fixes for a
-90-day transition period. After that period, `0.7.x` becomes unsupported. Patch releases do not
-shorten an existing support window.
+The RC freezes the intended 1.x public source and configuration contracts so adopters can validate
+them before the final release. Future `1.x` minor lines preserve those contracts. When a
+new minor line is released, the preceding minor receives security and critical correctness fixes for
+at least 90 days. Patch releases do not shorten an existing support window. See
+[the API stability contract](docs/api_stability.md) for the precise boundary.
 
-Support means the project will evaluate applicable reports and may publish a patch; it does not
-promise an SLA. Database-server and client-library versions also need to be supported by their
-vendors. Reproductions should state the SQLConduit version, OS, compiler, database server, client
-SDK, and driver configuration.
+## Supported build platforms
+
+The release gate builds and tests the following host/toolchain combinations:
+
+| Platform | Toolchain | Release archive |
+| --- | --- | --- |
+| Ubuntu 24.04 x86-64 | GCC and Clang | GCC archive |
+| Ubuntu 24.04 arm64 | GCC | arm64 archive |
+| macOS 14 arm64 | Apple Clang | arm64 archive |
+| Windows x64 | Visual Studio 2022 / MSVC | x64 archive |
+
+Other C++17 platforms and newer compatible toolchains are best effort. SQLConduit ships static
+libraries and promises source compatibility across `1.x`; it does not promise C++ binary ABI
+compatibility across compilers, standard-library implementations, runtime-library modes, or
+toolchain versions. Build the library and application with compatible settings.
+
+## Database validation
+
+The 1.0 release candidate is validated against these representative combinations:
+
+| SQLConduit component | Validated server/client path | Validation |
+| --- | --- | --- |
+| MySQL | MySQL 8.4 with libmysqlclient-compatible headers | Automated live integration |
+| PostgreSQL | PostgreSQL 16+ with libpq/libpqxx | Automated live integration |
+| ODBC / SQL Server | SQL Server 2022 through unixODBC and FreeTDS; Microsoft ODBC on Windows is supported for source builds | Automated live Linux integration plus Windows compile/tests |
+| Oracle | Oracle Database Free with OCI 23 | Manual release-candidate integration |
+
+These are validation targets, not artificial minimum server versions. Other versions are supported
+when both the database vendor and client SDK support them, but reports must include a reproduction.
+Oracle is not included in prebuilt archives because redistributing the OCI SDK is outside this
+project's release workflow; build the Oracle component from source against an installed Instant
+Client SDK.
+
+Prebuilt Linux and macOS archives contain Core, MySQL, PostgreSQL, and ODBC components. The Windows
+archive contains Core and ODBC. Components are separate static libraries so consumers only need the
+client SDKs for drivers they actually link. Exact behavioral boundaries are listed in
+[Known limitations](docs/known_limitations.md); implementation, validation, and planned-work status
+is tracked in [Feature coverage and evolution](docs/feature_coverage.md).
+
+Reproductions should state the SQLConduit version, OS, compiler, database server, client SDK/ODBC
+driver, enabled component, configuration, and whether an asynchronous result reported `Native` or
+`CompatibilityFallback`.

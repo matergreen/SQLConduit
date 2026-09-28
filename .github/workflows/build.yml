@@ -136,12 +136,15 @@ jobs:
           prefix="$PWD/smoke-prefix"
           cmake --install build --config Release --prefix "$prefix"
 
-          echo "== via find_package =="
-          cmake -S tests/consumer -B smoke-find-package -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$prefix" \
-            -DSQLCONDUIT_CONSUMER_COMPONENT=MySQL
-          cmake --build smoke-find-package
-          ./smoke-find-package/sqlconduit_consumer_smoke
+          for component in Core MySQL Postgres ODBC; do
+            build_dir="smoke-find-package-${component}"
+            echo "== find_package component: ${component} =="
+            cmake -S tests/consumer -B "$build_dir" -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$prefix" \
+              -DSQLCONDUIT_CONSUMER_COMPONENT="$component"
+            cmake --build "$build_dir"
+            "$build_dir/sqlconduit_consumer_smoke"
+          done
 
           echo "== via pkg-config (static link) =="
           if [ "${{ runner.os }}" != "Linux" ]; then
@@ -165,12 +168,15 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           $prefix = Join-Path $PWD 'smoke-prefix'
           cmake --install build --config Release --prefix $prefix
-          cmake -S tests/consumer -B smoke-find-package -A x64 `
-            "-DCMAKE_PREFIX_PATH=$prefix" `
-            -DSQLCONDUIT_CONSUMER_COMPONENT=ODBC
-          cmake --build smoke-find-package --config Release
-          & .\smoke-find-package\Release\sqlconduit_consumer_smoke.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($component in @('Core', 'ODBC')) {
+            $buildDir = "smoke-find-package-$component"
+            cmake -S tests/consumer -B $buildDir -A x64 `
+              "-DCMAKE_PREFIX_PATH=$prefix" `
+              "-DSQLCONDUIT_CONSUMER_COMPONENT=$component"
+            cmake --build $buildDir --config Release
+            & ".\$buildDir\Release\sqlconduit_consumer_smoke.exe"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
       - name: Install to dist
         if: github.ref != 'refs/heads/dev'
@@ -185,7 +191,10 @@ jobs:
           if [ "$ver" = "$GITHUB_REF_NAME" ]; then ver="dev-${GITHUB_SHA::7}"; fi
           if [ "${{ runner.os }}" = "Windows" ]; then ext=zip; else ext=tar.gz; fi
           pkg="sqlconduit-${ver}-${{ matrix.pkg }}.${ext}"
-          cp LICENSE README.md CHANGELOG.md dist/
+          cp LICENSE README.md README_zh.md CHANGELOG.md SUPPORT.md SECURITY.md CONTRIBUTING.md dist/
+          cp docs/known_limitations.md dist/KNOWN_LIMITATIONS.md
+          cp docs/feature_coverage.md dist/FEATURE_COVERAGE.md
+          cp docs/feature_coverage_zh.md dist/FEATURE_COVERAGE_zh.md
           if [ "$ext" = "zip" ]; then
             powershell -NoProfile -Command "Compress-Archive -Path 'dist/*' -DestinationPath '${pkg}'"
           else
@@ -220,9 +229,125 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  sanitizers:
+    name: warnings + ASan/UBSan
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Configure strict sanitizer build
+        env:
+          CC: clang
+          CXX: clang++
+        run: >-
+          cmake -S . -B build-sanitize -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic -Werror -fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          -DSQLCONDUIT_BUILD_TESTS=ON
+      - run: cmake --build build-sanitize -j
+      - name: Test with sanitizers
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir build-sanitize --output-on-failure
+
+  integration-open-source:
+    name: live MySQL + PostgreSQL integration
+    runs-on: ubuntu-24.04
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: sqlconduit-ci-mysql
+          MYSQL_DATABASE: sqlconduit_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -psqlconduit-ci-mysql"
+          --health-interval=10s --health-timeout=5s --health-retries=12
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: sqlconduit-ci-postgres
+          POSTGRES_DB: sqlconduit_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d sqlconduit_test"
+          --health-interval=10s --health-timeout=5s --health-retries=12
+    env:
+      SQLCONDUIT_TEST_MYSQL_HOST: 127.0.0.1
+      SQLCONDUIT_TEST_MYSQL_USER: root
+      SQLCONDUIT_TEST_MYSQL_PASSWORD: sqlconduit-ci-mysql
+      SQLCONDUIT_TEST_MYSQL_DATABASE: sqlconduit_test
+      SQLCONDUIT_TEST_PG_HOST: 127.0.0.1
+      SQLCONDUIT_TEST_PG_USER: postgres
+      SQLCONDUIT_TEST_PG_PASSWORD: sqlconduit-ci-postgres
+      SQLCONDUIT_TEST_PG_DATABASE: sqlconduit_test
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config default-libmysqlclient-dev libpqxx-dev libpq-dev
+      - run: >-
+          cmake -S . -B build-integration -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DSQLCONDUIT_ENABLE_MYSQL=ON
+          -DSQLCONDUIT_ENABLE_POSTGRES=ON
+          -DSQLCONDUIT_BUILD_TESTS=ON
+          -DSQLCONDUIT_BUILD_INTEGRATION_TESTS=ON
+      - run: cmake --build build-integration -j
+      - run: ctest --test-dir build-integration --output-on-failure -R 'mysql_integration|postgres_integration'
+
+  integration-sqlserver:
+    name: live SQL Server / ODBC integration
+    runs-on: ubuntu-24.04
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: SqlConduit-CI-2026!
+        ports:
+          - 1433:1433
+    env:
+      SQLCONDUIT_TEST_ODBC_HOST: 127.0.0.1
+      SQLCONDUIT_TEST_ODBC_USER: sa
+      SQLCONDUIT_TEST_ODBC_PASSWORD: SqlConduit-CI-2026!
+      SQLCONDUIT_TEST_ODBC_DATABASE: master
+      SQLCONDUIT_TEST_ODBC_DRIVER: FreeTDS
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config unixodbc-dev tdsodbc netcat-openbsd
+      - name: Wait for SQL Server
+        run: |
+          for attempt in {1..60}; do
+            if nc -z 127.0.0.1 1433; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+      - run: >-
+          cmake -S . -B build-integration -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DSQLCONDUIT_ENABLE_ODBC=ON
+          -DSQLCONDUIT_BUILD_TESTS=ON
+          -DSQLCONDUIT_BUILD_INTEGRATION_TESTS=ON
+      - run: cmake --build build-integration -j
+      - run: ctest --test-dir build-integration --output-on-failure -R odbc_integration
+
   release:
     name: publish release
-    needs: build
+    needs: [build, sanitizers, integration-open-source, integration-sqlserver]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -320,10 +445,13 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           ls -l artifacts
+          prerelease_args=()
+          if [[ "$TAG" == *-* ]]; then prerelease_args+=(--prerelease); fi
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --title "SQLConduit $TAG" \
+              "${prerelease_args[@]}" \
               --notes-file release-notes.md
             gh release upload "$TAG" artifacts/* --repo "$GITHUB_REPOSITORY" --clobber
           else
@@ -331,6 +459,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --title "SQLConduit $TAG" \
               --verify-tag \
+              "${prerelease_args[@]}" \
               --notes-file release-notes.md \
               artifacts/*
           fi

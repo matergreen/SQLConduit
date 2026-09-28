@@ -8,23 +8,33 @@ the published assets, not merely after pushing a tag.
 - [ ] Confirm the target version is supported by the policy in `SUPPORT.md`.
 - [ ] Freeze the intended commit; review public API, configuration schema, metrics contract, and
       migration notes.
+- [ ] Update `docs/feature_coverage.md` and `docs/feature_coverage_zh.md` when any capability moves
+      between implemented, expanding validation, scheduled, or evaluating status.
 - [ ] Update `CMakeLists.txt`, `include/sqlconduit/version.h`, consumer contract tests, and the
       versioned JSON Schema `$id` to the same version.
 - [ ] Move user-visible entries from `Unreleased` to an exact `## [x.y.z]` heading in
       `CHANGELOG.md`.
 - [ ] Run formatting/static checks used by the project and `git diff --check`.
+- [ ] Pass the GCC/Clang build matrix and the Clang warning-as-error ASan/UBSan test job without
+      suppressing a sanitizer finding or converting a deterministic contract check into a timing sleep.
 - [ ] Run the full unit test matrix plus MySQL, PostgreSQL, SQL Server/ODBC, and Oracle integration
-      suites.
+      suites. Record the Oracle server/OCI versions and result in the release issue because Oracle
+      validation is manual on an OCI-equipped host.
 - [ ] Run optimized performance benchmarks on the release candidate and compare with the previous
       release on the same machine; explain repeatable regressions above 10%.
 - [ ] Build and install each enabled component independently and run the installed consumer smoke
-      test.
-- [ ] Review `SECURITY.md`, `SUPPORT.md`, and known issues; resolve or explicitly document blockers.
+      test (Core/MySQL/PostgreSQL/ODBC in CI, Oracle on the manual OCI host).
+- [ ] Review `SECURITY.md`, `SUPPORT.md`, `docs/feature_coverage*.md`, and
+      `docs/known_limitations.md`; resolve or explicitly document blockers.
+- [ ] Verify the documented archive/component matrix matches the artifacts that the workflow will
+      produce and that no archive imports an unselected database client SDK.
 
 ## Publish
 
 - [ ] Create an annotated `vX.Y.Z` tag from the reviewed commit and push it.
 - [ ] Confirm every GitHub Actions matrix job succeeds and the release job is not skipped.
+- [ ] Confirm live MySQL, PostgreSQL, and SQL Server integration gates and the sanitizer gate all
+      succeed for the exact tagged commit; attach the manual Oracle evidence.
 - [ ] Confirm the release contains every platform archive, `SHA256SUMS`, the SPDX JSON SBOM, and
       provenance/SBOM Sigstore bundles.
 - [ ] Confirm GitHub shows build-provenance and SBOM attestations for the platform archives.

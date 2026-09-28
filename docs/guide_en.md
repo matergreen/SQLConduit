@@ -358,7 +358,7 @@ auto st = client.transaction(options, [](sqlconduit::core::Session& s) {
 When the deadline is reached, the middleware asks the driver (from the watchdog thread) to cancel the current statement and rolls the transaction back.
 
 > **`options.timeout` is a best-effort upper bound, not a hard interrupt.**
-> When the driver implements `cancel()` (all three built-in drivers do), the statement is truly interrupted; when it does not, C++ cannot safely force-kill a running user callback, so the result is rewritten to `QueryTimeout` only after the callback finishes naturally. In the latter case the returned `message` carries a `could not cancel` hint, so you can tell "cancelled in time" from "never actually interrupted, just judged timed-out afterward".
+> When the selected built-in driver implements `cancel()`, the statement is interrupted through its vendor API. When cancellation is unavailable or fails, C++ cannot safely force-kill a blocking vendor call, so the result is classified as `QueryTimeout` only after that call finishes naturally. The returned `message` carries a `could not cancel` hint, distinguishing successful interruption from late classification.
 
 The cancellation path itself is exception-safe: the watchdog thread swallows any exception thrown by the driver's `cancel()`. An exception escaping from a thread would `std::terminate` the whole process — a "robustness mechanism that becomes a crash point" problem that must be blocked at the framework level.
 
@@ -999,7 +999,7 @@ compatibility executor because the selected driver has not exposed native async 
 `client.asyncStats()` reports `nativeOperations`, `fallbackOperations`, and `timedOutOperations` so
 applications can verify which path they are actually exercising.
 
-Since 0.9, eligible leaf-data-source paths borrow connections asynchronously. When the pool is full, the request
+Eligible leaf-data-source paths borrow connections asynchronously. When the pool is full, the request
 is parked in `asyncWaiting` and does not occupy an executor worker; it is resumed by direct handoff
 when a connection returns, or by an active pool-wait deadline. Leaf query-cache hits complete
 without borrowing a connection; misses may continue into a native driver and cache the raw result

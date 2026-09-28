@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <cstdlib>
 #include <string>
 
 namespace {
@@ -23,11 +24,19 @@ namespace {
 }
 
 int main() {
+#ifdef _WIN32
+    (void) _putenv_s("SQLCONDUIT_DB_PASSWORD", "example-secret");
+#else
+    setenv("SQLCONDUIT_DB_PASSWORD", "example-secret", 1);
+#endif
     const auto root = std::filesystem::path(SQLCONDUIT_SOURCE_DIR);
     const auto schema = readJson(root / "config/sqlconduit.schema.json");
 
     check(schema.value("$schema", "") == "https://json-schema.org/draft/2020-12/schema",
           "schema declares JSON Schema 2020-12");
+    check(schema.value("$id", "") ==
+          "https://github.com/matergreen/SQLConduit/raw/v1.0.0-rc.1/config/sqlconduit.schema.json",
+          "schema identity matches the 1.0.0-rc.1 configuration contract");
     check(schema.value("type", "") == "object" &&
           schema.value("additionalProperties", true) == false,
           "root configuration rejects unknown fields");
@@ -46,6 +55,8 @@ int main() {
     std::ifstream yamlInput(root / "config/datasource.yaml.example");
     std::string yamlSchemaDirective;
     std::getline(yamlInput, yamlSchemaDirective);
+    if (!yamlSchemaDirective.empty() && yamlSchemaDirective.back() == '\r')
+        yamlSchemaDirective.pop_back();
     check(yamlSchemaDirective ==
           "# yaml-language-server: $schema=./sqlconduit.schema.json",
           "YAML example advertises the shared schema to language servers");

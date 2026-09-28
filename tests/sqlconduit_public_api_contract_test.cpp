@@ -16,6 +16,7 @@
 #include <future>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <type_traits>
 
 #ifndef SQLCONDUIT_DEPRECATED
@@ -30,9 +31,11 @@ using sqlconduit::common::Params;
 using sqlconduit::common::ResultSet;
 using sqlconduit::common::Status;
 
-static_assert(SQLCONDUIT_VERSION_MAJOR == 0);
-static_assert(SQLCONDUIT_VERSION_MINOR == 9);
+static_assert(SQLCONDUIT_VERSION_MAJOR == 1);
+static_assert(SQLCONDUIT_VERSION_MINOR == 0);
 static_assert(SQLCONDUIT_VERSION_PATCH == 0);
+static_assert(std::string_view(SQLCONDUIT_VERSION_PRERELEASE) == "rc.1");
+static_assert(std::string_view(SQLCONDUIT_VERSION_STRING) == "1.0.0-rc.1");
 static_assert(sqlconduit::exporters::kPrometheusFingerprintSeriesHardLimit == 1000);
 
 static_assert(std::is_final_v<Client>);

@@ -1,8 +1,12 @@
 # SQLConduit public API stability
 
-This document defines the compatibility boundary used while SQLConduit moves from the 0.x series
-toward 1.0. It applies to installed packages; files that exist only in the source tree are not
-public API.
+This document defines the compatibility boundary for SQLConduit 1.x. It applies to documented
+installed-package entry points. A header being installed for transitive type completeness does not,
+by itself, make every declaration in that header stable API.
+
+Capability status and planned additive evolution are tracked separately in
+[Feature coverage and evolution](feature_coverage.md); roadmap status never overrides this
+compatibility contract.
 
 ## Compatibility levels
 
@@ -10,19 +14,22 @@ public API.
 
 These are the preferred entry points for application code:
 
-- `sqlconduit/client.h`: the sole high-level runtime entry, an independently owned, move-only
+- `sqlconduit/api.h`, `sqlconduit/public.h`, and `sqlconduit/client.h`: export/deprecation macros,
+  the compact stable-header aggregate, and the sole high-level runtime entry, an independently owned, move-only
   `Client`;
-- `sqlconduit/sqlconduit.h`: the convenience umbrella header;
+- `sqlconduit/sqlconduit.h`: the full convenience umbrella header;
 - `sqlconduit/common/types.h`, `common/context.h`, and `common/observer.h`;
 - `sqlconduit/config/datasource_config.h` and `config/config_loader.h`;
 - `sqlconduit/async/async_types.h`: result and executor-statistics types returned by `Client`;
-- `sqlconduit/mapping.h`, `sqlconduit/util.h`, and `sqlconduit/version.h`;
+- `sqlconduit/common/pg_types.h`, `common/oracle_types.h`, `sqlconduit/mapping.h`,
+  `sqlconduit/util.h`, and `sqlconduit/version.h`;
+- `sqlconduit/exporters/prometheus.h` and its documented metric names and bounded labels;
 - `sqlconduit/sql_builder.h` and `sqlconduit/common/sql_dialect.h` for portable CRUD construction
   and explicit identifier dialect selection.
 
-Existing names, overloads, enum numeric values, and documented behavior in this group will not be
-changed incompatibly within a minor release line. New overloads and fields may be added when old
-source continues to compile.
+Existing names, signatures, enum numeric values, and documented behavior in this group will not be
+changed incompatibly within 1.x. New overloads and fields may be added when existing source
+continues to compile.
 
 ### Stable extension API
 
@@ -33,27 +40,32 @@ Applications implementing drivers, interceptors, or session callbacks may depend
 - `core/idatabase_connection.h`, `core/interceptor.h`, and `core/rate_limiter.h`;
 - `core/database_manager.h`, `core/cursor.h`, and `core/connection_pool.h` for the `DataSource`,
   `Session`, `Cursor`, options, and statistics types exposed by `Client`.
+- `core/query_cache.h` and `core/sql_auditor.h` for the statistics types returned by `Client`.
 
 Concrete built-in driver classes and vendor SDK headers are internal. Applications select a built-in
 component at link time and pass its `DriverRegistration` to `Client::addDriver()` before `init()`.
 
-### Internal implementation
+### Installed support surface and internal implementation
 
-`RuntimeServices` and `StatsReporter` are implementation details. Their headers are available to
-the library build but are deliberately excluded from installed packages. No compatibility promise
-applies to source-tree-only headers or names in a `detail` namespace.
+Some headers, including `common/logger.h`, `core/heartbeat_manager.h`, and `core/write_buffer.h`, are
+installed because stable declarations need their complete types or because the build package uses
+them. They are not supported direct entry points unless listed above. `RuntimeServices`,
+`StatsReporter`, source-tree-only headers, undocumented declarations, and names in a `detail`
+namespace are internal and carry no compatibility promise.
 
-## 0.x policy
+## 1.x policy
 
-- Patch releases in the same `0.minor` line preserve source compatibility. CMake package matching
-  therefore uses `SameMinorVersion`.
-- A necessary breaking change before 1.0 is made only in a new minor release and is recorded in the
-  changelog with a migration path.
-- Before 1.0, a new minor release may deliberately remove an obsolete preview API without a
-  deprecation cycle. The changelog must identify the break and give a migration path.
+- Minor and patch releases in the `1.x` line preserve source compatibility for the stable
+  application and extension API. CMake package matching therefore uses `SameMajorVersion`.
+- A stable API may be deprecated in a minor release but remains available for at least that minor
+  line. Removal or an incompatible semantic change requires 2.0 and a changelog migration path.
+- The documented JSON/YAML configuration keys, validation behavior, metric names, and bounded label
+  names follow the same rule. New optional keys or metrics may be added in a minor release.
 - `ErrorCode` numeric values are part of the compatibility contract and are never renumbered.
 - Public enums use explicit numeric values. Existing values are never reordered or reused.
 - Deprecations use `SQLCONDUIT_DEPRECATED(message)` from `sqlconduit/api.h`.
+- This is a source-compatibility contract, not a cross-toolchain binary ABI promise. Rebuild static
+  libraries and consumers together when changing compiler, standard library, or runtime mode.
 
 ## Lifecycle, concurrency, and callbacks
 
@@ -83,7 +95,7 @@ path or SQLConduit's compatibility fallback; `asyncStats()` reports native, fall
 counts. These methods intentionally expose no cancellation handle or coroutine wrapper yet.
 Compatibility fallback honors `async.statement_timeout_ms` for late read classification but does not
 rewrite successful write, batch, or transaction results after the driver call has already completed.
-Eligible leaf-data-source paths use asynchronous pool handoff in 0.9, including an active pool-wait deadline.
+Eligible leaf-data-source paths use asynchronous pool handoff, including an active pool-wait deadline.
 Leaf query-cache hits also complete inside the async state machine without borrowing a connection;
 cache misses can continue into a native driver operation.
 The driver SPI now includes optional `queryAsync` / `executeAsync` callbacks; returning `false`
@@ -100,9 +112,10 @@ standard future.
 
 ## Automated checks
 
-`cmake/public_api.cmake` is the reviewed installed-header inventory. Configuration fails if a public
-header is added, removed, or renamed without updating that baseline. When tests are enabled, every
-installed public header is compiled as the first and only SQLConduit include under C++17.
+`cmake/public_api.cmake` is the reviewed installed-header inventory, not an assertion that every
+declaration is stable. Configuration fails if an installed header is added, removed, or renamed
+without updating that baseline. When tests are enabled, every installed header is compiled as the
+first and only SQLConduit include under C++17.
 `sqlconduit_public_api_contract_test` locks the key `Client` signatures,
 move-only lifecycle, version macros, runtime statistic types, and every `ErrorCode` numeric value.
 The install consumer test validates the exported CMake package. These checks prevent accidental
@@ -112,21 +125,25 @@ surface changes, transitive-include dependencies, and private-header installatio
 
 # SQLConduit 公共 API 稳定性约定
 
-本文定义 SQLConduit 从 0.x 走向 1.0 期间的兼容边界。约定以安装包为准；仅存在于源码树
-中的文件不属于公共 API。
+本文定义 SQLConduit 1.x 的兼容边界。约定以文档明确列出的安装包入口为准；某个头文件因
+类型完整性而被安装，并不代表其中所有声明都是稳定公共 API。
 
 ## 稳定性分层
 
-- **应用 API**：唯一高层入口 `Client`、公共数据类型、配置、观测、future 异步结果、
-  mapping、util、结构化 SQL Builder 和版本信息。相同 0.x 次版本内保持源码兼容。
+- **应用 API**：`api.h`、`public.h`、唯一高层入口 `Client`、公共数据类型、配置、观测、
+  future 异步结果、mapping、util、结构化 SQL Builder、Prometheus 指标和版本信息。整个
+  1.x 保持源码兼容。
 - **扩展 API**：驱动、连接、拦截器、限流器接口，以及 `Client` 签名中公开的
-  `DataSource`、`Session`、`Cursor`、选项和统计类型。
+  `DataSource`、`Session`、`Cursor`、选项、查询缓存、SQL 审计和统计类型。
 - **内部实现**：`RuntimeServices`、`StatsReporter` 和 `detail` 命名空间。内部头不会安装，
-  不承诺兼容。
+  不承诺兼容。`logger.h`、`heartbeat_manager.h`、`write_buffer.h` 等支持头即使随包安装，
+  也不是建议直接依赖的稳定入口。
 
-补丁版本不得破坏同一次版本的源码兼容；1.0 前确需破坏的改动只能进入新的次版本，并在
-CHANGELOG 中给出迁移方式。1.0 前的预览 API 可以在新次版本中直接移除，不要求弃用期；
-`ErrorCode` 的数值属于持久兼容契约，不再重排。
+1.x 的次版本和补丁版本不得破坏上述稳定 API 的源码兼容；弃用接口至少保留到当前次版本
+结束，移除或不兼容语义变更必须进入 2.0 并在 CHANGELOG 给出迁移方式。JSON/YAML 配置键、
+校验行为、指标名称和受限标签名遵守同一规则；允许在次版本增加可选项和新指标。
+`ErrorCode` 的数值属于持久兼容契约，不再重排。该承诺是源码兼容，不承诺跨编译器、标准库
+或运行库模式的 C++ 二进制 ABI。
 
 所有公共枚举均使用显式数值，已有数值不得重排或复用。弃用接口统一使用
 `sqlconduit/api.h` 中的 `SQLCONDUIT_DEPRECATED(message)`。
@@ -147,8 +164,8 @@ CHANGELOG 中给出迁移方式。1.0 前的预览 API 可以在新次版本中�
 - 回调内部不得销毁、移动、`reload()` 或 `shutdown()` 同一个客户端；生命周期修改应安排在
   回调返回后执行。
 
-`cmake/public_api.cmake` 是受审查的安装头清单；未同步更新基线和 CHANGELOG 的增删改名会
-在 CMake 配置阶段失败。测试构建会逐个独立编译公共头，并通过
+`cmake/public_api.cmake` 是受审查的安装头清单，不等于清单内所有声明都稳定；未同步更新
+基线和 CHANGELOG 的增删改名会在 CMake 配置阶段失败。测试构建会逐个独立编译安装头，并通过
 `sqlconduit_public_api_contract_test` 锁定关键 `Client` 签名、move-only 生命周期、版本宏、
 统计返回类型和全部 `ErrorCode` 数值。
 
@@ -160,5 +177,5 @@ fallback 和 timeout 数。这组接口目前有意不提供取消句柄或协�
 成功完成后把结果重写成 timeout。PostgreSQL 叶子数据源的普通查询/执行已经使用共享 libpq
 socket reactor；MySQL 8.0.16+ 的无参数单语句 SELECT 和 DML/DDL 使用官方 nonblocking C API
 与共享轮询 reactor。带参数 MySQL、旧 MySQL/MariaDB、两者的事务/游标/批量和复杂拓扑路径，
-以及 Oracle、ODBC 仍走兼容 fallback。0.7 冻结前已移除进程级 `SQLConduit`、异步自由函数、
+以及 Oracle、ODBC 仍走受支持且有明确统计的兼容 fallback。0.7 冻结前已移除进程级 `SQLConduit`、异步自由函数、
 取消句柄和协程包装；所有异步操作都从显式 `Client` 发起并返回标准 future。

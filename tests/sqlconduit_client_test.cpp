@@ -7,6 +7,7 @@
 #include <iostream>
 #include <memory>
 #include <future>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -28,9 +29,12 @@ namespace {
         static std::atomic<int> executeDelayMs;
         static std::atomic<int> cancelCalls;
         static std::atomic<int> nativeQueryCalls;
+        static std::atomic<int> nativeQueryCompletions;
         static std::atomic<int> nativeExecuteCalls;
         static std::atomic<int> retryableQueryFailures;
         static std::atomic<int> retryableExecuteFailures;
+        static std::mutex nativeQueryGateMutex;
+        static std::shared_future<void> nativeQueryGate;
 
         common::Status connect(const config::DataSourceConfig &config) override {
             identity_ = config.database;
@@ -73,14 +77,21 @@ namespace {
             const auto identity = identity_;
             const auto delay = queryDelayMs.load();
             const bool fail = retryableQueryFailures.fetch_sub(1) > 0;
-            std::thread([identity, delay, fail,
+            std::shared_future<void> gate;
+            {
+                std::lock_guard<std::mutex> lock(nativeQueryGateMutex);
+                gate = nativeQueryGate;
+            }
+            std::thread([identity, delay, fail, gate = std::move(gate),
                          completion = std::move(completion)]() mutable {
-                if (delay > 0) std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+                if (gate.valid()) gate.wait();
+                else if (delay > 0) std::this_thread::sleep_for(std::chrono::milliseconds(delay));
                 if (fail) {
                     auto status = common::Status::error(
                         common::ErrorCode::QueryError, "injected retryable query failure");
                     status.retryable = true;
                     completion(std::move(status), {});
+                    ++nativeQueryCompletions;
                     return;
                 }
                 common::ResultSet rows;
@@ -88,6 +99,7 @@ namespace {
                 row.set("client", identity);
                 rows.addRow(std::move(row));
                 completion(common::Status::OK(), std::move(rows));
+                ++nativeQueryCompletions;
             }).detach();
             return true;
         }
@@ -136,9 +148,12 @@ namespace {
     std::atomic<int> ClientTestConnection::executeDelayMs{0};
     std::atomic<int> ClientTestConnection::cancelCalls{0};
     std::atomic<int> ClientTestConnection::nativeQueryCalls{0};
+    std::atomic<int> ClientTestConnection::nativeQueryCompletions{0};
     std::atomic<int> ClientTestConnection::nativeExecuteCalls{0};
     std::atomic<int> ClientTestConnection::retryableQueryFailures{0};
     std::atomic<int> ClientTestConnection::retryableExecuteFailures{0};
+    std::mutex ClientTestConnection::nativeQueryGateMutex;
+    std::shared_future<void> ClientTestConnection::nativeQueryGate;
 
     class ClientTestDriver final : public driver::IDriver {
     public:
@@ -380,26 +395,42 @@ int main() {
 
     Client nativeTimeout;
     auto nativeTimeoutConfig = makeConfig("native-timeout");
-    nativeTimeoutConfig.async.statement_timeout_ms = 5;
+    nativeTimeoutConfig.async.statement_timeout_ms = 10;
     check(nativeTimeout.init(nativeTimeoutConfig).ok(),
           "native timeout test client initializes");
     ClientTestConnection::cancelCalls = 0;
-    ClientTestConnection::queryDelayMs = 50;
-    const auto nativeTimeoutStarted = std::chrono::steady_clock::now();
-    const auto nativeTimedResult = nativeTimeout.queryAsync("SELECT native_timeout").get();
-    const auto nativeTimeoutElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - nativeTimeoutStarted);
+    ClientTestConnection::nativeQueryCompletions = 0;
+    std::promise<void> releaseNativeQuery;
+    {
+        std::lock_guard<std::mutex> lock(ClientTestConnection::nativeQueryGateMutex);
+        ClientTestConnection::nativeQueryGate = releaseNativeQuery.get_future().share();
+    }
+    auto nativeTimedFuture = nativeTimeout.queryAsync("SELECT native_timeout");
+    const bool nativeDeadlineReady =
+        nativeTimedFuture.wait_for(std::chrono::seconds(1)) == std::future_status::ready;
+    check(nativeDeadlineReady,
+          "native query deadline resolves while the driver callback is blocked");
+    if (!nativeDeadlineReady) releaseNativeQuery.set_value();
+    const auto nativeTimedResult = nativeTimedFuture.get();
     check(nativeTimedResult.status.code == common::ErrorCode::QueryTimeout &&
-          nativeTimedResult.mode == async::ExecutionMode::Native &&
-          nativeTimeoutElapsed < std::chrono::milliseconds(40),
-          "native query deadline resolves before the delayed driver callback");
+          nativeTimedResult.mode == async::ExecutionMode::Native,
+          "native query deadline returns a native QueryTimeout result");
+    for (int i = 0; i < 1000 && ClientTestConnection::cancelCalls.load() == 0; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     check(ClientTestConnection::cancelCalls.load() == 1,
           "native query deadline invokes driver cancellation exactly once");
-    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    if (nativeDeadlineReady) releaseNativeQuery.set_value();
+    for (int i = 0; i < 1000 && ClientTestConnection::nativeQueryCompletions.load() == 0; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    check(ClientTestConnection::nativeQueryCompletions.load() == 1,
+          "late native driver callback completes exactly once after timeout");
+    {
+        std::lock_guard<std::mutex> lock(ClientTestConnection::nativeQueryGateMutex);
+        ClientTestConnection::nativeQueryGate = {};
+    }
     check(nativeTimeout.asyncStats().nativeOperations == 1 &&
           nativeTimeout.asyncStats().timedOutOperations == 1,
           "native timeout completes and is accounted exactly once");
-    ClientTestConnection::queryDelayMs = 0;
     nativeTimeout.shutdown(std::chrono::milliseconds(0));
 
     Client asyncPoolWait;

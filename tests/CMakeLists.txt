@@ -63,6 +63,12 @@ target_include_directories(sqlconduit_config_schema_test PRIVATE ${_nl_inc_dir})
 target_compile_definitions(sqlconduit_config_schema_test
                            PRIVATE SQLCONDUIT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
+add_executable(sqlconduit_query_cache_test sqlconduit_query_cache_test.cpp)
+target_link_libraries(sqlconduit_query_cache_test PRIVATE sqlconduit_core)
+
+add_executable(sqlconduit_concurrency_test sqlconduit_concurrency_test.cpp)
+target_link_libraries(sqlconduit_concurrency_test PRIVATE sqlconduit_core)
+
 # Every installed header must compile as the first and only project include. This
 # catches accidental reliance on transitive includes before an API release.
 set(SQLCONDUIT_PUBLIC_HEADERS ${SQLCONDUIT_FROZEN_PUBLIC_HEADERS})
@@ -123,6 +129,8 @@ if(Threads_FOUND)
     target_link_libraries(sqlconduit_client_test PRIVATE Threads::Threads)
     target_link_libraries(sqlconduit_public_api_contract_test PRIVATE Threads::Threads)
     target_link_libraries(sqlconduit_config_schema_test PRIVATE Threads::Threads)
+    target_link_libraries(sqlconduit_query_cache_test PRIVATE Threads::Threads)
+    target_link_libraries(sqlconduit_concurrency_test PRIVATE Threads::Threads)
     if(TARGET sqlconduit_postgres_integration_test)
         target_link_libraries(sqlconduit_postgres_integration_test PRIVATE Threads::Threads)
     endif()
@@ -157,3 +165,10 @@ add_test(NAME sqlconduit_limiter_plugin_test COMMAND sqlconduit_limiter_plugin_t
 add_test(NAME sqlconduit_client_test COMMAND sqlconduit_client_test)
 add_test(NAME sqlconduit_public_api_contract_test COMMAND sqlconduit_public_api_contract_test)
 add_test(NAME sqlconduit_config_schema_test COMMAND sqlconduit_config_schema_test)
+add_test(NAME sqlconduit_query_cache_test COMMAND sqlconduit_query_cache_test)
+add_test(NAME sqlconduit_concurrency_test COMMAND sqlconduit_concurrency_test)
+
+set_tests_properties(sqlconduit_query_cache_test PROPERTIES
+                     LABELS "unit;cache;concurrency" TIMEOUT 30)
+set_tests_properties(sqlconduit_concurrency_test PROPERTIES
+                     LABELS "stress;concurrency;lifecycle" TIMEOUT 60)

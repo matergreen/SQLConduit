@@ -1,9 +1,11 @@
 #include "sqlconduit/common/observer.h"
 #include "sqlconduit/core/connection_pool.h"
+#include "sqlconduit/core/query_cache.h"
 #include "sqlconduit/driver/idriver.h"
 #include "sqlconduit/mapping.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <fstream>
@@ -12,6 +14,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -145,6 +148,36 @@ namespace {
         return {std::move(name), iterations, repetitions, medianNs, 1e9 / medianNs};
     }
 
+    template<class Fn>
+    Result measureParallel(std::string name, const std::uint64_t totalIterations,
+                           const std::size_t threadCount, Fn &&fn) {
+        constexpr std::uint64_t repetitions = 5;
+        std::vector<double> samples;
+        samples.reserve(repetitions);
+        const auto perThread = (std::max<std::uint64_t>)(1, totalIterations / threadCount);
+        const auto measuredOperations = perThread * threadCount;
+        for (std::uint64_t repetition = 0; repetition < repetitions; ++repetition) {
+            std::atomic<bool> start{false};
+            std::vector<std::thread> workers;
+            workers.reserve(threadCount);
+            for (std::size_t thread = 0; thread < threadCount; ++thread) {
+                workers.emplace_back([&] {
+                    while (!start.load(std::memory_order_acquire)) std::this_thread::yield();
+                    for (std::uint64_t i = 0; i < perThread; ++i) fn();
+                });
+            }
+            const auto begin = std::chrono::steady_clock::now();
+            start.store(true, std::memory_order_release);
+            for (auto &worker: workers) worker.join();
+            const auto elapsed = std::chrono::duration<double, std::nano>(
+                std::chrono::steady_clock::now() - begin).count();
+            samples.push_back(elapsed / static_cast<double>(measuredOperations));
+        }
+        std::sort(samples.begin(), samples.end());
+        const double medianNs = samples[samples.size() / 2];
+        return {std::move(name), measuredOperations, repetitions, medianNs, 1e9 / medianNs};
+    }
+
     void requireOk(const common::Status &status, const char *operation) {
         if (!status.ok()) throw std::runtime_error(std::string(operation) + ": " + status.message);
     }
@@ -201,6 +234,15 @@ int main(int argc, char **argv) {
         auto handle = pool->borrow(code, error);
         if (!handle) throw std::runtime_error("borrow: " + error);
         benchmarkSink += (*handle)->isOpen() ? 1 : 0;
+    }));
+    std::atomic<std::uint64_t> parallelSink{0};
+    results.push_back(measureParallel("connection_borrow_return_contended_8t",
+                                      iterations, 8, [&] {
+        common::ErrorCode code = common::ErrorCode::Unknown;
+        std::string error;
+        auto handle = pool->borrow(code, error);
+        if (!handle) throw std::runtime_error("contended borrow: " + error);
+        parallelSink.fetch_add((*handle)->isOpen() ? 1 : 0, std::memory_order_relaxed);
     }));
 
     BenchConnection connection;
@@ -277,7 +319,42 @@ int main(int argc, char **argv) {
     }));
     if (rendererCalls != 0) throw std::runtime_error("disabled logging invoked SQL renderer");
 
+    core::detail::QueryCacheState disabledCache;
+    disabledCache.configure({});
+    common::ResultSet cacheOutput;
+    results.push_back(measure("query_cache_disabled_get", iterations, [&] {
+        if (disabledCache.get("benchmark", "missing", cacheOutput))
+            throw std::runtime_error("disabled cache returned an entry");
+    }));
+
+    config::QueryCacheConfig cacheConfig;
+    cacheConfig.enabled = true;
+    cacheConfig.ttl_ms = 60000;
+    cacheConfig.max_entries = 128;
+    core::detail::QueryCacheState queryCache;
+    queryCache.configure(cacheConfig);
+    common::ResultSet cachedRows;
+    cachedRows.setFields({"id", "name"});
+    common::Row cachedRow;
+    cachedRow.set("id", std::int64_t{42});
+    cachedRow.set("name", std::string("benchmark-user"));
+    cachedRows.addRow(std::move(cachedRow));
+    queryCache.put("benchmark", "hit", cachedRows);
+    results.push_back(measure("query_cache_hit", iterations, [&] {
+        if (!queryCache.get("benchmark", "hit", cacheOutput))
+            throw std::runtime_error("cache hit benchmark missed");
+        benchmarkSink += cacheOutput.rowCount();
+    }));
+    results.push_back(measure("query_cache_miss", iterations, [&] {
+        if (queryCache.get("benchmark", "missing", cacheOutput))
+            throw std::runtime_error("cache miss benchmark hit");
+    }));
+    results.push_back(measure("query_cache_replace", iterations, [&] {
+        queryCache.put("benchmark", "replace", cachedRows);
+    }));
+
     pool->shutdown();
+    benchmarkSink += parallelSink.load(std::memory_order_relaxed);
 
     std::cout << std::left << std::setw(30) << "benchmark"
               << std::right << std::setw(14) << "iterations"

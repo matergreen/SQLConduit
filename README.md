@@ -2,7 +2,7 @@
 
 > [中文](README_zh.md) · [Detailed guide](docs/guide_en.md) ·
 > [Feature coverage and roadmap](docs/feature_coverage.md) · [Support matrix](SUPPORT.md) ·
-> [Known limitations](docs/known_limitations.md)
+> [Test strategy](docs/test_strategy.md) · [Known limitations](docs/known_limitations.md)
 
 SQLConduit gives C++ applications a unified database access layer. The same API works with MySQL,
 PostgreSQL, Oracle, and ODBC databases while the middleware centrally manages connection pooling,

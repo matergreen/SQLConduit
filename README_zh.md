@@ -2,7 +2,7 @@
 
 > English: [README.md](README.md) · [详细指南](docs/guide.md) ·
 > [功能覆盖与路线图](docs/feature_coverage_zh.md) · [支持矩阵](SUPPORT.md) ·
-> [已知限制](docs/known_limitations.md)
+> [测试策略](docs/test_strategy_zh.md) · [已知限制](docs/known_limitations.md)
 
 SQLConduit 为 C++ 应用提供统一的数据库访问层。应用通过同一套 API 使用 MySQL、PostgreSQL、Oracle
 和 ODBC 数据库，并由中间件集中处理连接池、参数绑定、事务、超时、路由和运行指标。
@@ -387,7 +387,8 @@ target_link_libraries(your_target PRIVATE sqlconduit::postgres)
 
 连接池、异步 API、实体映射、例程与脚本、PostgreSQL 类型、游标、故障转移、可观测性、
 错误码、配置项和驱动扩展等内容见 [SQLConduit 详细指南](docs/guide.md)。
-指标兼容性与标签基数约束见 [指标契约](docs/metrics.md)，性能测试方法见
-[基准说明](benchmarks/README.md)。版本功能摘要见 [CHANGELOG](CHANGELOG.md)。参与贡献、
+指标兼容性与标签基数约束见 [指标契约](docs/metrics.md)，测试边界见
+[测试策略](docs/test_strategy_zh.md)，性能测试方法见 [基准说明](benchmarks/README.md)。
+版本功能摘要见 [CHANGELOG](CHANGELOG.md)。参与贡献、
 安全报告和版本支持范围分别见 [CONTRIBUTING](CONTRIBUTING.md)、[SECURITY](SECURITY.md)
 和 [SUPPORT](SUPPORT.md)。

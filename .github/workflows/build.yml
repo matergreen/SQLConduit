@@ -251,9 +251,79 @@ jobs:
       - run: cmake --build build-sanitize -j
       - name: Test with sanitizers
         env:
-          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
+          LSAN_OPTIONS: exitcode=23:report_objects=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: ctest --test-dir build-sanitize --output-on-failure
+
+  concurrency-sanitizer:
+    name: targeted ThreadSanitizer
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y clang ninja-build
+      - name: Configure ThreadSanitizer build
+        env:
+          CC: clang
+          CXX: clang++
+        run: >-
+          cmake -S . -B build-tsan -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic -Werror -fsanitize=thread -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+          -DSQLCONDUIT_BUILD_TESTS=ON
+      - run: >-
+          cmake --build build-tsan -j
+          --target sqlconduit_query_cache_test sqlconduit_concurrency_test
+      - name: Run cache and lifecycle contention tests under TSan
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: ctest --test-dir build-tsan --output-on-failure -L concurrency
+
+  coverage:
+    name: core coverage report
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y gcovr ninja-build
+      - name: Configure coverage build
+        env:
+          CC: gcc
+          CXX: g++
+        run: >-
+          cmake -S . -B build-coverage -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="--coverage -O0 -g"
+          -DCMAKE_EXE_LINKER_FLAGS="--coverage"
+          -DSQLCONDUIT_BUILD_TESTS=ON
+      - run: cmake --build build-coverage -j
+      - run: ctest --test-dir build-coverage --output-on-failure
+      - name: Generate coverage reports
+        run: |
+          mkdir -p coverage
+          gcovr --root . --filter 'src/' --filter 'include/' \
+            --exclude 'tests/' --xml coverage/coverage.xml --xml-pretty \
+            --html-details coverage/index.html
+          {
+            echo '### Core test coverage'
+            echo '```text'
+            gcovr --root . --filter 'src/' --filter 'include/' \
+              --exclude 'tests/' --txt-summary
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage report
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: core-coverage-report
+          path: coverage
+          if-no-files-found: error
+          retention-days: 30
 
   integration-open-source:
     name: live MySQL + PostgreSQL integration
@@ -347,7 +417,7 @@ jobs:
 
   release:
     name: publish release
-    needs: [build, sanitizers, integration-open-source, integration-sqlserver]
+    needs: [build, sanitizers, concurrency-sanitizer, coverage, integration-open-source, integration-sqlserver]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

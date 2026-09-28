@@ -378,8 +378,13 @@ static std::string buildConfig(const CfgFlags &f) {
 
 static std::string g_configPath;
 
-static void applyConfig(const CfgFlags &f) {
-    std::ofstream(g_configPath) << buildConfig(f);
+static bool applyConfig(const CfgFlags &f) {
+    std::ofstream output(g_configPath, std::ios::binary | std::ios::trunc);
+    output << buildConfig(f);
+    output.flush();
+    const bool ok = output.good();
+    output.close();
+    return ok;
 }
 
 static common::Timestamp ts(const std::string &s) {
@@ -419,13 +424,19 @@ public:
 };
 
 int main() {
-    g_configPath = (std::filesystem::temp_directory_path() / "sqlconduit_mapping_test.json").string();
+    // The test may be launched from WSL by a Windows parent whose TEMP points to a
+    // Windows-style path.  Keep the fixture in CTest's writable working directory
+    // so configuration reloads exercise real, fully flushed files on every platform.
+    g_configPath = (std::filesystem::current_path() / "sqlconduit_mapping_test.json").string();
 
     driver::DriverRegistry::instance().registerDriver(
         "mmock", [] { return std::make_unique<MappingMockDriver>(); });
 
     CfgFlags base;
-    applyConfig(base);
+    if (!applyConfig(base)) {
+        std::cout << "cannot write initial mapping test configuration\n";
+        return 1;
+    }
     if (!g_client.init(g_configPath).ok()) {
         std::cout << "init failed\n";
         return 1;
@@ -744,7 +755,7 @@ int main() {
     {
         CfgFlags cf;
         cf.cache = true;
-        applyConfig(cf);
+        check(applyConfig(cf), "缓存测试配置完整写入磁盘");
         check(g_client.reload(g_configPath, std::chrono::milliseconds(500)).ok(), "热加载开启查询缓存");
 
         gRows = {userRow(1, "cached", std::nullopt, "1.00")};
@@ -761,7 +772,7 @@ int main() {
               "缓存命中后仍执行映射（I1：缓存不存实体）");
 
         CfgFlags back;
-        applyConfig(back);
+        check(applyConfig(back), "基础配置完整写回磁盘");
         check(g_client.reload(g_configPath, std::chrono::milliseconds(500)).ok(), "恢复基础配置");
     }
 
@@ -769,7 +780,7 @@ int main() {
     {
         CfgFlags cf;
         cf.interceptors = true;
-        applyConfig(cf);
+        check(applyConfig(cf), "拦截器测试配置完整写入磁盘");
         check(g_client.reload(g_configPath, std::chrono::milliseconds(500)).ok(), "热加载开启拦截器");
         g_client.addInterceptor(std::make_shared<MaskingInterceptor>());
 
@@ -781,7 +792,7 @@ int main() {
 
         g_client.clearInterceptors();
         CfgFlags back;
-        applyConfig(back);
+        check(applyConfig(back), "基础配置再次完整写回磁盘");
         check(g_client.reload(g_configPath, std::chrono::milliseconds(500)).ok(), "恢复基础配置");
     }
 

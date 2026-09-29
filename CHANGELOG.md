@@ -6,6 +6,24 @@ description.
 
 ## [Unreleased]
 
+## [1.0.0-rc.3]
+
+### Validation and release quality
+
+- Added targeted query-cache validation for disabled-mode short circuiting, TTL expiry, LRU and
+  memory bounds, oversized entries, copy isolation, datasource-scoped invalidation,
+  reconfiguration, and concurrent access.
+- Added connection-pool and executor contention/lifecycle tests, including repeated teardown and
+  release of captures owned by cancelled delayed tasks. These tests now run under a dedicated
+  ThreadSanitizer release gate.
+- Expanded the optimized benchmark suite with eight-thread pool contention and query-cache
+  disabled, hit, miss, and replacement paths.
+- Added browsable core coverage reports and explicit test-strategy documentation. Coverage report
+  generation tolerates gcov's known negative branch-hit output while retaining failures for other
+  parse errors.
+- Fixed the mapping reload fixture when Linux tests are launched from a Windows parent whose
+  temporary-directory environment contains a Windows-style path.
+
 ## [1.0.0-rc.2]
 
 ### Compatibility contract

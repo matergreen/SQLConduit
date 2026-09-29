@@ -308,13 +308,17 @@ jobs:
         run: |
           mkdir -p coverage
           gcovr --root . --filter 'src/' --filter 'include/' \
-            --exclude 'tests/' --xml coverage/coverage.xml --xml-pretty \
+            --exclude 'tests/' \
+            --gcov-ignore-parse-errors negative_hits.warn_once_per_file \
+            --xml coverage/coverage.xml --xml-pretty \
             --html-details coverage/index.html
           {
             echo '### Core test coverage'
             echo '```text'
             gcovr --root . --filter 'src/' --filter 'include/' \
-              --exclude 'tests/' --txt-summary
+              --exclude 'tests/' \
+              --gcov-ignore-parse-errors negative_hits.warn_once_per_file \
+              --txt-summary
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage report

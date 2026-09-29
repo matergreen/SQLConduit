@@ -2,9 +2,9 @@
 
 ## Supported versions
 
-Security fixes follow the version table in [SUPPORT.md](SUPPORT.md). Release candidates are for
-evaluation and coordinated reporting; the supported `1.x` line begins with final 1.0.0. Transition
-or unsupported lines are covered only when that table explicitly says so.
+Security fixes follow the version table in [SUPPORT.md](SUPPORT.md). The final `1.0.x` line is
+supported; release candidates are superseded by the corresponding final release. Transition or
+unsupported lines are covered only when that table explicitly says so.
 
 ## Reporting a vulnerability
 

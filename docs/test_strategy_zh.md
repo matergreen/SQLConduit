@@ -50,8 +50,8 @@ LeakSanitizer 对整个非实库套件启用，并用非零退出码报告泄漏
 以下项目不能宣称已经全面验证：
 
 - Oracle 实库测试需要 OCI 环境，尚未进入 GitHub 托管 CI。
-- 托管 SQL Server 集成测试目前使用 FreeTDS；Linux/Windows 上的 Microsoft ODBC Driver
-  实库执行仍是独立兼容检查，Windows CI 目前会编译 ODBC 路径。
+- 托管 SQL Server 集成测试使用 FreeTDS；Microsoft ODBC Driver 实库执行不属于 1.0.0
+  已验证矩阵，Windows CI 目前只提供 ODBC 路径的编译和单测验证。
 - 自动版本矩阵尚未覆盖支持范围内的每个数据库小版本和客户端库版本。
 - 微基准使用确定性的进程内驱动；端到端数据库延迟、吞吐、服务端计划缓存和网络背压需要
   受控的外部基准环境。

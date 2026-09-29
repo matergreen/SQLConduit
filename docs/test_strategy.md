@@ -57,8 +57,8 @@ regressions. It does not yet impose a peak-RSS or long-running heap-growth budge
 The following gaps are explicit and must not be described as fully validated:
 
 - Oracle live tests require an OCI-equipped environment and are not run by GitHub-hosted CI.
-- Hosted SQL Server integration currently uses FreeTDS. Microsoft ODBC Driver live execution on
-  Linux and Windows remains a separate compatibility check; Windows CI compiles the ODBC path.
+- Hosted SQL Server integration uses FreeTDS. Microsoft ODBC Driver live execution is not part of
+  the 1.0.0 validated matrix; Windows CI provides compile/test validation of the ODBC path only.
 - The automated version matrix does not yet cover every supported database minor version or every
   client-library version.
 - Microbenchmarks use deterministic in-process drivers. End-to-end database latency, throughput,

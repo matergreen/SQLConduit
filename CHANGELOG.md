@@ -6,6 +6,22 @@ description.
 
 ## [Unreleased]
 
+## [1.0.0]
+
+### First stable release
+
+- Froze the documented 1.x public source API, configuration Schema, error-code values, and stable
+  metrics contract after the 1.0 release-candidate validation cycle.
+- Published componentized Core, MySQL, PostgreSQL, ODBC, and Oracle targets so consumers only need
+  the database client SDKs for drivers they select.
+- Validated live MySQL, PostgreSQL, SQL Server through unixODBC/FreeTDS, and Oracle Database Free
+  with OCI 23.26.3 paths. The Microsoft ODBC Driver path has Windows compile/test validation only
+  in 1.0.0 and is not claimed as live-driver validated.
+- Documented the implemented, expanding-validation, and scheduled capability boundaries for 1.x,
+  including compatibility fallback for ODBC/Oracle async and the source-compatibility policy.
+- Added platform archives, SHA-256 checksums, an SPDX SBOM, build/SBOM attestations, installed
+  consumer smoke tests, sanitizer gates, core coverage reports, and release benchmarks.
+
 ## [1.0.0-rc.3]
 
 ### Validation and release quality

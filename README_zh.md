@@ -367,7 +367,7 @@ g++ -std=c++17 app.cpp $(pkg-config --cflags sqlconduit-postgres) \
 include(FetchContent)
 FetchContent_Declare(sqlconduit
     GIT_REPOSITORY https://github.com/matergreen/SQLConduit.git
-    GIT_TAG        v0.7.0)
+    GIT_TAG        v1.0.0)
 FetchContent_MakeAvailable(sqlconduit)
 
 target_link_libraries(your_target PRIVATE sqlconduit::postgres)

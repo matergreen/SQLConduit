@@ -8,9 +8,8 @@ This is the current capability map for SQLConduit 1.0. It answers three separate
 2. How broadly has the implementation been validated?
 3. Is further work committed, being evaluated, or intentionally outside the project?
 
-The snapshot date is **2026-09-28**. Release notes remain authoritative for a particular version;
-this document describes the direction of the supported `1.x` line and is reviewed at each release
-candidate.
+The snapshot date is **2026-09-29**. Release notes remain authoritative for a particular version;
+this document describes the direction of the supported `1.x` line and is reviewed at each release.
 
 ## Status vocabulary
 
@@ -97,11 +96,12 @@ observable.
 | Cursor | Unbuffered | Server-side | Native ODBC | Forward-only OCI |
 | Native async query/execute | Partial eligible paths | Eligible leaf paths | Not in 1.0 | Not in 1.0 |
 | Future API fallback | Validated | Validated | Validated | Validated |
-| Live release validation | Automated | Automated | Automated on Linux/FreeTDS; Windows compile/test | Manual OCI-equipped runner |
+| Live release validation | Automated | Automated | Automated on Linux/FreeTDS; Microsoft ODBC Driver compile/test only on Windows | Manual OCI-equipped runner |
 
-The latest local release-candidate run completed MySQL (181 checks), PostgreSQL (321 checks), SQL
-Server/ODBC (79 checks), and Oracle (85 checks). Check counts are a snapshot, not a compatibility
-contract. See [Support](../SUPPORT.md) for the platform/client matrix and
+The 1.0.0 release validation completed MySQL 8.4.11 (181 checks), PostgreSQL 18.6 (321 checks), SQL
+Server 2022 through unixODBC/FreeTDS (79 checks), and Oracle Database Free with OCI 23.26.3
+(85 checks). Check counts are a snapshot, not a compatibility contract. See
+[Support](../SUPPORT.md) for the platform/client matrix and
 [Known limitations](known_limitations.md) for exact exclusions.
 
 ## Work currently in extended validation
@@ -203,5 +203,5 @@ constraints:
 - when a proposed optimization cannot preserve semantics, the project keeps the safe fallback or
   introduces an explicit opt-in instead of silently changing behavior.
 
-Every release candidate must update this document, the known-limitations document, and the release
-checklist together when capability status changes.
+Every release must update this document, the known-limitations document, and the release checklist
+together when capability status changes.

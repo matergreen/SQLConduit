@@ -53,7 +53,7 @@ export SQLCONDUIT_TEST_ORACLE_USER=system
 export SQLCONDUIT_TEST_ORACLE_SERVICE=FREEPDB1
 export SQLCONDUIT_TEST_ORACLE_PASSWORD="$PW"
 export ORACLE_HOME="$CLNT/home"
-export LD_LIBRARY_PATH="$CLNT/home/lib:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="$CLNT/home/lib:${LD_LIBRARY_PATH:-}"
 cd "$BUILD/tests"
 echo "==> run sqlconduit_oracle_integration_test"
 ./sqlconduit_oracle_integration_test 2>&1

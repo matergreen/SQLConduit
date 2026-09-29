@@ -35,8 +35,8 @@ int main() {
     check(schema.value("$schema", "") == "https://json-schema.org/draft/2020-12/schema",
           "schema declares JSON Schema 2020-12");
     check(schema.value("$id", "") ==
-          "https://github.com/matergreen/SQLConduit/raw/v1.0.0-rc.3/config/sqlconduit.schema.json",
-          "schema identity matches the 1.0.0-rc.3 configuration contract");
+          "https://github.com/matergreen/SQLConduit/raw/v1.0.0/config/sqlconduit.schema.json",
+          "schema identity matches the 1.0.0 configuration contract");
     check(schema.value("type", "") == "object" &&
           schema.value("additionalProperties", true) == false,
           "root configuration rejects unknown fields");

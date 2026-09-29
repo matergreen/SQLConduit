@@ -3,8 +3,8 @@
 > [English](feature_coverage.md)
 
 本文是 SQLConduit 1.0 当前能力的统一清单，分别回答三个问题：功能是否已经实现、验证范围有
-多大、后续工作属于已排期还是仅在评估。快照日期为 **2026-09-28**；具体版本仍以对应的
-CHANGELOG 为准，每个发布候选版本都应复核本文。
+多大、后续工作属于已排期还是仅在评估。快照日期为 **2026-09-29**；具体版本仍以对应的
+CHANGELOG 为准，每个发布版本都应复核本文。
 
 ## 状态定义
 
@@ -90,10 +90,11 @@ CHANGELOG 为准，每个发布候选版本都应复核本文。
 | 游标 | 非缓冲 | 服务端 | 原生 ODBC | OCI 前向 |
 | Native async query/execute | 部分合格路径 | 合格叶子路径 | 1.0 未实现 | 1.0 未实现 |
 | Future fallback | 已验证 | 已验证 | 已验证 | 已验证 |
-| 实库发布验证 | 自动 | 自动 | Linux/FreeTDS 自动；Windows 编译/单测 | OCI 环境手工验证 |
+| 实库发布验证 | 自动 | 自动 | Linux/FreeTDS 自动；Microsoft ODBC Driver 仅 Windows 编译/单测 | OCI 环境手工验证 |
 
-最近一次本地 RC 验证通过 MySQL 181 项、PostgreSQL 321 项、SQL Server/ODBC 79 项和
-Oracle 85 项。数量只是当前快照，不属于兼容契约。平台和客户端矩阵见
+1.0.0 发布验证通过 MySQL 8.4.11（181 项）、PostgreSQL 18.6（321 项）、
+SQL Server 2022 + unixODBC/FreeTDS（79 项），以及 Oracle Database Free + OCI 23.26.3
+（85 项）。数量只是当前快照，不属于兼容契约。平台和客户端矩阵见
 [版本支持](../SUPPORT.md)，精确排除项见[已知限制](known_limitations.md)。
 
 ## 正在扩大验证的内容
@@ -177,4 +178,4 @@ HTTP server，也不承诺 exactly-once 写入。
 - 先弃用、后移除，不兼容删除等待 2.0；
 - 无法保持语义的优化继续使用安全 fallback，或者新增显式 opt-in，不静默改变行为。
 
-每个发布候选版本在能力状态发生变化时，必须同时更新本文、已知限制和发布检查表。
+每个发布版本在能力状态发生变化时，必须同时更新本文、已知限制和发布检查表。

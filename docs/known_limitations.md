@@ -40,7 +40,9 @@ For the complete implemented/testing/scheduled matrix, see
   dependency.
 - Linux and macOS release archives contain Core, MySQL, PostgreSQL, and ODBC components. The Windows
   archive contains Core and ODBC. Oracle must be built from source against an installed Oracle
-  Instant Client SDK and is validated manually for release candidates.
+  Instant Client SDK and is validated manually for releases.
+- The Microsoft ODBC Driver path is compile-tested on Windows but has no live-driver validation in
+  the 1.0.0 release matrix. Live SQL Server integration uses unixODBC and FreeTDS on Linux.
 - SQLConduit promises 1.x source compatibility, not C++ ABI compatibility across toolchains or
   runtime-library modes. Build the library and consuming application with compatible settings.
 
@@ -69,5 +71,7 @@ For the complete implemented/testing/scheduled matrix, see
 - Oracle 复杂命名对象绑定及 OUT/INOUT LOB 便利映射不属于 1.0 契约。
 - 驱动是独立静态组件；只链接实际使用的组件。预编译 Windows 包仅含 Core/ODBC，Linux 与
   macOS 包含 Core/MySQL/PostgreSQL/ODBC；Oracle 需要基于 Instant Client SDK 从源码构建。
+- Microsoft ODBC Driver 在 1.0.0 中只有 Windows 编译验证；SQL Server 实库集成使用
+  Linux 上的 unixODBC/FreeTDS，不宣称已完成 Microsoft 驱动实库验证。
 - 1.x 承诺源码兼容，不承诺跨工具链 C++ ABI。重试、故障切换和写缓冲也不提供 exactly-once
   写入保证。

@@ -72,7 +72,7 @@ CHANGELOG 为准，每个发布版本都应复核本文。
 | 异步连接借用与 deadline | **已实现 / 已验证** | 等连接不占 worker，主动池等待/读超时，忙连接隔离 |
 | PostgreSQL native 异步 | **已实现 / 已验证** | 合格叶子 query/execute 走共享 libpq socket reactor |
 | MySQL native 异步 | **已实现 / 扩大验证中** | 受支持客户端的无参数单语句路径；prepared 路径 fallback |
-| ODBC/Oracle 异步 | **已实现兼容 fallback** | Future API 和统计稳定，native 状态机单独排期 |
+| ODBC/Oracle native 异步 | **已实现 / 扩大验证中** | OCI nonblocking 已过实库；ODBC 按驱动能力启用轮询，Microsoft 驱动实库待验证 |
 | 日志、Observer、慢 SQL、池指标 | **已实现 / 已验证** | Client 级观测、指纹、采样/脱敏、有界聚合 |
 | Prometheus | **已实现 / 已验证** | 指标/类型/标签契约冻结，高基数指纹有硬上限；HTTP server 由应用提供 |
 | 性能基准 | **已实现 / 扩大验证中** | 覆盖连接借还、绑定、映射、批量、游标、关闭日志；历史回归自动化待排期 |
@@ -88,7 +88,7 @@ CHANGELOG 为准，每个发布版本都应复核本文。
 | Prepared 复用 | 已验证 | 已验证 | 已验证 | 已验证 |
 | 原子批量 | 分块快速路径 + fallback | Pipeline + fallback | 参数数组 + fallback | Array DML + fallback |
 | 游标 | 非缓冲 | 服务端 | 原生 ODBC | OCI 前向 |
-| Native async query/execute | 部分合格路径 | 合格叶子路径 | 1.0 未实现 | 1.0 未实现 |
+| Native async query/execute | 部分合格路径 | 合格叶子路径 | 能力门控轮询；FreeTDS fallback | 合格 OCI nonblocking 路径 |
 | Future fallback | 已验证 | 已验证 | 已验证 | 已验证 |
 | 实库发布验证 | 自动 | 自动 | Linux/FreeTDS 自动；Microsoft ODBC Driver 仅 Windows 编译/单测 | OCI 环境手工验证 |
 
@@ -121,7 +121,7 @@ SQL Server 2022 + unixODBC/FreeTDS（79 项），以及 Oracle Database Free + O
 | 历史性能回归门禁 | **已排期** | 下一个 1.x 次版本 | 只改变 Benchmark/CI |
 | 分配、连接池竞争、批量和游标优化 | **已排期** | 贯穿 1.x 逐步交付 | 保持现有方法和结果语义 |
 | `StreamSource` 增量消费 | **已排期** | 后续 1.x | 复用当前类型和重载 |
-| ODBC/Oracle native async | **已排期** | 后续 1.x，受厂商能力验证约束 | 复用 future API，真正 native 后才改变 `AsyncMode` |
+| ODBC/Oracle native async 验证 | **进行中** | 1.0.1 加固 | 复用 future API；能力门控选择模式，补充取消与并发覆盖 |
 | SQL Builder 方言扩展 | **已排期** | 后续 1.x | 新增扩展类型，可移植 Builder 继续有效 |
 | 可选协程/Tracing 适配器 | **评估中** | 未分配版本 | 在 future/Observer event 上增加独立可选头 |
 
@@ -143,8 +143,9 @@ SQL Server 2022 + unixODBC/FreeTDS（79 项），以及 Oracle Database Free + O
 
 ### C — Native 异步覆盖
 
-- 对支持可靠异步模型的 ODBC Driver 实现 native ODBC async；
-- 在能够保证取消和连接复用安全时实现 Oracle OCI native/nonblocking 状态机；
+- 增加 Microsoft ODBC Driver statement/connection 级轮询、取消、大字段和连接复用实库覆盖，
+  FreeTDS 继续按能力探测走 fallback；
+- 扩大 Oracle OCI nonblocking 的取消、并发、LOB 和客户端版本测试，临时 LOB 输入绑定保留 fallback；
 - 厂商能力允许时，把带参数 MySQL 及复杂路由/重试/缓存路径移出兼容 worker；
 - 评估基于现有 future 的可选协程适配头，future 入口继续保留且不变。
 

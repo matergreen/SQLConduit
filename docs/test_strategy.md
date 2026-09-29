@@ -65,8 +65,10 @@ The following gaps are explicit and must not be described as fully validated:
   server plan-cache behavior, and network backpressure require a controlled external benchmark.
 - There is no scheduled multi-hour soak, process-RSS growth gate, network partition proxy, or
   database failover chaos suite yet.
-- ODBC and Oracle native asynchronous state machines remain outside 1.0; their compatibility
-  fallback is tested, but cannot stand in for future native-async tests.
+- The 1.0.1 development line adds ODBC and Oracle native asynchronous state machines. Oracle OCI
+  query/execute and LOB-result paths are covered by the manual live suite. FreeTDS explicitly
+  verifies fallback; Microsoft ODBC Driver native polling still needs a live-driver gate, plus
+  long-running cancellation and concurrency soak coverage.
 
 ## Adding or changing a feature
 

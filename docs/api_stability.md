@@ -102,9 +102,12 @@ The driver SPI now includes optional `queryAsync` / `executeAsync` callbacks; re
 means no operation was started and preserves compatibility fallback. PostgreSQL implements these
 callbacks with a bundled libpq socket reactor for eligible leaf query/execute operations. MySQL
 8.0.16+ implements parameter-free single-statement SELECT and DML/DDL through its official
-nonblocking C API; parameterized operations remain prepared-statement fallbacks. Oracle, ODBC,
-older MySQL/MariaDB clients, and transaction/cursor/batch or complex-topology paths retain the
-compatibility fallback while their native state machines remain under development.
+nonblocking C API; parameterized operations remain prepared-statement fallbacks. The 1.0.1
+development line implements eligible Oracle operations with OCI nonblocking mode and eligible ODBC
+operations with the driver's polling model. Runtime capability detection preserves fallback for
+drivers such as FreeTDS that report `SQL_AM_NONE`, for Oracle temporary-LOB input binding, and for
+transaction/cursor/batch or complex-topology paths. This is an implementation change behind the
+same frozen `Client` futures, SPI callbacks, result types, and execution-mode contract.
 
 There is no process-wide async facade. Callback, cancellation-handle, and coroutine wrappers were
 removed before the 0.7 API freeze; asynchronous work starts from an explicit `Client` and returns a
@@ -176,6 +179,8 @@ fallback 和 timeout 数。这组接口目前有意不提供取消句柄或协�
 `async.statement_timeout_ms` 对超时读请求做 late classification，但不会在写、批量或事务已经
 成功完成后把结果重写成 timeout。PostgreSQL 叶子数据源的普通查询/执行已经使用共享 libpq
 socket reactor；MySQL 8.0.16+ 的无参数单语句 SELECT 和 DML/DDL 使用官方 nonblocking C API
-与共享轮询 reactor。带参数 MySQL、旧 MySQL/MariaDB、两者的事务/游标/批量和复杂拓扑路径，
-以及 Oracle、ODBC 仍走受支持且有明确统计的兼容 fallback。0.7 冻结前已移除进程级 `SQLConduit`、异步自由函数、
+与共享轮询 reactor。1.0.1 开发线为合格 Oracle 操作实现 OCI nonblocking，为报告异步能力的
+ODBC 驱动实现轮询状态机；FreeTDS、Oracle 临时 LOB 输入绑定、事务/游标/批量和复杂拓扑仍走
+受支持且有明确统计的兼容 fallback。这些改动复用冻结的 `Client` future、SPI 回调、结果类型和
+执行模式契约。0.7 冻结前已移除进程级 `SQLConduit`、异步自由函数、
 取消句柄和协程包装；所有异步操作都从显式 `Client` 发起并返回标准 future。

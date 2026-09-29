@@ -88,6 +88,7 @@ namespace {
         std::string table;
         std::string configPath;
         bool initialized = false;
+        bool expectNativeAsync = false;
 
         Fixture() {
             const auto stamp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
@@ -112,6 +113,7 @@ namespace {
             const auto password = env("SQLCONDUIT_TEST_ODBC_PASSWORD");
             const auto database = env("SQLCONDUIT_TEST_ODBC_DATABASE", "master");
             const auto driver = env("SQLCONDUIT_TEST_ODBC_DRIVER", "FreeTDS");
+            expectNativeAsync = driver.find("ODBC Driver") != std::string::npos;
             require(!password.empty(), "SQLCONDUIT_TEST_ODBC_PASSWORD must be set");
             const std::string connection = "DRIVER={" + driver + "};SERVER=" + host
                                            + ";PORT=" + port + ";DATABASE=" + database + ";UID=" + user + ";PWD="
@@ -262,6 +264,17 @@ namespace {
         const auto asyncRows = g_client.queryAsync("SELECT COUNT(*) n FROM " + f.table).get();
         requireOk(asyncRows.status, "async query");
         require(asInt(asyncRows.rows.rows()[0].at("n")) >= 3, "async count mismatch");
+        require((asyncRows.mode == sqlconduit::async::ExecutionMode::Native) ==
+                    f.expectNativeAsync,
+                "ODBC queryAsync execution mode does not match driver capability");
+        const auto asyncWrite = g_client.executeAsync(
+            "INSERT INTO " + f.table + " (name,qty) VALUES (?,?)",
+            Params{std::string("async-write"), std::int64_t{9}}).get();
+        requireOk(asyncWrite.status, "async execute");
+        require(asyncWrite.affected == 1 &&
+                    ((asyncWrite.mode == sqlconduit::async::ExecutionMode::Native) ==
+                     f.expectNativeAsync),
+                "ODBC executeAsync execution mode does not match driver capability");
         sqlconduit::core::ConnectionPool::Stats pool;
         require(g_client.poolStats(pool) && pool.borrowRequests > 0, "pool metrics empty");
         require(!g_client.slowSqlStats().empty(), "slow SQL metrics empty");

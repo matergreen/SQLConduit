@@ -122,6 +122,21 @@ namespace sqlconduit::driver {
 
         common::Status cancel() override;
 
+        [[nodiscard]] core::AsyncCapability asyncCapability() const override {
+#ifdef SQLCONDUIT_ENABLE_ORACLE
+            return nativeAsync_ ? core::AsyncCapability::Native
+                                : core::AsyncCapability::ThreadPoolFallback;
+#else
+            return core::AsyncCapability::ThreadPoolFallback;
+#endif
+        }
+
+        bool queryAsync(const std::string &sql, const common::Params &params,
+                        AsyncQueryCompletion completion) override;
+
+        bool executeAsync(const std::string &sql, const common::Params &params,
+                          AsyncExecuteCompletion completion) override;
+
     private:
         common::Status runStatement(const std::string &sql, const common::Params &params,
                                     bool isQuery, std::int64_t &affected,
@@ -154,10 +169,12 @@ namespace sqlconduit::driver {
         std::string lastErr_;
         mutable std::mutex operationMtx_;
         bool operationActive_ = false;
+        bool nativeAsync_ = false;
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         OCIEnv *env_ = nullptr;
         OCIError *err_ = nullptr;
         OCISvcCtx *svc_ = nullptr;
+        OCIServer *server_ = nullptr;
 #endif
     };
 

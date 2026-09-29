@@ -95,6 +95,21 @@ namespace sqlconduit::driver {
 
         common::Status cancel() override;
 
+        [[nodiscard]] core::AsyncCapability asyncCapability() const override {
+#ifdef SQLCONDUIT_ENABLE_ODBC
+            return nativeAsync_ ? core::AsyncCapability::Native
+                                : core::AsyncCapability::ThreadPoolFallback;
+#else
+            return core::AsyncCapability::ThreadPoolFallback;
+#endif
+        }
+
+        bool queryAsync(const std::string &sql, const common::Params &params,
+                        AsyncQueryCompletion completion) override;
+
+        bool executeAsync(const std::string &sql, const common::Params &params,
+                          AsyncExecuteCompletion completion) override;
+
     private:
         friend class OdbcCursor;
 
@@ -109,6 +124,8 @@ namespace sqlconduit::driver {
         std::uint64_t defaultIsolation_ = 0;
         bool utf8NarrowBinding_ = false;
         bool parameterArrayResultsReliable_ = true;
+        bool nativeAsync_ = false;
+        bool nativeAsyncConnectionLevel_ = false;
 
         using PreparedLru = std::list<std::string>;
         struct PreparedEntry {

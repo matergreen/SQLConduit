@@ -2,12 +2,15 @@
 #include "sqlconduit/drivers/oracle.h"
 #include "sqlconduit/driver/driver_registry.h"
 #include "sqlconduit/common/oracle_types.h"
+#include "sqlconduit/common/logger.h"
+#include "polling_async_reactor.h"
 
 #include <algorithm>
 #include <iterator>
 #include <cerrno>
 #include <cstring>
 #include <functional>
+#include <exception>
 #include <limits>
 #include <string>
 #include <utility>
@@ -351,9 +354,21 @@ namespace sqlconduit::driver {
                 return result;
             }
 
-            common::Status fetchOne(common::Row &row, bool &hasRow) {
+            [[nodiscard]] bool hasLobColumns() const {
+                return std::any_of(columns_.begin(), columns_.end(), [](const auto &column) {
+                    return common::oracleIsLob(column.sqlt);
+                });
+            }
+
+            common::Status fetchOne(common::Row &row, bool &hasRow,
+                                    bool *stillExecuting = nullptr) {
                 hasRow = false;
+                if (stillExecuting) *stillExecuting = false;
                 const sword frc = OCIStmtFetch2(stmt_, err_, 1, OCI_FETCH_NEXT, 0, OCI_DEFAULT);
+                if (frc == OCI_STILL_EXECUTING && stillExecuting) {
+                    *stillExecuting = true;
+                    return common::Status::OK();
+                }
                 if (frc == OCI_NO_DATA) return common::Status::OK();
                 if (!ociOk(frc)) return oracleError(err_, common::ErrorCode::QueryError, "fetch");
                 for (std::size_t i = 0; i < columns_.size(); ++i) {
@@ -514,6 +529,251 @@ namespace sqlconduit::driver {
         std::uint64_t rowsFetched_ = 0;
     };
 
+    namespace {
+        detail::PollingAsyncReactor &oracleAsyncReactor() {
+            static detail::PollingAsyncReactor reactor;
+            return reactor;
+        }
+
+        common::Status setOracleNonblocking(OCIServer *server, OCIError *err,
+                                            const bool enabled) {
+            if (!server)
+                return common::Status::error(common::ErrorCode::NotSupported,
+                                             "Oracle: server handle is unavailable");
+            ub1 current = 0;
+            sword rc = OCIAttrGet(server, OCI_HTYPE_SERVER, &current, nullptr,
+                                  OCI_ATTR_NONBLOCKING_MODE, err);
+            if (!ociOk(rc))
+                return oracleError(err, common::ErrorCode::NotSupported,
+                                   "read nonblocking mode");
+            if ((current != 0) == enabled) return common::Status::OK();
+            rc = OCIAttrSet(server, OCI_HTYPE_SERVER, nullptr, 0,
+                            OCI_ATTR_NONBLOCKING_MODE, err);
+            return ociOk(rc)
+                       ? common::Status::OK()
+                       : oracleError(err, common::ErrorCode::NotSupported,
+                                     "set nonblocking mode");
+        }
+
+        bool oracleAsyncParamsEligible(const config::DataSourceConfig &cfg,
+                                       const common::Params &params) {
+            const auto mode = resolveLobBindMode(cfg);
+            for (const auto &param: params) {
+                const auto value = common::oracleBindValue(param);
+                if (value.unsupported) continue;
+                if (value.raw && (mode == LobBindMode::Lob ||
+                                  (mode == LobBindMode::Auto &&
+                                   value.raw->size() > kDirectBindLimit)))
+                    return false;
+            }
+            return true;
+        }
+
+        class OracleAsyncOperation final {
+        public:
+            enum class Kind { Query, Execute };
+            enum class Stage { Prepare, Execute, Fetch, Complete };
+
+            OracleAsyncOperation(Kind kind, OCIEnv *env, OCISvcCtx *svc,
+                                 OCIServer *server, OCIError *err,
+                                 config::DataSourceConfig cfg, std::string sql,
+                                 common::Params params, const std::int64_t lobMaxBytes,
+                                 std::unique_ptr<ActiveOperation> active,
+                                 core::IDatabaseConnection::AsyncQueryCompletion queryCompletion,
+                                 core::IDatabaseConnection::AsyncExecuteCompletion executeCompletion)
+                : kind_(kind), env_(env), svc_(svc), server_(server), err_(err),
+                  cfg_(std::move(cfg)), sql_(std::move(sql)), params_(std::move(params)),
+                  input_(env, svc, err, params_.size()), lobMaxBytes_(lobMaxBytes),
+                  active_(std::move(active)), queryCompletion_(std::move(queryCompletion)),
+                  executeCompletion_(std::move(executeCompletion)) {}
+
+            ~OracleAsyncOperation() { releaseStatement(); }
+
+            bool enable() {
+                const auto status = setOracleNonblocking(server_, err_, true);
+                nonblocking_ = status.ok();
+                if (!status.ok())
+                    SQLCONDUIT_LOG_WARN("Oracle native async unavailable: " + status.message);
+                return status.ok();
+            }
+
+            void prime() {
+                prepareResult_ = prepare();
+            }
+
+            void abort(std::string message) {
+                (void) OCIBreak(svc_, err_);
+                (void) OCIReset(svc_, err_);
+                finish(common::Status::error(common::ErrorCode::ClientClosed,
+                                             std::move(message)));
+            }
+
+            bool step() noexcept {
+                try {
+                    switch (stage_) {
+                        case Stage::Prepare: return stepPrepare();
+                        case Stage::Execute: return stepExecute();
+                        case Stage::Fetch: return stepFetch();
+                        case Stage::Complete: return true;
+                    }
+                } catch (const std::exception &e) {
+                    finish(common::Status::error(
+                        common::ErrorCode::QueryError,
+                        std::string("Oracle native async operation threw: ") + e.what()));
+                } catch (...) {
+                    finish(common::Status::error(common::ErrorCode::QueryError,
+                                                 "Oracle native async operation threw"));
+                }
+                return true;
+            }
+
+        private:
+            sword prepare() {
+                return OCIStmtPrepare2(
+                    svc_, &stmt_, err_, reinterpret_cast<const OraText *>(sql_.data()),
+                    static_cast<ub4>(sql_.size()), nullptr, 0, OCI_NTV_SYNTAX, OCI_DEFAULT);
+            }
+
+            bool stepPrepare() {
+                sword rc = prepareResult_;
+                if (rc == OCI_STILL_EXECUTING) {
+                    rc = prepare();
+                    prepareResult_ = rc;
+                }
+                if (rc == OCI_STILL_EXECUTING) return false;
+                if (!ociOk(rc)) {
+                    finish(oracleError(err_, common::ErrorCode::QueryError,
+                                       "prepare(async)"));
+                    return true;
+                }
+                if (auto status = bindOracleInputs(env_, svc_, err_, stmt_, cfg_, params_, input_);
+                    !status.ok()) {
+                    finish(std::move(status));
+                    return true;
+                }
+                params_.clear();
+                stage_ = Stage::Execute;
+                return false;
+            }
+
+            bool stepExecute() {
+                const sword rc = OCIStmtExecute(svc_, stmt_, err_,
+                                                kind_ == Kind::Query ? 0u : 1u,
+                                                0, nullptr, nullptr, OCI_DEFAULT);
+                if (rc == OCI_STILL_EXECUTING) return false;
+                if (!ociOk(rc)) {
+                    finish(oracleError(err_, common::ErrorCode::QueryError,
+                                       "execute(async)"));
+                    return true;
+                }
+                if (kind_ == Kind::Execute) {
+                    ub4 count = 0;
+                    if (const sword countRc = OCIAttrGet(stmt_, OCI_HTYPE_STMT, &count, nullptr,
+                                                         OCI_ATTR_ROW_COUNT, err_);
+                        !ociOk(countRc)) {
+                        finish(oracleError(err_, common::ErrorCode::QueryError,
+                                           "row count(async)"));
+                    } else {
+                        affected_ = static_cast<std::int64_t>(count);
+                        finish(common::Status::OK());
+                    }
+                    return true;
+                }
+
+                reader_ = std::make_unique<OracleResultReader>(env_, svc_, err_, lobMaxBytes_);
+                if (auto status = reader_->setup(stmt_); !status.ok()) {
+                    finish(std::move(status));
+                    return true;
+                }
+                rows_.setFields(reader_->fields());
+                // OCI secure-file LOB reads are not supported in nonblocking mode. The
+                // statement execution remains nonblocking; materialization runs on a
+                // reactor worker in blocking mode instead of the caller's thread.
+                if (reader_->hasLobColumns()) {
+                    if (auto status = disableNonblocking(); !status.ok()) {
+                        finish(std::move(status));
+                        return true;
+                    }
+                }
+                stage_ = Stage::Fetch;
+                return false;
+            }
+
+            bool stepFetch() {
+                common::Row row;
+                bool hasRow = false;
+                bool pending = false;
+                const auto status = reader_->fetchOne(
+                    row, hasRow, nonblocking_ ? &pending : nullptr);
+                if (pending) return false;
+                if (!status.ok()) {
+                    finish(status);
+                    return true;
+                }
+                if (!hasRow) {
+                    finish(common::Status::OK());
+                    return true;
+                }
+                rows_.addRow(std::move(row));
+                return false;
+            }
+
+            common::Status disableNonblocking() {
+                if (!nonblocking_) return common::Status::OK();
+                auto status = setOracleNonblocking(server_, err_, false);
+                if (status.ok()) nonblocking_ = false;
+                return status;
+            }
+
+            void releaseStatement() {
+                reader_.reset();
+                if (stmt_) {
+                    (void) OCIStmtRelease(stmt_, err_, nullptr, 0, OCI_DEFAULT);
+                    stmt_ = nullptr;
+                }
+            }
+
+            void finish(common::Status status) {
+                if (stage_ == Stage::Complete) return;
+                stage_ = Stage::Complete;
+                if (nonblocking_) {
+                    const auto blockingStatus = disableNonblocking();
+                    if (status.ok() && !blockingStatus.ok()) status = blockingStatus;
+                }
+                releaseStatement();
+                active_.reset();
+                if (kind_ == Kind::Query) {
+                    auto completion = std::move(queryCompletion_);
+                    completion(std::move(status), std::move(rows_));
+                } else {
+                    auto completion = std::move(executeCompletion_);
+                    completion(std::move(status), affected_);
+                }
+            }
+
+            Kind kind_;
+            OCIEnv *env_;
+            OCISvcCtx *svc_;
+            OCIServer *server_;
+            OCIError *err_;
+            config::DataSourceConfig cfg_;
+            std::string sql_;
+            common::Params params_;
+            OracleInputStorage input_;
+            std::int64_t lobMaxBytes_;
+            std::unique_ptr<ActiveOperation> active_;
+            core::IDatabaseConnection::AsyncQueryCompletion queryCompletion_;
+            core::IDatabaseConnection::AsyncExecuteCompletion executeCompletion_;
+            OCIStmt *stmt_ = nullptr;
+            std::unique_ptr<OracleResultReader> reader_;
+            Stage stage_ = Stage::Prepare;
+            sword prepareResult_ = OCI_ERROR;
+            bool nonblocking_ = false;
+            common::ResultSet rows_;
+            std::int64_t affected_ = 0;
+        };
+    }
+
     common::Status OracleConnection::connectString(const config::DataSourceConfig &cfg,
                                                    std::string &out) const {
         if (const auto it = cfg.extra.find("connection_string"); it != cfg.extra.end()) {
@@ -624,6 +884,15 @@ namespace sqlconduit::driver {
             return mapped;
         }
 
+        server_ = nullptr;
+        const sword serverRc = OCIAttrGet(svc_, OCI_HTYPE_SVCCTX, &server_, nullptr,
+                                          OCI_ATTR_SERVER, err_);
+        nativeAsync_ = ociOk(serverRc) && server_ != nullptr;
+        if (!nativeAsync_)
+            SQLCONDUIT_LOG_WARN("Oracle native async unavailable: " +
+                                oracleError(err_, common::ErrorCode::NotSupported,
+                                            "get server handle").message);
+
 #ifdef OCI_ATTR_CALL_TIME
         if (cfg.query_timeout_ms > 0) {
             ub4 callTime = static_cast<ub4>(cfg.query_timeout_ms);
@@ -640,6 +909,8 @@ namespace sqlconduit::driver {
             if (!st.ok()) {
                 OCILogoff(svc_, err_);
                 svc_ = nullptr;
+                server_ = nullptr;
+                nativeAsync_ = false;
                 OCIHandleFree(err_, OCI_HTYPE_ERROR);
                 err_ = nullptr;
                 OCIHandleFree(env_, OCI_HTYPE_ENV);
@@ -2188,12 +2459,98 @@ namespace sqlconduit::driver {
 #endif
     }
 
+    bool OracleConnection::queryAsync(const std::string &sql,
+                                      const common::Params &params,
+                                      AsyncQueryCompletion completion) {
+#ifdef SQLCONDUIT_ENABLE_ORACLE
+        if (!completion || !nativeAsync_ || !open_ ||
+            !oracleAsyncParamsEligible(cfg_, params))
+            return false;
+        {
+            std::lock_guard<std::mutex> lock(operationMtx_);
+            if (operationActive_) return false;
+        }
+        std::size_t placeholders = 0;
+        auto oracleSql = replacePlaceholders(
+            sql, [](const std::size_t i) { return ":" + std::to_string(i + 1); },
+            placeholders);
+        if (placeholders != params.size()) return false;
+
+        auto active = std::make_unique<ActiveOperation>(operationMtx_, operationActive_);
+        auto operation = std::make_shared<OracleAsyncOperation>(
+            OracleAsyncOperation::Kind::Query, env_, svc_, server_, err_, cfg_,
+            std::move(oracleSql), params, lobMaxBytes_, std::move(active),
+            std::move(completion), AsyncExecuteCompletion{});
+        if (!operation->enable()) {
+            SQLCONDUIT_LOG_WARN("Oracle native query start failed; using compatibility fallback");
+            return false;
+        }
+        operation->prime();
+        if (!oracleAsyncReactor().enqueue([operation] { return operation->step(); }))
+            operation->abort("Oracle native async reactor is shutting down");
+        return true;
+#else
+        (void) sql;
+        (void) params;
+        (void) completion;
+        return false;
+#endif
+    }
+
+    bool OracleConnection::executeAsync(const std::string &sql,
+                                        const common::Params &params,
+                                        AsyncExecuteCompletion completion) {
+#ifdef SQLCONDUIT_ENABLE_ORACLE
+        if (!completion || !nativeAsync_ || !open_ ||
+            !oracleAsyncParamsEligible(cfg_, params))
+            return false;
+        {
+            std::lock_guard<std::mutex> lock(operationMtx_);
+            if (operationActive_) return false;
+        }
+        std::size_t placeholders = 0;
+        auto oracleSql = replacePlaceholders(
+            sql, [](const std::size_t i) { return ":" + std::to_string(i + 1); },
+            placeholders);
+        if (placeholders != params.size()) return false;
+
+        auto active = std::make_unique<ActiveOperation>(operationMtx_, operationActive_);
+        auto operation = std::make_shared<OracleAsyncOperation>(
+            OracleAsyncOperation::Kind::Execute, env_, svc_, server_, err_, cfg_,
+            std::move(oracleSql), params, lobMaxBytes_, std::move(active),
+            AsyncQueryCompletion{}, std::move(completion));
+        if (!operation->enable()) {
+            SQLCONDUIT_LOG_WARN("Oracle native execute start failed; using compatibility fallback");
+            return false;
+        }
+        operation->prime();
+        if (!oracleAsyncReactor().enqueue([operation] { return operation->step(); }))
+            operation->abort("Oracle native async reactor is shutting down");
+        return true;
+#else
+        (void) sql;
+        (void) params;
+        (void) completion;
+        return false;
+#endif
+    }
+
     common::Status OracleConnection::cancel() {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         try {
             if (!open_ || !svc_) return notConnected("cancel");
             const sword rc = OCIBreak(svc_, err_);
             if (!ociOk(rc)) return oracleError(err_, common::ErrorCode::Cancelled, "cancel");
+            bool active = false;
+            {
+                std::lock_guard<std::mutex> lock(operationMtx_);
+                active = operationActive_;
+            }
+            if (active) {
+                const sword resetRc = OCIReset(svc_, err_);
+                if (!ociOk(resetRc))
+                    return oracleError(err_, common::ErrorCode::Cancelled, "reset");
+            }
             return common::Status::OK();
         } catch (...) {
             return common::Status::error(common::ErrorCode::Cancelled,
@@ -2214,6 +2571,8 @@ namespace sqlconduit::driver {
         txOpen_ = false;
         operationActive_ = false;
         svc_ = nullptr;
+        server_ = nullptr;
+        nativeAsync_ = false;
         if (err_) OCIHandleFree(err_, OCI_HTYPE_ERROR);
         err_ = nullptr;
         if (env_) OCIHandleFree(env_, OCI_HTYPE_ENV);

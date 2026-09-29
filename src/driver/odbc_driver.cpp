@@ -1,11 +1,13 @@
 #include "sqlconduit/driver/odbc_driver.h"
 #include "sqlconduit/drivers/odbc.h"
 #include "sqlconduit/driver/driver_registry.h"
+#include "polling_async_reactor.h"
 
 #include <algorithm>
 #include <iterator>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <string>
 #include <utility>
@@ -109,6 +111,8 @@ namespace sqlconduit::driver {
             }
 
             SQLHSTMT get() const { return stmt_; }
+
+            void reset() { release(); }
 
         private:
             void release() {
@@ -912,6 +916,316 @@ namespace sqlconduit::driver {
         bool fieldsSet_ = false;
         std::uint64_t rowsFetched_ = 0;
     };
+
+    namespace {
+        detail::PollingAsyncReactor &odbcAsyncReactor() {
+            static detail::PollingAsyncReactor reactor;
+            return reactor;
+        }
+
+        class OdbcAsyncOperation final {
+        public:
+            enum class Kind { Query, Execute };
+            enum class Stage {
+                Prepare, Execute, DescribeCount, DescribeColumns,
+                Fetch, ReadColumns, Complete
+            };
+
+            OdbcAsyncOperation(Kind kind, SQLHDBC connection, SQLHSTMT statement,
+                               bool connectionLevelAsync, std::string sql,
+                               common::Params params, bool utf8NarrowBinding,
+                               std::unique_ptr<ActiveStatement> active,
+                               core::IDatabaseConnection::AsyncQueryCompletion queryCompletion,
+                               core::IDatabaseConnection::AsyncExecuteCompletion executeCompletion)
+                : kind_(kind), connection_(connection), guard_(statement),
+                  connectionLevelAsync_(connectionLevelAsync), sql_(std::move(sql)),
+                  params_(std::move(params)), utf8NarrowBinding_(utf8NarrowBinding),
+                  active_(std::move(active)), queryCompletion_(std::move(queryCompletion)),
+                  executeCompletion_(std::move(executeCompletion)) {}
+
+            bool enable() {
+                if (connectionLevelAsync_) return true;
+                const SQLRETURN rc = SQLSetStmtAttr(
+                    guard_.get(), SQL_ATTR_ASYNC_ENABLE,
+                    reinterpret_cast<SQLPOINTER>(
+                        static_cast<std::uintptr_t>(SQL_ASYNC_ENABLE_ON)), SQL_IS_INTEGER);
+                return succeeded(rc);
+            }
+
+            void prime() {
+                prepareResult_ = SQLPrepare(
+                    guard_.get(),
+                    reinterpret_cast<SQLCHAR *>(const_cast<char *>(sql_.data())), SQL_NTS);
+            }
+
+            void abort(std::string message) {
+                (void) SQLCancelHandle(SQL_HANDLE_STMT, guard_.get());
+                finish(common::Status::error(common::ErrorCode::ClientClosed,
+                                             std::move(message)));
+            }
+
+            bool step() noexcept {
+                try {
+                    switch (stage_) {
+                        case Stage::Prepare: return stepPrepare();
+                        case Stage::Execute: return stepExecute();
+                        case Stage::DescribeCount: return stepDescribeCount();
+                        case Stage::DescribeColumns: return stepDescribeColumns();
+                        case Stage::Fetch: return stepFetch();
+                        case Stage::ReadColumns: return stepReadColumns();
+                        case Stage::Complete: return true;
+                    }
+                } catch (const std::exception &e) {
+                    finish(common::Status::error(
+                        common::ErrorCode::QueryError,
+                        std::string("ODBC native async operation threw: ") + e.what()));
+                } catch (...) {
+                    finish(common::Status::error(common::ErrorCode::QueryError,
+                                                 "ODBC native async operation threw"));
+                }
+                return true;
+            }
+
+        private:
+            bool stepPrepare() {
+                SQLRETURN rc = prepareResult_;
+                if (rc == SQL_STILL_EXECUTING) {
+                    rc = SQLPrepare(
+                        guard_.get(),
+                        reinterpret_cast<SQLCHAR *>(const_cast<char *>(sql_.data())), SQL_NTS);
+                    prepareResult_ = rc;
+                }
+                if (rc == SQL_STILL_EXECUTING) return false;
+                if (!succeeded(rc)) {
+                    finish(odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT,
+                                     guard_.get(), "SQLPrepare(async)"));
+                    return true;
+                }
+                if (auto status = bindParameters(guard_.get(), params_, bindings_,
+                                                 utf8NarrowBinding_);
+                    !status.ok()) {
+                    finish(std::move(status));
+                    return true;
+                }
+                params_.clear();
+                stage_ = Stage::Execute;
+                return false;
+            }
+
+            bool stepExecute() {
+                const SQLRETURN rc = SQLExecute(guard_.get());
+                if (rc == SQL_STILL_EXECUTING) return false;
+                if (!executionCompleted(rc)) {
+                    finish(odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT,
+                                     guard_.get(), "SQLExecute(async)"));
+                    return true;
+                }
+                if (kind_ == Kind::Execute) {
+                    SQLLEN rows = 0;
+                    if (const SQLRETURN rowRc = SQLRowCount(guard_.get(), &rows);
+                        !succeeded(rowRc)) {
+                        finish(odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT,
+                                         guard_.get(), "SQLRowCount(async)"));
+                    } else {
+                        affected_ = rows < 0 ? 0 : static_cast<std::int64_t>(rows);
+                        finish(common::Status::OK());
+                    }
+                    return true;
+                }
+
+                stage_ = Stage::DescribeCount;
+                return false;
+            }
+
+            bool stepDescribeCount() {
+                const SQLRETURN rc = SQLNumResultCols(guard_.get(), &columnCount_);
+                if (rc == SQL_STILL_EXECUTING) return false;
+                if (!succeeded(rc)) {
+                    finish(odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT,
+                                     guard_.get(), "SQLNumResultCols(async)"));
+                    return true;
+                }
+                names_.reserve(static_cast<std::size_t>(columnCount_));
+                types_.reserve(static_cast<std::size_t>(columnCount_));
+                describeColumn_ = 1;
+                resetDescribeBuffer();
+                stage_ = Stage::DescribeColumns;
+                return false;
+            }
+
+            bool stepDescribeColumns() {
+                if (describeColumn_ > static_cast<SQLUSMALLINT>(columnCount_)) {
+                    rows_.setFields(names_);
+                    stage_ = Stage::Fetch;
+                    return false;
+                }
+                const SQLRETURN rc = SQLDescribeCol(
+                    guard_.get(), describeColumn_, describeName_, sizeof(describeName_),
+                    &describeNameLength_, &describeType_, &describeSize_,
+                    &describeDigits_, &describeNullable_);
+                if (rc == SQL_STILL_EXECUTING) return false;
+                if (!succeeded(rc)) {
+                    finish(odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT,
+                                     guard_.get(), "SQLDescribeCol(async)"));
+                    return true;
+                }
+                names_.emplace_back(reinterpret_cast<char *>(describeName_),
+                                    static_cast<std::size_t>(describeNameLength_));
+                types_.push_back(describeType_);
+                ++describeColumn_;
+                resetDescribeBuffer();
+                return false;
+            }
+
+            bool stepFetch() {
+                const SQLRETURN rc = SQLFetch(guard_.get());
+                if (rc == SQL_STILL_EXECUTING) return false;
+                if (rc == SQL_NO_DATA) {
+                    finish(common::Status::OK());
+                    return true;
+                }
+                if (!succeeded(rc)) {
+                    finish(odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT,
+                                     guard_.get(), "SQLFetch(async)"));
+                    return true;
+                }
+                currentRow_ = common::Row{};
+                readColumn_ = 1;
+                resetReadBuffer();
+                stage_ = Stage::ReadColumns;
+                return false;
+            }
+
+            bool stepReadColumns() {
+                if (readColumn_ > static_cast<SQLUSMALLINT>(names_.size())) {
+                    rows_.addRow(std::move(currentRow_));
+                    stage_ = Stage::Fetch;
+                    return false;
+                }
+                const bool binary = binaryType(types_[readColumn_ - 1]);
+                const SQLRETURN rc = SQLGetData(
+                    guard_.get(), readColumn_, binary ? SQL_C_BINARY : SQL_C_CHAR,
+                    readBuffer_, sizeof(readBuffer_), &readLength_);
+                if (rc == SQL_STILL_EXECUTING) return false;
+                if (readLength_ == SQL_NULL_DATA) {
+                    currentRow_.set(names_[readColumn_ - 1], common::Value{nullptr});
+                    advanceReadColumn();
+                    return false;
+                }
+                if (rc != SQL_NO_DATA && !succeeded(rc)) {
+                    finish(odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT,
+                                     guard_.get(), binary
+                                                       ? "SQLGetData(binary,async)"
+                                                       : "SQLGetData(text,async)"));
+                    return true;
+                }
+                if (rc != SQL_NO_DATA) {
+                    if (binary) {
+                        std::size_t count = sizeof(readBuffer_);
+                        if (rc == SQL_SUCCESS && readLength_ != SQL_NO_TOTAL)
+                            count = std::min<std::size_t>(
+                                sizeof(readBuffer_), static_cast<std::size_t>(readLength_));
+                        readBinary_.insert(readBinary_.end(), readBuffer_, readBuffer_ + count);
+                    } else {
+                        readText_.append(reinterpret_cast<const char *>(readBuffer_),
+                                         std::strlen(
+                                             reinterpret_cast<const char *>(readBuffer_)));
+                    }
+                }
+                if (rc == SQL_SUCCESS_WITH_INFO) {
+                    std::memset(readBuffer_, 0, sizeof(readBuffer_));
+                    readLength_ = 0;
+                    return false;
+                }
+                if (binary)
+                    currentRow_.set(names_[readColumn_ - 1],
+                                    common::Value{std::move(readBinary_)});
+                else
+                    currentRow_.set(names_[readColumn_ - 1],
+                                    textValue(types_[readColumn_ - 1], std::move(readText_)));
+                advanceReadColumn();
+                return false;
+            }
+
+            void resetDescribeBuffer() {
+                std::memset(describeName_, 0, sizeof(describeName_));
+                describeNameLength_ = 0;
+                describeType_ = 0;
+                describeSize_ = 0;
+                describeDigits_ = 0;
+                describeNullable_ = 0;
+            }
+
+            void resetReadBuffer() {
+                std::memset(readBuffer_, 0, sizeof(readBuffer_));
+                readLength_ = 0;
+                readText_.clear();
+                readBinary_.clear();
+            }
+
+            void advanceReadColumn() {
+                ++readColumn_;
+                resetReadBuffer();
+            }
+
+            void finish(common::Status status) {
+                if (stage_ == Stage::Complete) return;
+                stage_ = Stage::Complete;
+                if (connectionLevelAsync_) {
+                    (void) SQLSetConnectAttr(
+                        connection_, SQL_ATTR_ASYNC_ENABLE,
+                        reinterpret_cast<SQLPOINTER>(
+                            static_cast<std::uintptr_t>(SQL_ASYNC_ENABLE_OFF)), SQL_IS_INTEGER);
+                } else {
+                    (void) SQLSetStmtAttr(
+                        guard_.get(), SQL_ATTR_ASYNC_ENABLE,
+                        reinterpret_cast<SQLPOINTER>(
+                            static_cast<std::uintptr_t>(SQL_ASYNC_ENABLE_OFF)), SQL_IS_INTEGER);
+                }
+                active_.reset();
+                guard_.reset();
+                if (kind_ == Kind::Query) {
+                    auto completion = std::move(queryCompletion_);
+                    completion(std::move(status), std::move(rows_));
+                } else {
+                    auto completion = std::move(executeCompletion_);
+                    completion(std::move(status), affected_);
+                }
+            }
+
+            Kind kind_;
+            SQLHDBC connection_;
+            StmtGuard guard_;
+            bool connectionLevelAsync_ = false;
+            std::string sql_;
+            common::Params params_;
+            std::vector<ParamBinding> bindings_;
+            bool utf8NarrowBinding_ = false;
+            std::unique_ptr<ActiveStatement> active_;
+            core::IDatabaseConnection::AsyncQueryCompletion queryCompletion_;
+            core::IDatabaseConnection::AsyncExecuteCompletion executeCompletion_;
+            Stage stage_ = Stage::Prepare;
+            SQLRETURN prepareResult_ = SQL_ERROR;
+            std::vector<std::string> names_;
+            std::vector<SQLSMALLINT> types_;
+            SQLSMALLINT columnCount_ = 0;
+            SQLUSMALLINT describeColumn_ = 1;
+            SQLCHAR describeName_[512] = {};
+            SQLSMALLINT describeNameLength_ = 0;
+            SQLSMALLINT describeType_ = 0;
+            SQLULEN describeSize_ = 0;
+            SQLSMALLINT describeDigits_ = 0;
+            SQLSMALLINT describeNullable_ = 0;
+            common::Row currentRow_;
+            SQLUSMALLINT readColumn_ = 1;
+            unsigned char readBuffer_[4096] = {};
+            SQLLEN readLength_ = 0;
+            std::string readText_;
+            common::Blob readBinary_;
+            common::ResultSet rows_;
+            std::int64_t affected_ = 0;
+        };
+    }
 #endif
 
     OdbcConnection::~OdbcConnection() { OdbcConnection::close(); }
@@ -987,6 +1301,14 @@ namespace sqlconduit::driver {
         txOpen_ = false;
         utf8NarrowBinding_ = false;
         parameterArrayResultsReliable_ = true;
+        nativeAsync_ = false;
+        nativeAsyncConnectionLevel_ = false;
+        SQLUINTEGER asyncMode = SQL_AM_NONE;
+        SQLSMALLINT asyncModeLength = 0;
+        if (succeeded(SQLGetInfo(dbc, SQL_ASYNC_MODE, &asyncMode, sizeof(asyncMode),
+                                 &asyncModeLength)))
+            nativeAsync_ = asyncMode == SQL_AM_STATEMENT || asyncMode == SQL_AM_CONNECTION;
+        nativeAsyncConnectionLevel_ = nativeAsync_ && asyncMode == SQL_AM_CONNECTION;
         SQLCHAR driverName[256] = {};
         SQLSMALLINT driverNameLength = 0;
         if (succeeded(SQLGetInfo(dbc, SQL_DRIVER_NAME, driverName, sizeof(driverName),
@@ -1371,6 +1693,8 @@ namespace sqlconduit::driver {
         defaultIsolation_ = 0;
         utf8NarrowBinding_ = false;
         parameterArrayResultsReliable_ = true;
+        nativeAsync_ = false;
+        nativeAsyncConnectionLevel_ = false;
         open_ = false;
     }
 
@@ -1391,6 +1715,104 @@ namespace sqlconduit::driver {
         return common::Status::OK();
 #else
         return common::Status::error(common::ErrorCode::DriverDisabled, "ODBC driver disabled");
+#endif
+    }
+
+    bool OdbcConnection::queryAsync(const std::string &sql,
+                                    const common::Params &params,
+                                    AsyncQueryCompletion completion) {
+#ifdef SQLCONDUIT_ENABLE_ODBC
+        if (!completion || !nativeAsync_ || !open_ || txOpen_) return false;
+        {
+            std::lock_guard<std::mutex> lock(activeStmtMtx_);
+            if (activeStmt_ != nullptr) return false;
+        }
+        const auto connection = static_cast<SQLHDBC>(dbc_);
+        if (nativeAsyncConnectionLevel_ && !succeeded(SQLSetConnectAttr(
+                connection, SQL_ATTR_ASYNC_ENABLE,
+                reinterpret_cast<SQLPOINTER>(
+                    static_cast<std::uintptr_t>(SQL_ASYNC_ENABLE_ON)), SQL_IS_INTEGER)))
+            return false;
+        SQLHSTMT raw = SQL_NULL_HSTMT;
+        if (const auto status = newStatement(connection, cfg_, raw); !status.ok()) {
+            if (nativeAsyncConnectionLevel_)
+                (void) SQLSetConnectAttr(
+                    connection, SQL_ATTR_ASYNC_ENABLE,
+                    reinterpret_cast<SQLPOINTER>(
+                        static_cast<std::uintptr_t>(SQL_ASYNC_ENABLE_OFF)), SQL_IS_INTEGER);
+            return false;
+        }
+        auto active = std::make_unique<ActiveStatement>(activeStmtMtx_, activeStmt_, raw);
+        auto operation = std::make_shared<OdbcAsyncOperation>(
+            OdbcAsyncOperation::Kind::Query, connection, raw, nativeAsyncConnectionLevel_,
+            sql, params, utf8NarrowBinding_,
+            std::move(active), std::move(completion), AsyncExecuteCompletion{});
+        if (!operation->enable()) {
+            if (nativeAsyncConnectionLevel_)
+                (void) SQLSetConnectAttr(
+                    connection, SQL_ATTR_ASYNC_ENABLE,
+                    reinterpret_cast<SQLPOINTER>(
+                        static_cast<std::uintptr_t>(SQL_ASYNC_ENABLE_OFF)), SQL_IS_INTEGER);
+            return false;
+        }
+        operation->prime();
+        if (!odbcAsyncReactor().enqueue([operation] { return operation->step(); }))
+            operation->abort("ODBC native async reactor is shutting down");
+        return true;
+#else
+        (void) sql;
+        (void) params;
+        (void) completion;
+        return false;
+#endif
+    }
+
+    bool OdbcConnection::executeAsync(const std::string &sql,
+                                      const common::Params &params,
+                                      AsyncExecuteCompletion completion) {
+#ifdef SQLCONDUIT_ENABLE_ODBC
+        if (!completion || !nativeAsync_ || !open_ || txOpen_) return false;
+        {
+            std::lock_guard<std::mutex> lock(activeStmtMtx_);
+            if (activeStmt_ != nullptr) return false;
+        }
+        const auto connection = static_cast<SQLHDBC>(dbc_);
+        if (nativeAsyncConnectionLevel_ && !succeeded(SQLSetConnectAttr(
+                connection, SQL_ATTR_ASYNC_ENABLE,
+                reinterpret_cast<SQLPOINTER>(
+                    static_cast<std::uintptr_t>(SQL_ASYNC_ENABLE_ON)), SQL_IS_INTEGER)))
+            return false;
+        SQLHSTMT raw = SQL_NULL_HSTMT;
+        if (const auto status = newStatement(connection, cfg_, raw); !status.ok()) {
+            if (nativeAsyncConnectionLevel_)
+                (void) SQLSetConnectAttr(
+                    connection, SQL_ATTR_ASYNC_ENABLE,
+                    reinterpret_cast<SQLPOINTER>(
+                        static_cast<std::uintptr_t>(SQL_ASYNC_ENABLE_OFF)), SQL_IS_INTEGER);
+            return false;
+        }
+        auto active = std::make_unique<ActiveStatement>(activeStmtMtx_, activeStmt_, raw);
+        auto operation = std::make_shared<OdbcAsyncOperation>(
+            OdbcAsyncOperation::Kind::Execute, connection, raw, nativeAsyncConnectionLevel_,
+            sql, params, utf8NarrowBinding_,
+            std::move(active), AsyncQueryCompletion{}, std::move(completion));
+        if (!operation->enable()) {
+            if (nativeAsyncConnectionLevel_)
+                (void) SQLSetConnectAttr(
+                    connection, SQL_ATTR_ASYNC_ENABLE,
+                    reinterpret_cast<SQLPOINTER>(
+                        static_cast<std::uintptr_t>(SQL_ASYNC_ENABLE_OFF)), SQL_IS_INTEGER);
+            return false;
+        }
+        operation->prime();
+        if (!odbcAsyncReactor().enqueue([operation] { return operation->step(); }))
+            operation->abort("ODBC native async reactor is shutting down");
+        return true;
+#else
+        (void) sql;
+        (void) params;
+        (void) completion;
+        return false;
 #endif
     }
 

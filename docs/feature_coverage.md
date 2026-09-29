@@ -78,7 +78,7 @@ observable.
 | Async pool handoff and deadlines | **Implemented / validated** | Pool wait does not occupy a worker; active waiter/read deadlines and connection quarantine are covered |
 | PostgreSQL native async | **Implemented / validated** | Eligible leaf query/execute through a shared libpq socket reactor |
 | MySQL native async | **Implemented / expanding validation** | Eligible parameter-free single-statement operations on supported MySQL clients; prepared operations fall back |
-| ODBC and Oracle async | **Implemented as compatibility fallback** | Stable future API and statistics; native vendor state machines are scheduled separately |
+| ODBC and Oracle native async | **Implemented / expanding validation** | OCI nonblocking is live-tested; ODBC polling is runtime-gated by driver capability, with Microsoft-driver live validation pending |
 | Logs, observers, slow SQL, and pool stats | **Implemented / validated** | Per-client observers, fingerprinting, sampling/redaction, bounded aggregation |
 | Prometheus exporter | **Implemented / validated** | Stable metric/type/label contract and hard fingerprint-series limit; HTTP serving stays application-owned |
 | Performance benchmarks | **Implemented / expanding validation** | Connection borrow/return, binding, mapping, batch, cursor, and disabled-logging baselines; historical regression automation is scheduled |
@@ -94,7 +94,7 @@ observable.
 | Prepared reuse | Validated | Validated | Validated | Validated |
 | Atomic batch contract | Native chunking + fallback | Pipeline + fallback | Parameter arrays + fallback | Array DML + fallback |
 | Cursor | Unbuffered | Server-side | Native ODBC | Forward-only OCI |
-| Native async query/execute | Partial eligible paths | Eligible leaf paths | Not in 1.0 | Not in 1.0 |
+| Native async query/execute | Partial eligible paths | Eligible leaf paths | Runtime-gated polling; FreeTDS fallback | Eligible OCI nonblocking paths |
 | Future API fallback | Validated | Validated | Validated | Validated |
 | Live release validation | Automated | Automated | Automated on Linux/FreeTDS; Microsoft ODBC Driver compile/test only on Windows | Manual OCI-equipped runner |
 
@@ -128,7 +128,7 @@ Priorities are ordered; version assignment happens only when work enters a relea
 | Historical performance regression gate | **Scheduled** | Next 1.x minor | Benchmark/CI change only |
 | Allocation, pool contention, batch, and cursor optimization | **Scheduled** | Incremental throughout 1.x | Existing methods and result semantics |
 | Incremental `StreamSource` consumption | **Scheduled** | Later 1.x | Reuse current type and overloads |
-| Native ODBC and Oracle async | **Scheduled** | Later 1.x, vendor feasibility gated | Same future API, `AsyncMode` changes only when truly native |
+| Native ODBC and Oracle async validation | **In progress** | 1.0.1 hardening | Same future API; capability-gated mode selection and additional cancellation/concurrency coverage |
 | SQL Builder dialect extensions | **Scheduled** | Later 1.x | Additive extension types; portable builder remains valid |
 | Optional coroutine/tracing adapters | **Evaluating** | Unassigned | Separate optional headers over futures/observer events |
 
@@ -155,9 +155,10 @@ Priorities are ordered; version assignment happens only when work enters a relea
 
 ### Priority C — async coverage
 
-- Implement native ODBC async where the selected ODBC driver exposes a reliable asynchronous model.
-- Implement native Oracle OCI async/nonblocking state handling where cancellation and connection
-  reuse can be made safe.
+- Add live Microsoft ODBC Driver coverage for statement- and connection-level polling, cancellation,
+  large values, and connection reuse; keep FreeTDS on capability-detected fallback.
+- Expand Oracle OCI nonblocking cancellation, concurrent-operation, LOB, and client-version tests;
+  retain fallback for temporary-LOB input binding.
 - Move eligible parameterized MySQL and complex routing/retry/cache paths off compatibility workers
   when vendor capability allows it.
 - Evaluate a coroutine adapter as an optional header layered over the existing futures; futures stay

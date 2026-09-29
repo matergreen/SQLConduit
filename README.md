@@ -183,13 +183,16 @@ connection and cache misses may continue into a native driver operation. Group r
 and shadow routing still use the compatibility state machine. PostgreSQL query/execute operations on an
 eligible leaf data source use the bundled libpq socket reactor and report `Native`. MySQL
 8.0.16+ also reports `Native` for eligible parameter-free SELECT and DML/DDL through its
-nonblocking C API; parameterized MySQL statements retain prepared-statement fallback. Oracle and
-ODBC, plus transaction/cursor/batch and complex topology paths, currently report
-`CompatibilityFallback`. Driver extensions can opt into `Native` by implementing the same
-nonblocking query/execute callback contract.
+nonblocking C API; parameterized MySQL statements retain prepared-statement fallback. The 1.0.1
+development line adds OCI nonblocking query/execute and polling ODBC query/execute when the selected
+ODBC driver reports statement- or connection-level async support. FreeTDS currently reports no
+native async and remains on the explicit compatibility path; Microsoft ODBC Driver live validation
+is still pending. Oracle temporary-LOB input binding, transaction/cursor/batch operations, and
+complex topology paths also retain `CompatibilityFallback`. Driver extensions can opt into `Native`
+by implementing the same nonblocking query/execute callback contract.
 
-ODBC and Oracle compatibility fallback is a supported, observable 1.0 behavior; it is not reported
-as native async. See the [public API stability policy](docs/api_stability.md) for the 1.x
+The existing future API and execution-mode contract remain unchanged. See the
+[public API stability policy](docs/api_stability.md) for the 1.x
 compatibility contract and [known limitations](docs/known_limitations.md) for the exact capability
 and packaging boundaries.
 

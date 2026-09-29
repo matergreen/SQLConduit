@@ -1008,8 +1008,11 @@ compatibility state machine. PostgreSQL `queryAsync` and
 `executeAsync` on eligible leaf data sources now use a shared libpq socket reactor and report
 `Native`. MySQL 8.0.16+ also uses its official nonblocking C API and a shared polling reactor for
 parameter-free, single-statement SELECT and DML/DDL. Parameterized MySQL operations deliberately
-retain prepared-statement fallback. PostgreSQL/MySQL transaction, cursor, batch, and complex
-topology paths, older MySQL/MariaDB clients, Oracle, and ODBC still use compatibility execution.
+retain prepared-statement fallback. The 1.0.1 development line adds OCI nonblocking query/execute
+for eligible Oracle operations and ODBC polling query/execute when the selected driver reports
+`SQL_AM_STATEMENT` or `SQL_AM_CONNECTION`. FreeTDS reports no native async and remains on fallback;
+Microsoft ODBC Driver live validation is pending. Oracle temporary-LOB input binding, and all
+drivers' transaction, cursor, batch, and complex-topology paths, still use compatibility execution.
 A driver extension may return `Native` only after implementing the
 `IDatabaseConnection::queryAsync` / `executeAsync` callback contract and reporting
 `AsyncCapability::Native`.

@@ -12,9 +12,13 @@ For the complete implemented/testing/scheduled matrix, see
 
 - PostgreSQL leaf queries and writes can use the bundled libpq socket reactor. Eligible MySQL
   8.0.16+ parameter-free, single-statement operations can use the MySQL nonblocking C API.
-- Parameterized MySQL statements, older MySQL/MariaDB clients, transactions, cursors, batches,
-  cache/retry/group/shadow topologies, ODBC, and Oracle use the bounded
-  `CompatibilityFallback` executor. ODBC and Oracle do not provide native async in 1.0.
+- Parameterized MySQL statements, older MySQL/MariaDB clients, transactions, cursors, batches, and
+  cache/retry/group/shadow topologies use the bounded `CompatibilityFallback` executor. In the
+  1.0.1 development line, eligible Oracle operations use OCI nonblocking mode and eligible ODBC
+  operations use polling only when the selected driver reports statement- or connection-level
+  async. FreeTDS reports no native async. Microsoft ODBC Driver remains compile-tested but not yet
+  live-driver validated. Oracle temporary-LOB input binding falls back; LOB result materialization
+  runs on a reactor worker because OCI secure-file LOB reads are unsupported in nonblocking mode.
 - Fallback read deadlines can classify a late result as `QueryTimeout`, but SQLConduit cannot safely
   force-kill an arbitrary blocking vendor call. Successful write, batch, or transaction results are
   not rewritten after completion because commit state may otherwise become ambiguous.
@@ -61,9 +65,11 @@ For the complete implemented/testing/scheduled matrix, see
 
 # SQLConduit 1.0 已知限制
 
-- PostgreSQL 和部分无参数 MySQL 操作可使用 native 异步；带参数 MySQL、事务、游标、批量、
-  复杂拓扑、ODBC 和 Oracle 使用有界 `CompatibilityFallback`。1.0 不宣称 ODBC/Oracle 已实现
-  native 异步。
+- PostgreSQL 和部分无参数 MySQL 操作可使用 native 异步。1.0.1 开发线为合格 Oracle 操作加入
+  OCI nonblocking，并在 ODBC 驱动报告 statement/connection 级异步能力时使用轮询状态机。
+  FreeTDS 不报告 native async；Microsoft ODBC Driver 仍只有编译验证、尚无实库验证。Oracle
+  临时 LOB 输入绑定回退兼容执行器；OCI 不支持在 nonblocking 模式读取 secure-file LOB，因而
+  LOB 结果会在 reactor worker 上切回 blocking 完成物化。事务、游标、批量和复杂拓扑继续 fallback。
 - `StreamSource` 当前仍先由驱动缓冲结果，不承诺服务端常量内存流式读取。
 - SQL Builder 只覆盖可移植 CRUD；JOIN、Upsert、生成键、锁、表达式、存储过程和任意方言
   仍应编写显式 SQL。SQL Server 生成键不会自动注入 `OUTPUT`。

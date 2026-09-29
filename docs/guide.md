@@ -1034,7 +1034,11 @@ executor worker；连接归还后直接 handoff，或由主动 deadline 返回 `
 `queryAsync` / `executeAsync` 已通过共享 libpq socket reactor 实现 native 异步；事务、游标、
 批量及复杂拓扑路径仍走兼容状态机。MySQL 8.0.16+ 的无参数单语句 SELECT 和 DML/DDL
 也通过官方 nonblocking C API 与共享轮询 reactor 走 native；带参数语句为了保留 prepared
-statement 绑定而继续 fallback，旧 MySQL/MariaDB 以及 Oracle、ODBC 驱动也仍走兼容状态机。
+statement 绑定而继续 fallback。1.0.1 开发线为符合条件的 Oracle 查询/执行加入 OCI nonblocking
+状态机，并在所选 ODBC 驱动报告 `SQL_AM_STATEMENT` 或 `SQL_AM_CONNECTION` 时使用轮询式
+native 查询/执行。FreeTDS 不报告 native async，继续明确走 fallback；Microsoft ODBC Driver
+仍待实库验证。Oracle 临时 LOB 输入绑定，以及各驱动的事务、游标、批量和复杂拓扑路径仍走
+兼容状态机。
 扩展驱动只有在实现
 `IDatabaseConnection::queryAsync` / `executeAsync` 回调协议并返回
 `AsyncCapability::Native` 后，结果才会标记为 `Native`。

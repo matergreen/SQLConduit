@@ -501,11 +501,34 @@ namespace {
         require(!required.ok() && required.code == ErrorCode::MappingError && requiredMapped == 0,
                 "NULL should fail mapping into a non-optional Blob");
 
-        // Async path: queryAsync is configured on but was never invoked.
-        auto future = g_client.queryAsync("SELECT COUNT(*) AS N FROM " + f.table);
+        // Oracle must use OCI nonblocking mode rather than the compatibility executor.
+        auto future = g_client.queryAsync(
+            "SELECT COUNT(*) AS N FROM " + f.table + " WHERE \"qty\" >= ?",
+            Params{std::int64_t{0}});
         const auto asyncRows = future.get();
         requireOk(asyncRows.status, "async query");
         require(asInt(asyncRows.rows.rows()[0].at("N")) >= 4, "async count mismatch");
+        require(asyncRows.mode == sqlconduit::async::ExecutionMode::Native,
+                "Oracle queryAsync did not use OCI native nonblocking mode");
+
+        const auto asyncWrite = g_client.executeAsync(
+            "INSERT INTO " + f.table +
+            " (\"name\", \"qty\", \"price\", \"created_at\") VALUES (?, ?, ?, ?)",
+            Params{std::string("async-write"), std::int64_t{17}, 2.5,
+                   std::chrono::system_clock::now()}).get();
+        requireOk(asyncWrite.status, "async execute");
+        require(asyncWrite.affected == 1 &&
+                asyncWrite.mode == sqlconduit::async::ExecutionMode::Native,
+                "Oracle executeAsync did not use OCI native nonblocking mode");
+
+        const auto asyncLob = g_client.queryAsync(
+            "SELECT \"doc\" FROM " + f.table + " WHERE \"name\" = ?",
+            Params{std::string("raw-types")}).get();
+        requireOk(asyncLob.status, "async CLOB query");
+        require(asyncLob.mode == sqlconduit::async::ExecutionMode::Native &&
+                asyncLob.rows.rowCount() == 1 &&
+                asString(asyncLob.rows.rows()[0].at("doc")) == "Oracle CLOB 中文往返验证",
+                "Oracle native async CLOB materialization mismatch");
 
         // Explicit prepared-statement reuse (config has prepared_cache enabled).
         requireOk(g_client.withSession([&](sqlconduit::core::Session &session) {

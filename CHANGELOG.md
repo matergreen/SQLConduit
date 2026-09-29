@@ -6,6 +6,18 @@ description.
 
 ## [Unreleased]
 
+### Native Oracle and SQL Server async
+
+- Added OCI nonblocking query/execute state machines for eligible Oracle leaf-datasource operations,
+  including parameter binding, row fetching, cancellation/reset, CLOB/BLOB result materialization,
+  and live Oracle integration assertions.
+- Added polling-based ODBC query/execute state machines for drivers that report statement- or
+  connection-level asynchronous support. Prepare, execute, metadata, fetch, and chunked
+  `SQLGetData` calls all preserve the ODBC repeat-the-same-call contract; drivers such as FreeTDS
+  that report no async support continue to use the explicit compatibility fallback.
+- Kept the frozen `Client` future API unchanged. Native eligibility is selected at runtime and every
+  result continues to expose `Native` or `CompatibilityFallback` through the existing mode field.
+
 ## [1.0.0]
 
 ### First stable release

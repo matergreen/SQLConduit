@@ -170,7 +170,11 @@ if (!result.status.ok()) return 1;
 `Client` 的状态。`async.enabled: false` 时会返回一个已经就绪且状态为
 `ConfigError` 的 future。
 
-ODBC 和 Oracle 的兼容 fallback 是 1.0 支持且可观测的行为，不会被标成 native 异步。
+1.0.1 开发线已为符合条件的 Oracle 操作实现 OCI nonblocking，并在 ODBC 驱动报告
+statement/connection 级异步能力时启用轮询状态机。Linux 实库测试已覆盖 Microsoft ODBC
+Driver 18 的 native 查询/执行、取消后连接复用、并发和大字段；FreeTDS 不报告异步能力，
+继续走明确且可观测的兼容 fallback。Oracle 临时 LOB 输入、事务、游标、批量和复杂拓扑也
+继续走 fallback，不会被标成 native 异步。
 公共头文件的稳定性分层和 1.x 兼容规则见[公共 API 稳定性约定](docs/api_stability.md)，
 能力与打包边界见[已知限制](docs/known_limitations.md)。
 

@@ -477,12 +477,24 @@ namespace sqlconduit::driver {
             return true;
         }
 
+        SQLSMALLINT fractionalSecondDigits(const std::string &value) {
+            const auto dot = value.find('.');
+            if (dot == std::string::npos) return 0;
+            SQLSMALLINT digits = 0;
+            for (std::size_t i = dot + 1;
+                 i < value.size() && value[i] >= '0' && value[i] <= '9' && digits < 9;
+                 ++i)
+                ++digits;
+            return digits;
+        }
+
         bool batchTextValue(const common::Value &value, std::string &out,
                             SQLSMALLINT &sqlType, SQLSMALLINT &digits) {
             digits = 0;
             if (const auto *v = std::get_if<common::Timestamp>(&value)) {
                 out = common::timestampToStringMs(*v);
-                sqlType = SQL_VARCHAR;
+                sqlType = SQL_TYPE_TIMESTAMP;
+                digits = fractionalSecondDigits(out);
             } else if (const auto *v = std::get_if<common::Decimal>(&value)) {
                 out = v->value;
                 sqlType = SQL_DECIMAL;
@@ -496,6 +508,7 @@ namespace sqlconduit::driver {
                 out = v->value; sqlType = SQL_TYPE_DATE;
             } else if (const auto *v = std::get_if<common::Time>(&value)) {
                 out = v->value; sqlType = SQL_TYPE_TIME;
+                digits = fractionalSecondDigits(out);
             } else if (const auto *v = std::get_if<common::Uuid>(&value)) {
                 out = v->value;
 #ifdef SQL_GUID
@@ -569,6 +582,9 @@ namespace sqlconduit::driver {
                     for (const auto &row: batch)
                         if (const auto *v = std::get_if<common::Blob>(&row[c]))
                             stride = std::max(stride, v->size());
+                    // Long binary values are not portable in ODBC parameter arrays. Let the
+                    // transactional per-row path bind them as SQL_LONGVARBINARY instead.
+                    if (stride > 8000) return false;
                     column.cType = SQL_C_BINARY; column.sqlType = SQL_VARBINARY;
                     column.columnSize = stride; column.bufferLength = static_cast<SQLLEN>(stride);
                     column.bytes.assign(stride * rows, 0);
@@ -675,7 +691,10 @@ namespace sqlconduit::driver {
                 } else if (const auto *v = std::get_if<common::Timestamp>(&value)) {
                     slot.text = common::timestampToStringMs(*v);
                     slot.indicator = static_cast<SQLLEN>(slot.text.size());
+                    cType = SQL_C_CHAR;
+                    sqlType = SQL_TYPE_TIMESTAMP;
                     columnSize = static_cast<SQLULEN>(slot.text.size());
+                    decimalDigits = fractionalSecondDigits(slot.text);
                     data = const_cast<char *>(slot.text.data());
                     bufferLength = static_cast<SQLLEN>(slot.text.size());
                 } else if (const auto *v = std::get_if<common::Decimal>(&value)) {
@@ -711,6 +730,7 @@ namespace sqlconduit::driver {
                     cType = SQL_C_CHAR;
                     sqlType = SQL_TYPE_TIME;
                     columnSize = static_cast<SQLULEN>(slot.text.size());
+                    decimalDigits = fractionalSecondDigits(slot.text);
                     data = const_cast<char *>(slot.text.data());
                     bufferLength = static_cast<SQLLEN>(slot.text.size());
                 } else if (const auto *v = std::get_if<common::Uuid>(&value)) {
@@ -745,7 +765,8 @@ namespace sqlconduit::driver {
                 } else if (const auto *v = std::get_if<common::Blob>(&value)) {
                     slot.blob = *v;
                     slot.indicator = static_cast<SQLLEN>(slot.blob.size());
-                    cType = SQL_C_BINARY; sqlType = SQL_VARBINARY;
+                    cType = SQL_C_BINARY;
+                    sqlType = slot.blob.size() > 8000 ? SQL_LONGVARBINARY : SQL_VARBINARY;
                     columnSize = static_cast<SQLULEN>(std::max<std::size_t>(1, slot.blob.size()));
                     data = slot.blob.empty() ? nullptr : slot.blob.data();
                     bufferLength = static_cast<SQLLEN>(slot.blob.size());
@@ -1322,11 +1343,12 @@ namespace sqlconduit::driver {
             });
             utf8NarrowBinding_ = name.find("tdsodbc") != std::string::npos ||
                                  name.find("freetds") != std::string::npos;
-            // FreeTDS reports SQL_PARC_BATCH but returns one aggregate row count for an
-            // array execution instead of one result per parameter set. BatchResult's
+            // FreeTDS and Microsoft SQL Server's ODBC driver report SQL_PARC_BATCH but
+            // return one aggregate row count for a parameter-array execution. BatchResult's
             // per-set affected-row contract cannot be reconstructed from that aggregate,
-            // so use the transactional per-row path for this driver.
-            parameterArrayResultsReliable_ = !utf8NarrowBinding_;
+            // so use the transactional per-row path for these drivers.
+            parameterArrayResultsReliable_ = !utf8NarrowBinding_ &&
+                                             name.find("msodbcsql") == std::string::npos;
         }
         if (const auto mode = cfg.extra.find("unicode_binding"); mode != cfg.extra.end()) {
             if (mode->second == "wide") {

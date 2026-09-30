@@ -1037,7 +1037,8 @@ executor worker；连接归还后直接 handoff，或由主动 deadline 返回 `
 statement 绑定而继续 fallback。1.0.1 开发线为符合条件的 Oracle 查询/执行加入 OCI nonblocking
 状态机，并在所选 ODBC 驱动报告 `SQL_AM_STATEMENT` 或 `SQL_AM_CONNECTION` 时使用轮询式
 native 查询/执行。FreeTDS 不报告 native async，继续明确走 fallback；Microsoft ODBC Driver
-仍待实库验证。Oracle 临时 LOB 输入绑定，以及各驱动的事务、游标、批量和复杂拓扑路径仍走
+18 的 native 轮询已在 Linux 实库验证，包括取消和取消后的连接复用。Oracle 临时 LOB 输入
+绑定，以及各驱动的事务、游标、批量和复杂拓扑路径仍走
 兼容状态机。
 扩展驱动只有在实现
 `IDatabaseConnection::queryAsync` / `executeAsync` 回调协议并返回

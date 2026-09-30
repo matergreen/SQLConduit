@@ -93,7 +93,8 @@ jobs:
             -DSQLCONDUIT_ENABLE_ODBC=ON `
             -DSQLCONDUIT_ENABLE_ORACLE=OFF `
             -DSQLCONDUIT_BUILD_TESTS=ON `
-            -DSQLCONDUIT_BUILD_BENCHMARKS=ON
+            -DSQLCONDUIT_BUILD_BENCHMARKS=ON `
+            -DSQLCONDUIT_BUILD_INTEGRATION_TESTS=ON
 
       - name: Build
         run: cmake --build build --config Release -j
@@ -110,7 +111,7 @@ jobs:
         if: matrix.tests
         shell: bash
         run: |
-          ctest --test-dir build -C Release --output-on-failure
+          ctest --test-dir build -C Release --output-on-failure -LE integration
 
       - name: Run performance baseline
         if: matrix.pkg == 'linux-x86_64-gcc'
@@ -402,7 +403,12 @@ jobs:
           persist-credentials: false
       - run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build pkg-config unixodbc-dev tdsodbc netcat-openbsd
+          sudo apt-get install -y ninja-build pkg-config unixodbc-dev tdsodbc netcat-openbsd curl
+          curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb \
+            -o /tmp/packages-microsoft-prod.deb
+          sudo dpkg -i /tmp/packages-microsoft-prod.deb
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18
       - name: Wait for SQL Server
         run: |
           for attempt in {1..60}; do
@@ -417,7 +423,12 @@ jobs:
           -DSQLCONDUIT_BUILD_TESTS=ON
           -DSQLCONDUIT_BUILD_INTEGRATION_TESTS=ON
       - run: cmake --build build-integration -j
-      - run: ctest --test-dir build-integration --output-on-failure -R odbc_integration
+      - name: Test through FreeTDS fallback
+        run: ctest --test-dir build-integration --output-on-failure -R odbc_integration
+      - name: Test Microsoft ODBC Driver 18 native async
+        env:
+          SQLCONDUIT_TEST_ODBC_DRIVER: ODBC Driver 18 for SQL Server
+        run: ctest --test-dir build-integration --output-on-failure -R odbc_integration
 
   release:
     name: publish release

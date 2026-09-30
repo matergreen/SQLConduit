@@ -186,8 +186,9 @@ eligible leaf data source use the bundled libpq socket reactor and report `Nativ
 nonblocking C API; parameterized MySQL statements retain prepared-statement fallback. The 1.0.1
 development line adds OCI nonblocking query/execute and polling ODBC query/execute when the selected
 ODBC driver reports statement- or connection-level async support. FreeTDS currently reports no
-native async and remains on the explicit compatibility path; Microsoft ODBC Driver live validation
-is still pending. Oracle temporary-LOB input binding, transaction/cursor/batch operations, and
+native async and remains on the explicit compatibility path. The 1.0.1 live suite validates native
+polling with Microsoft ODBC Driver 18 on Linux, including cancellation and connection reuse. Oracle
+temporary-LOB input binding, transaction/cursor/batch operations, and
 complex topology paths also retain `CompatibilityFallback`. Driver extensions can opt into `Native`
 by implementing the same nonblocking query/execute callback contract.
 

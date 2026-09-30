@@ -33,8 +33,9 @@ the published assets, not merely after pushing a tag.
 
 - [ ] Create an annotated `vX.Y.Z` tag from the reviewed commit and push it.
 - [ ] Confirm every GitHub Actions matrix job succeeds and the release job is not skipped.
-- [ ] Confirm live MySQL, PostgreSQL, and SQL Server integration gates and the sanitizer gate all
-      succeed for the exact tagged commit; attach the manual Oracle evidence.
+- [ ] Confirm live MySQL, PostgreSQL, SQL Server/FreeTDS, and SQL Server/Microsoft ODBC Driver 18
+      integration gates and the sanitizer gate all succeed for the exact tagged commit; attach the
+      manual Oracle evidence.
 - [ ] Confirm the release contains every platform archive, `SHA256SUMS`, the SPDX JSON SBOM, and
       provenance/SBOM Sigstore bundles.
 - [ ] Confirm GitHub shows build-provenance and SBOM attestations for the platform archives.

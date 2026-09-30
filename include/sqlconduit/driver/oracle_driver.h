@@ -6,6 +6,7 @@
 #include "sqlconduit/driver/idriver.h"
 #include "sqlconduit/common/types.h"
 
+#include <atomic>
 #include <string>
 #include <memory>
 #include <mutex>
@@ -169,6 +170,7 @@ namespace sqlconduit::driver {
         std::string lastErr_;
         mutable std::mutex operationMtx_;
         bool operationActive_ = false;
+        std::atomic<bool> cancelRequested_{false};
         bool nativeAsync_ = false;
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         OCIEnv *env_ = nullptr;

@@ -13,7 +13,7 @@ The matrix is reviewed for every `1.x` release candidate together with
 | --- | --- | --- |
 | Public API and configuration contracts | Standalone-header compilation, public API assertions, JSON/YAML schema and strict error-path tests | Linux, macOS, and Windows builds |
 | Core behavior | 22 non-live CTest executables covering mapping, SQL Builder, pools, sessions, transactions, retry, routing, async, observability, plugins, cache, and lifecycle | All supported CI build platforms |
-| Real driver behavior | Live MySQL, PostgreSQL, and SQL Server/ODBC suites; Oracle OCI suite on an equipped environment | MySQL/PostgreSQL and FreeTDS SQL Server are hosted-CI gates; Oracle is a documented manual release gate |
+| Real driver behavior | Live MySQL, PostgreSQL, and SQL Server/ODBC suites; Oracle OCI suite on an equipped environment | MySQL/PostgreSQL plus FreeTDS and Microsoft ODBC Driver 18 SQL Server are hosted-CI gates; Oracle is a documented manual release gate |
 | Undefined behavior and leaks | All non-live tests under ASan, LeakSanitizer, and UBSan | Hosted Linux CI |
 | Data races and lock correctness | Cache and pool/executor contention tests under ThreadSanitizer | Hosted Linux CI |
 | Performance | Twelve optimized microbenchmarks archived as JSON | Executed on Linux; results are compared on equivalent hardware rather than against a hosted-runner absolute threshold |
@@ -57,18 +57,18 @@ regressions. It does not yet impose a peak-RSS or long-running heap-growth budge
 The following gaps are explicit and must not be described as fully validated:
 
 - Oracle live tests require an OCI-equipped environment and are not run by GitHub-hosted CI.
-- Hosted SQL Server integration uses FreeTDS. Microsoft ODBC Driver live execution is not part of
-  the 1.0.0 validated matrix; Windows CI provides compile/test validation of the ODBC path only.
+- The 1.0.0 matrix used FreeTDS only. The 1.0.1 hosted SQL Server job runs both FreeTDS fallback and
+  Microsoft ODBC Driver 18 native polling on Linux; Windows CI still provides compile/test rather
+  than live-database validation.
 - The automated version matrix does not yet cover every supported database minor version or every
   client-library version.
 - Microbenchmarks use deterministic in-process drivers. End-to-end database latency, throughput,
   server plan-cache behavior, and network backpressure require a controlled external benchmark.
 - There is no scheduled multi-hour soak, process-RSS growth gate, network partition proxy, or
   database failover chaos suite yet.
-- The 1.0.1 development line adds ODBC and Oracle native asynchronous state machines. Oracle OCI
-  query/execute and LOB-result paths are covered by the manual live suite. FreeTDS explicitly
-  verifies fallback; Microsoft ODBC Driver native polling still needs a live-driver gate, plus
-  long-running cancellation and concurrency soak coverage.
+- The 1.0.1 ODBC/Oracle native-async baseline covers native query/execute, fallback eligibility,
+  deadlines, cancellation, concurrent operations, large values, and post-cancel connection reuse.
+  Remaining work is cross-version/platform expansion, failure injection, and long-running soak.
 
 ## Adding or changing a feature
 

@@ -17,6 +17,14 @@ description.
   that report no async support continue to use the explicit compatibility fallback.
 - Kept the frozen `Client` future API unchanged. Native eligibility is selected at runtime and every
   result continues to expose `Native` or `CompatibilityFallback` through the existing mode field.
+- Added live SQL Server coverage through both FreeTDS fallback and Microsoft ODBC Driver 18 native
+  polling, including deadlines, post-cancel connection reuse, concurrent operations, multibyte text,
+  and large binary values. Expanded the Oracle OCI suite with the equivalent native/fallback,
+  cancellation, concurrency, LOB, and connection-reuse checks.
+- Fixed ODBC binary parameters larger than 8 KiB, fractional-second metadata for time/timestamp
+  binds, and exact batch-result handling for drivers that return only aggregate row counts.
+- Moved Oracle `OCIReset` onto the reactor operation thread after `OCIBreak`, eliminating a
+  cross-thread reset race that could leave cancellation or process shutdown hanging.
 
 ## [1.0.0]
 

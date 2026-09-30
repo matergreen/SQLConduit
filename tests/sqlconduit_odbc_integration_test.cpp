@@ -7,11 +7,13 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <future>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 static sqlconduit::Client g_client;
 
@@ -87,13 +89,15 @@ namespace {
     struct Fixture {
         std::string table;
         std::string configPath;
+        std::string connectionString;
+        std::string database;
         bool initialized = false;
         bool expectNativeAsync = false;
 
         Fixture() {
             const auto stamp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
             table = "sqlconduit_it_" + std::to_string(static_cast<unsigned long long>(stamp));
-            configPath = "/tmp/" + table + ".json";
+            configPath = (std::filesystem::temp_directory_path() / (table + ".json")).string();
         }
 
         ~Fixture() {
@@ -111,13 +115,20 @@ namespace {
             const auto port = env("SQLCONDUIT_TEST_ODBC_PORT", "1433");
             const auto user = env("SQLCONDUIT_TEST_ODBC_USER", "sa");
             const auto password = env("SQLCONDUIT_TEST_ODBC_PASSWORD");
-            const auto database = env("SQLCONDUIT_TEST_ODBC_DATABASE", "master");
+            database = env("SQLCONDUIT_TEST_ODBC_DATABASE", "master");
             const auto driver = env("SQLCONDUIT_TEST_ODBC_DRIVER", "FreeTDS");
             expectNativeAsync = driver.find("ODBC Driver") != std::string::npos;
             require(!password.empty(), "SQLCONDUIT_TEST_ODBC_PASSWORD must be set");
-            const std::string connection = "DRIVER={" + driver + "};SERVER=" + host
-                                           + ";PORT=" + port + ";DATABASE=" + database + ";UID=" + user + ";PWD="
-                                           + password + ";TDS_Version=7.4;";
+            connectionString = "DRIVER={" + driver + "};";
+            if (expectNativeAsync) {
+                connectionString += "SERVER=tcp:" + host + "," + port
+                                    + ";DATABASE=" + database + ";UID=" + user + ";PWD="
+                                    + password + ";Encrypt=yes;TrustServerCertificate=yes;";
+            } else {
+                connectionString += "SERVER=" + host + ";PORT=" + port
+                                    + ";DATABASE=" + database + ";UID=" + user + ";PWD="
+                                    + password + ";TDS_Version=7.4;";
+            }
             std::ofstream file(configPath);
             file << "{\"default_datasource\":\"odbc\","
                     "\"pool\":{\"min\":0,\"max\":4,\"borrow_timeout_ms\":3000},"
@@ -131,7 +142,7 @@ namespace {
                     "\"datasources\":[{\"name\":\"odbc\",\"type\":\"odbc\","
                     "\"database\":\"" << jsonEscape(database) << "\","
                     "\"connection_timeout_ms\":5000,\"extra\":{"
-                    "\"connection_string\":\"" << jsonEscape(connection) << "\","
+                    "\"connection_string\":\"" << jsonEscape(connectionString) << "\","
                     "\"savepoint_style\":\"sqlserver\"}}]}";
             file.close();
             requireOk(g_client.init(configPath), "init");
@@ -142,6 +153,20 @@ namespace {
                           "name VARCHAR(100) NOT NULL UNIQUE,qty BIGINT NOT NULL,amount DECIMAL(30,9),"
                           "due_date DATE,local_time TIME(6),external_id UNIQUEIDENTIFIER,"
                           "payload VARBINARY(MAX),created_at DATETIME2(6))", affected), "create table");
+        }
+
+        void writeAsyncConfig(const std::string &path, const int statementTimeoutMs) const {
+            std::ofstream file(path);
+            require(static_cast<bool>(file), "cannot create ODBC async test config");
+            file << "{\"default_datasource\":\"odbc\","
+                    "\"pool\":{\"min\":0,\"max\":1,\"borrow_timeout_ms\":5000},"
+                    "\"async\":{\"enabled\":true,\"threads\":2,\"queue_size\":16,"
+                    "\"statement_timeout_ms\":" << statementTimeoutMs << "},"
+                    "\"datasources\":[{\"name\":\"odbc\",\"type\":\"odbc\","
+                    "\"database\":\"" << jsonEscape(database) << "\","
+                    "\"connection_timeout_ms\":5000,\"extra\":{"
+                    "\"connection_string\":\"" << jsonEscape(connectionString) << "\","
+                    "\"savepoint_style\":\"sqlserver\"}}]}";
         }
     };
 
@@ -278,6 +303,97 @@ namespace {
         sqlconduit::core::ConnectionPool::Stats pool;
         require(g_client.poolStats(pool) && pool.borrowRequests > 0, "pool metrics empty");
         require(!g_client.slowSqlStats().empty(), "slow SQL metrics empty");
+    }
+
+    void testNativeAsyncHardening(Fixture &f) {
+        const std::string asyncTable = f.table + "_async";
+        std::int64_t affected = 0;
+        requireOk(g_client.execute(
+                      "CREATE TABLE " + asyncTable
+                      + " (id BIGINT IDENTITY(1,1) PRIMARY KEY, text_value NVARCHAR(MAX),"
+                        " payload VARBINARY(MAX))",
+                      affected), "create async large-value table");
+
+        std::string largeText;
+        largeText.reserve(18000);
+        for (int i = 0; i < 6000; ++i) largeText += "数";
+        sqlconduit::common::Blob largeBlob(20000);
+        for (std::size_t i = 0; i < largeBlob.size(); ++i)
+            largeBlob[i] = static_cast<unsigned char>((i * 17 + 11) & 0xff);
+
+        const auto write = g_client.executeAsync(
+            "INSERT INTO " + asyncTable + " (text_value,payload) VALUES (?,?)",
+            Params{largeText, largeBlob}).get();
+        requireOk(write.status, "async large-value insert");
+        require(write.affected == 1, "async large-value insert affected-row mismatch");
+        require((write.mode == sqlconduit::async::ExecutionMode::Native) == f.expectNativeAsync,
+                "async large-value insert mode mismatch");
+
+        const auto read = g_client.queryAsync(
+            "SELECT text_value,payload FROM " + asyncTable + " WHERE id=1").get();
+        requireOk(read.status, "async chunked large-value query");
+        require((read.mode == sqlconduit::async::ExecutionMode::Native) == f.expectNativeAsync,
+                "async chunked large-value query mode mismatch");
+        require(read.rows.rowCount() == 1 &&
+                    asString(read.rows.rows()[0].at("text_value")) == largeText,
+                "async NVARCHAR(MAX) round trip mismatch");
+        const auto &returnedBlob =
+            std::get<sqlconduit::common::Blob>(read.rows.rows()[0].at("payload"));
+        require(returnedBlob.size() == largeBlob.size(),
+                "async VARBINARY(MAX) length mismatch: expected "
+                    + std::to_string(largeBlob.size()) + ", got "
+                    + std::to_string(returnedBlob.size()));
+        require(returnedBlob == largeBlob, "async VARBINARY(MAX) content mismatch");
+
+        std::vector<std::future<sqlconduit::async::QueryResult>> pending;
+        for (int i = 0; i < 8; ++i)
+            pending.emplace_back(g_client.queryAsync(
+                "SELECT qty FROM " + f.table + " WHERE name=?", Params{std::string("alpha")}));
+        for (auto &future: pending) {
+            const auto result = future.get();
+            requireOk(result.status, "concurrent async query");
+            require(result.rows.rowCount() == 1 &&
+                        asInt(result.rows.rows()[0].at("qty")) == 7,
+                    "concurrent async query result mismatch");
+            require((result.mode == sqlconduit::async::ExecutionMode::Native) ==
+                        f.expectNativeAsync,
+                    "concurrent async query mode mismatch");
+        }
+
+        requireOk(g_client.execute("DROP TABLE " + asyncTable, affected),
+                  "drop async large-value table");
+
+        if (!f.expectNativeAsync) return;
+
+        const auto stamp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+        const auto timeoutPath = (std::filesystem::temp_directory_path() /
+                                  ("sqlconduit_odbc_timeout_" +
+                                   std::to_string(static_cast<unsigned long long>(stamp)) +
+                                   ".json")).string();
+        f.writeAsyncConfig(timeoutPath, 100);
+        sqlconduit::Client timeoutClient;
+        requireOk(timeoutClient.addDriver(sqlconduit::drivers::odbc()),
+                  "register timeout ODBC driver");
+        requireOk(timeoutClient.init(timeoutPath), "init timeout ODBC client");
+
+        const auto started = std::chrono::steady_clock::now();
+        const auto timed = timeoutClient.queryAsync(
+            "SELECT COUNT_BIG(*) AS n FROM sys.all_objects a CROSS JOIN sys.all_objects b "
+            "CROSS JOIN sys.all_objects c OPTION (MAXDOP 1)").get();
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        require(timed.status.code == ErrorCode::QueryTimeout &&
+                    timed.mode == sqlconduit::async::ExecutionMode::Native,
+                "Microsoft ODBC native query did not report QueryTimeout");
+        require(elapsed < std::chrono::seconds(5),
+                "Microsoft ODBC native cancellation did not resolve promptly");
+
+        ResultSet reuse;
+        requireOk(timeoutClient.query("SELECT 1 AS n", reuse),
+                  "reuse Microsoft ODBC connection after cancellation");
+        require(reuse.rowCount() == 1 && asInt(reuse.rows()[0].at("n")) == 1,
+                "Microsoft ODBC connection reuse returned the wrong result");
+        timeoutClient.shutdown(std::chrono::milliseconds(3000));
+        std::remove(timeoutPath.c_str());
     }
 
     void testEntityMapping(Fixture &f) {
@@ -488,6 +604,7 @@ int main() {
                       }),
                   "SQL Builder CRUD");
         testTransactionsPreparedBatchCursorAsync(fixture);
+        testNativeAsyncHardening(fixture);
         testEntityMapping(fixture);
         testScriptExecution(fixture);
         testRoutinesAndCall(fixture);

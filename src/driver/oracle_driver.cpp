@@ -578,12 +578,14 @@ namespace sqlconduit::driver {
                                  OCIServer *server, OCIError *err,
                                  config::DataSourceConfig cfg, std::string sql,
                                  common::Params params, const std::int64_t lobMaxBytes,
+                                 std::atomic<bool> &cancelRequested,
                                  std::unique_ptr<ActiveOperation> active,
                                  core::IDatabaseConnection::AsyncQueryCompletion queryCompletion,
                                  core::IDatabaseConnection::AsyncExecuteCompletion executeCompletion)
                 : kind_(kind), env_(env), svc_(svc), server_(server), err_(err),
                   cfg_(std::move(cfg)), sql_(std::move(sql)), params_(std::move(params)),
                   input_(env, svc, err, params_.size()), lobMaxBytes_(lobMaxBytes),
+                  cancelRequested_(cancelRequested),
                   active_(std::move(active)), queryCompletion_(std::move(queryCompletion)),
                   executeCompletion_(std::move(executeCompletion)) {}
 
@@ -642,8 +644,7 @@ namespace sqlconduit::driver {
                 }
                 if (rc == OCI_STILL_EXECUTING) return false;
                 if (!ociOk(rc)) {
-                    finish(oracleError(err_, common::ErrorCode::QueryError,
-                                       "prepare(async)"));
+                    finishFailure("prepare(async)");
                     return true;
                 }
                 if (auto status = bindOracleInputs(env_, svc_, err_, stmt_, cfg_, params_, input_);
@@ -662,8 +663,7 @@ namespace sqlconduit::driver {
                                                 0, nullptr, nullptr, OCI_DEFAULT);
                 if (rc == OCI_STILL_EXECUTING) return false;
                 if (!ociOk(rc)) {
-                    finish(oracleError(err_, common::ErrorCode::QueryError,
-                                       "execute(async)"));
+                    finishFailure("execute(async)");
                     return true;
                 }
                 if (kind_ == Kind::Execute) {
@@ -707,7 +707,10 @@ namespace sqlconduit::driver {
                     row, hasRow, nonblocking_ ? &pending : nullptr);
                 if (pending) return false;
                 if (!status.ok()) {
-                    finish(status);
+                    if (cancelRequested_.load(std::memory_order_acquire))
+                        finishFailure("fetch(async)");
+                    else
+                        finish(status);
                     return true;
                 }
                 if (!hasRow) {
@@ -723,6 +726,23 @@ namespace sqlconduit::driver {
                 auto status = setOracleNonblocking(server_, err_, false);
                 if (status.ok()) nonblocking_ = false;
                 return status;
+            }
+
+            void finishFailure(const char *where) {
+                if (!cancelRequested_.exchange(false, std::memory_order_acq_rel)) {
+                    finish(oracleError(err_, common::ErrorCode::QueryError, where));
+                    return;
+                }
+                const sword resetRc = OCIReset(svc_, err_);
+                if (!ociOk(resetRc)) {
+                    auto status = oracleError(err_, common::ErrorCode::Cancelled,
+                                              "reset after cancel(async)");
+                    status.connectionBroken = true;
+                    finish(std::move(status));
+                    return;
+                }
+                finish(common::Status::error(common::ErrorCode::Cancelled,
+                                             "Oracle native operation cancelled"));
             }
 
             void releaseStatement() {
@@ -761,6 +781,7 @@ namespace sqlconduit::driver {
             common::Params params_;
             OracleInputStorage input_;
             std::int64_t lobMaxBytes_;
+            std::atomic<bool> &cancelRequested_;
             std::unique_ptr<ActiveOperation> active_;
             core::IDatabaseConnection::AsyncQueryCompletion queryCompletion_;
             core::IDatabaseConnection::AsyncExecuteCompletion executeCompletion_;
@@ -2469,6 +2490,7 @@ namespace sqlconduit::driver {
         {
             std::lock_guard<std::mutex> lock(operationMtx_);
             if (operationActive_) return false;
+            cancelRequested_.store(false, std::memory_order_release);
         }
         std::size_t placeholders = 0;
         auto oracleSql = replacePlaceholders(
@@ -2479,7 +2501,7 @@ namespace sqlconduit::driver {
         auto active = std::make_unique<ActiveOperation>(operationMtx_, operationActive_);
         auto operation = std::make_shared<OracleAsyncOperation>(
             OracleAsyncOperation::Kind::Query, env_, svc_, server_, err_, cfg_,
-            std::move(oracleSql), params, lobMaxBytes_, std::move(active),
+            std::move(oracleSql), params, lobMaxBytes_, cancelRequested_, std::move(active),
             std::move(completion), AsyncExecuteCompletion{});
         if (!operation->enable()) {
             SQLCONDUIT_LOG_WARN("Oracle native query start failed; using compatibility fallback");
@@ -2507,6 +2529,7 @@ namespace sqlconduit::driver {
         {
             std::lock_guard<std::mutex> lock(operationMtx_);
             if (operationActive_) return false;
+            cancelRequested_.store(false, std::memory_order_release);
         }
         std::size_t placeholders = 0;
         auto oracleSql = replacePlaceholders(
@@ -2517,7 +2540,7 @@ namespace sqlconduit::driver {
         auto active = std::make_unique<ActiveOperation>(operationMtx_, operationActive_);
         auto operation = std::make_shared<OracleAsyncOperation>(
             OracleAsyncOperation::Kind::Execute, env_, svc_, server_, err_, cfg_,
-            std::move(oracleSql), params, lobMaxBytes_, std::move(active),
+            std::move(oracleSql), params, lobMaxBytes_, cancelRequested_, std::move(active),
             AsyncQueryCompletion{}, std::move(completion));
         if (!operation->enable()) {
             SQLCONDUIT_LOG_WARN("Oracle native execute start failed; using compatibility fallback");
@@ -2539,17 +2562,15 @@ namespace sqlconduit::driver {
 #ifdef SQLCONDUIT_ENABLE_ORACLE
         try {
             if (!open_ || !svc_) return notConnected("cancel");
-            const sword rc = OCIBreak(svc_, err_);
-            if (!ociOk(rc)) return oracleError(err_, common::ErrorCode::Cancelled, "cancel");
-            bool active = false;
             {
                 std::lock_guard<std::mutex> lock(operationMtx_);
-                active = operationActive_;
+                if (!operationActive_) return common::Status::OK();
             }
-            if (active) {
-                const sword resetRc = OCIReset(svc_, err_);
-                if (!ociOk(resetRc))
-                    return oracleError(err_, common::ErrorCode::Cancelled, "reset");
+            cancelRequested_.store(true, std::memory_order_release);
+            const sword rc = OCIBreak(svc_, err_);
+            if (!ociOk(rc)) {
+                cancelRequested_.store(false, std::memory_order_release);
+                return oracleError(err_, common::ErrorCode::Cancelled, "cancel");
             }
             return common::Status::OK();
         } catch (...) {
@@ -2570,6 +2591,7 @@ namespace sqlconduit::driver {
         }
         txOpen_ = false;
         operationActive_ = false;
+        cancelRequested_.store(false, std::memory_order_release);
         svc_ = nullptr;
         server_ = nullptr;
         nativeAsync_ = false;

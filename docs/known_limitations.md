@@ -16,8 +16,9 @@ For the complete implemented/testing/scheduled matrix, see
   cache/retry/group/shadow topologies use the bounded `CompatibilityFallback` executor. In the
   1.0.1 development line, eligible Oracle operations use OCI nonblocking mode and eligible ODBC
   operations use polling only when the selected driver reports statement- or connection-level
-  async. FreeTDS reports no native async. Microsoft ODBC Driver remains compile-tested but not yet
-  live-driver validated. Oracle temporary-LOB input binding falls back; LOB result materialization
+  async. FreeTDS reports no native async. Microsoft ODBC Driver 18 native polling is live-tested on
+  Linux in the 1.0.1 line; Windows remains compile-tested. Oracle temporary-LOB input binding falls
+  back; LOB result materialization
   runs on a reactor worker because OCI secure-file LOB reads are unsupported in nonblocking mode.
 - Fallback read deadlines can classify a late result as `QueryTimeout`, but SQLConduit cannot safely
   force-kill an arbitrary blocking vendor call. Successful write, batch, or transaction results are
@@ -46,7 +47,8 @@ For the complete implemented/testing/scheduled matrix, see
   archive contains Core and ODBC. Oracle must be built from source against an installed Oracle
   Instant Client SDK and is validated manually for releases.
 - The Microsoft ODBC Driver path is compile-tested on Windows but has no live-driver validation in
-  the 1.0.0 release matrix. Live SQL Server integration uses unixODBC and FreeTDS on Linux.
+  the 1.0.0 release matrix. The 1.0.1 line adds Linux live validation through unixODBC and Driver
+  18 alongside the existing FreeTDS path.
 - SQLConduit promises 1.x source compatibility, not C++ ABI compatibility across toolchains or
   runtime-library modes. Build the library and consuming application with compatible settings.
 
@@ -67,7 +69,8 @@ For the complete implemented/testing/scheduled matrix, see
 
 - PostgreSQL 和部分无参数 MySQL 操作可使用 native 异步。1.0.1 开发线为合格 Oracle 操作加入
   OCI nonblocking，并在 ODBC 驱动报告 statement/connection 级异步能力时使用轮询状态机。
-  FreeTDS 不报告 native async；Microsoft ODBC Driver 仍只有编译验证、尚无实库验证。Oracle
+  FreeTDS 不报告 native async；1.0.1 已在 Linux 实库验证 Microsoft ODBC Driver 18 的 native
+  轮询，Windows 仍为编译验证。Oracle
   临时 LOB 输入绑定回退兼容执行器；OCI 不支持在 nonblocking 模式读取 secure-file LOB，因而
   LOB 结果会在 reactor worker 上切回 blocking 完成物化。事务、游标、批量和复杂拓扑继续 fallback。
 - `StreamSource` 当前仍先由驱动缓冲结果，不承诺服务端常量内存流式读取。
@@ -77,7 +80,7 @@ For the complete implemented/testing/scheduled matrix, see
 - Oracle 复杂命名对象绑定及 OUT/INOUT LOB 便利映射不属于 1.0 契约。
 - 驱动是独立静态组件；只链接实际使用的组件。预编译 Windows 包仅含 Core/ODBC，Linux 与
   macOS 包含 Core/MySQL/PostgreSQL/ODBC；Oracle 需要基于 Instant Client SDK 从源码构建。
-- Microsoft ODBC Driver 在 1.0.0 中只有 Windows 编译验证；SQL Server 实库集成使用
-  Linux 上的 unixODBC/FreeTDS，不宣称已完成 Microsoft 驱动实库验证。
+- Microsoft ODBC Driver 在 1.0.0 中只有 Windows 编译验证；1.0.1 新增 Linux 上通过
+  unixODBC/Driver 18 的实库验证，同时保留 FreeTDS fallback 门禁。
 - 1.x 承诺源码兼容，不承诺跨工具链 C++ ABI。重试、故障切换和写缓冲也不提供 exactly-once
   写入保证。

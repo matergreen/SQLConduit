@@ -8,7 +8,7 @@ This is the current capability map for SQLConduit 1.0. It answers three separate
 2. How broadly has the implementation been validated?
 3. Is further work committed, being evaluated, or intentionally outside the project?
 
-The snapshot date is **2026-09-29**. Release notes remain authoritative for a particular version;
+The snapshot date is **2026-09-30**. Release notes remain authoritative for a particular version;
 this document describes the direction of the supported `1.x` line and is reviewed at each release.
 
 ## Status vocabulary
@@ -78,7 +78,7 @@ observable.
 | Async pool handoff and deadlines | **Implemented / validated** | Pool wait does not occupy a worker; active waiter/read deadlines and connection quarantine are covered |
 | PostgreSQL native async | **Implemented / validated** | Eligible leaf query/execute through a shared libpq socket reactor |
 | MySQL native async | **Implemented / expanding validation** | Eligible parameter-free single-statement operations on supported MySQL clients; prepared operations fall back |
-| ODBC and Oracle native async | **Implemented / expanding validation** | OCI nonblocking is live-tested; ODBC polling is runtime-gated by driver capability, with Microsoft-driver live validation pending |
+| ODBC and Oracle native async | **Implemented / expanding validation** | OCI nonblocking and Microsoft ODBC Driver 18 polling are live-tested; FreeTDS capability detection selects fallback |
 | Logs, observers, slow SQL, and pool stats | **Implemented / validated** | Per-client observers, fingerprinting, sampling/redaction, bounded aggregation |
 | Prometheus exporter | **Implemented / validated** | Stable metric/type/label contract and hard fingerprint-series limit; HTTP serving stays application-owned |
 | Performance benchmarks | **Implemented / expanding validation** | Connection borrow/return, binding, mapping, batch, cursor, and disabled-logging baselines; historical regression automation is scheduled |
@@ -96,13 +96,18 @@ observable.
 | Cursor | Unbuffered | Server-side | Native ODBC | Forward-only OCI |
 | Native async query/execute | Partial eligible paths | Eligible leaf paths | Runtime-gated polling; FreeTDS fallback | Eligible OCI nonblocking paths |
 | Future API fallback | Validated | Validated | Validated | Validated |
-| Live release validation | Automated | Automated | Automated on Linux/FreeTDS; Microsoft ODBC Driver compile/test only on Windows | Manual OCI-equipped runner |
+| Live release validation | Automated | Automated | Automated on Linux with FreeTDS and Microsoft ODBC Driver 18; Windows compile/test | Manual OCI-equipped runner |
 
 The 1.0.0 release validation completed MySQL 8.4.11 (181 checks), PostgreSQL 18.6 (321 checks), SQL
 Server 2022 through unixODBC/FreeTDS (79 checks), and Oracle Database Free with OCI 23.26.3
 (85 checks). Check counts are a snapshot, not a compatibility contract. See
 [Support](../SUPPORT.md) for the platform/client matrix and
 [Known limitations](known_limitations.md) for exact exclusions.
+
+The 1.0.1 development validation additionally passes SQL Server 2022 through FreeTDS fallback
+(116 checks), Microsoft ODBC Driver 18 native polling (123 checks), and Oracle Database Free through
+OCI native/fallback paths (119 checks). These suites cover concurrent operations, deadlines,
+cancellation, post-cancel connection reuse, multibyte text, and large LOB/binary values.
 
 ## Work currently in extended validation
 
@@ -128,7 +133,7 @@ Priorities are ordered; version assignment happens only when work enters a relea
 | Historical performance regression gate | **Scheduled** | Next 1.x minor | Benchmark/CI change only |
 | Allocation, pool contention, batch, and cursor optimization | **Scheduled** | Incremental throughout 1.x | Existing methods and result semantics |
 | Incremental `StreamSource` consumption | **Scheduled** | Later 1.x | Reuse current type and overloads |
-| Native ODBC and Oracle async validation | **In progress** | 1.0.1 hardening | Same future API; capability-gated mode selection and additional cancellation/concurrency coverage |
+| Native ODBC and Oracle async baseline | **Implemented / validated** | 1.0.1 | Same future API; capability-gated mode selection, cancellation, concurrency, large values, and connection reuse |
 | SQL Builder dialect extensions | **Scheduled** | Later 1.x | Additive extension types; portable builder remains valid |
 | Optional coroutine/tracing adapters | **Evaluating** | Unassigned | Separate optional headers over futures/observer events |
 
@@ -155,10 +160,11 @@ Priorities are ordered; version assignment happens only when work enters a relea
 
 ### Priority C — async coverage
 
-- Add live Microsoft ODBC Driver coverage for statement- and connection-level polling, cancellation,
-  large values, and connection reuse; keep FreeTDS on capability-detected fallback.
-- Expand Oracle OCI nonblocking cancellation, concurrent-operation, LOB, and client-version tests;
-  retain fallback for temporary-LOB input binding.
+- Broaden the completed Microsoft ODBC Driver 18 baseline to additional supported driver/server
+  versions, Windows live execution, failure injection, and multi-hour cancellation/concurrency soak;
+  keep FreeTDS on capability-detected fallback.
+- Broaden the completed Oracle OCI nonblocking baseline across supported client versions and
+  failure/soak scenarios; retain fallback for temporary-LOB input binding.
 - Move eligible parameterized MySQL and complex routing/retry/cache paths off compatibility workers
   when vendor capability allows it.
 - Evaluate a coroutine adapter as an optional header layered over the existing futures; futures stay

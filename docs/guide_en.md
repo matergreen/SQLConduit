@@ -1011,7 +1011,8 @@ parameter-free, single-statement SELECT and DML/DDL. Parameterized MySQL operati
 retain prepared-statement fallback. The 1.0.1 development line adds OCI nonblocking query/execute
 for eligible Oracle operations and ODBC polling query/execute when the selected driver reports
 `SQL_AM_STATEMENT` or `SQL_AM_CONNECTION`. FreeTDS reports no native async and remains on fallback;
-Microsoft ODBC Driver live validation is pending. Oracle temporary-LOB input binding, and all
+Microsoft ODBC Driver 18 native polling is live-tested on Linux, including cancellation and
+post-cancel connection reuse. Oracle temporary-LOB input binding, and all
 drivers' transaction, cursor, batch, and complex-topology paths, still use compatibility execution.
 A driver extension may return `Native` only after implementing the
 `IDatabaseConnection::queryAsync` / `executeAsync` callback contract and reporting

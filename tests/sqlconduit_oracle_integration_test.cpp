@@ -8,7 +8,9 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -111,12 +113,16 @@ namespace {
     struct Fixture {
         std::string table;
         std::string configPath;
+        std::string host;
+        std::string port;
+        std::string user;
+        std::string service;
         bool initialized = false;
 
         Fixture() {
             const auto stamp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
             table = "SQLCONDUIT_IT_" + std::to_string(static_cast<unsigned long long>(stamp) % 1000000000);
-            configPath = "/tmp/" + table + ".json";
+            configPath = (std::filesystem::temp_directory_path() / (table + ".json")).string();
         }
 
         ~Fixture() {
@@ -131,10 +137,10 @@ namespace {
         void start() {
             requireOk(g_client.addDriver(sqlconduit::drivers::oracle()),
                       "register Oracle driver");
-            const std::string host = env("SQLCONDUIT_TEST_ORACLE_HOST", "127.0.0.1");
-            const std::string port = env("SQLCONDUIT_TEST_ORACLE_PORT", "1521");
-            const std::string user = env("SQLCONDUIT_TEST_ORACLE_USER", "system");
-            const std::string service = env("SQLCONDUIT_TEST_ORACLE_SERVICE", "XEPDB1");
+            host = env("SQLCONDUIT_TEST_ORACLE_HOST", "127.0.0.1");
+            port = env("SQLCONDUIT_TEST_ORACLE_PORT", "1521");
+            user = env("SQLCONDUIT_TEST_ORACLE_USER", "system");
+            service = env("SQLCONDUIT_TEST_ORACLE_SERVICE", "XEPDB1");
             require(!env("SQLCONDUIT_TEST_ORACLE_PASSWORD").empty(),
                     "SQLCONDUIT_TEST_ORACLE_PASSWORD must be set for the integration test");
 
@@ -178,6 +184,23 @@ namespace {
                           "\"big_blob\" BLOB, "
                           "\"amount\" NUMBER(30,9), "
                           "\"created_at\" TIMESTAMP NOT NULL)", affected), "create table");
+        }
+
+        void writeAsyncConfig(const std::string &path, const int statementTimeoutMs) const {
+            std::ofstream file(path);
+            require(static_cast<bool>(file), "cannot create Oracle async test config");
+            file << "{\"default_datasource\":\"ora\","
+                    "\"pool\":{\"enabled\":true,\"min\":0,\"max\":1,"
+                    "\"borrow_timeout_ms\":5000,\"validation_interval_ms\":0},"
+                    "\"retry\":{\"max_attempts\":1,\"retry_writes\":false},"
+                    "\"async\":{\"enabled\":true,\"threads\":2,\"queue_size\":16,"
+                    "\"statement_timeout_ms\":" << statementTimeoutMs << "},"
+                    "\"datasources\":[{\"name\":\"ora\",\"type\":\"oracle\","
+                    "\"host\":\"" << jsonEscape(host) << "\",\"port\":" << port << ','
+                    << "\"user\":\"" << jsonEscape(user) << "\","
+                    "\"password_env\":\"SQLCONDUIT_TEST_ORACLE_PASSWORD\","
+                    "\"oracle\":{\"service_name\":\"" << jsonEscape(service) << "\"},"
+                    "\"connection_timeout_ms\":5000,\"query_timeout_ms\":0}]}";
         }
     };
 
@@ -561,6 +584,79 @@ namespace {
                 "bad SQL should be classified as QueryError, got " +
                 std::string(sqlconduit::common::errorCodeToString(bad.code)));
     }
+
+    void testNativeAsyncHardening(Fixture &f) {
+        const auto asyncBlob = g_client.queryAsync(
+            "SELECT \"big_blob\" FROM " + f.table + " WHERE \"name\" = ?",
+            Params{std::string("raw-types")}).get();
+        requireOk(asyncBlob.status, "async BLOB query");
+        require(asyncBlob.mode == sqlconduit::async::ExecutionMode::Native &&
+                    asyncBlob.rows.rowCount() == 1,
+                "Oracle async BLOB query did not use native mode");
+        const auto &blob = std::get<sqlconduit::common::Blob>(
+            asyncBlob.rows.rows()[0].at("big_blob"));
+        require(blob.size() == 5000, "Oracle async BLOB length mismatch");
+        for (std::size_t i = 0; i < blob.size(); ++i)
+            if (blob[i] != static_cast<unsigned char>((i * 7 + 3) & 0xff))
+                throw std::runtime_error("Oracle async BLOB content mismatch");
+        ++gChecks;
+
+        sqlconduit::common::Blob temporaryLob(5000, 0x5a);
+        const auto fallbackWrite = g_client.executeAsync(
+            "INSERT INTO " + f.table
+            + " (\"name\",\"qty\",\"price\",\"big_blob\",\"created_at\") "
+              "VALUES (?,?,?,?,?)",
+            Params{std::string("async-temp-lob"), std::int64_t{23}, 3.5, temporaryLob,
+                   sqlconduit::common::Timestamp{std::chrono::system_clock::now()}}).get();
+        requireOk(fallbackWrite.status, "temporary-LOB async fallback insert");
+        require(fallbackWrite.affected == 1 &&
+                    fallbackWrite.mode ==
+                        sqlconduit::async::ExecutionMode::CompatibilityFallback,
+                "Oracle temporary-LOB input did not expose compatibility fallback mode");
+
+        std::vector<std::future<sqlconduit::async::QueryResult>> pending;
+        for (int i = 0; i < 8; ++i)
+            pending.emplace_back(g_client.queryAsync(
+                "SELECT " + std::to_string(i) + " AS N FROM DUAL"));
+        for (int i = 0; i < 8; ++i) {
+            const auto result = pending[static_cast<std::size_t>(i)].get();
+            requireOk(result.status, "concurrent Oracle native query");
+            require(result.mode == sqlconduit::async::ExecutionMode::Native &&
+                        result.rows.rowCount() == 1 &&
+                        asInt(result.rows.rows()[0].at("N")) == i,
+                    "concurrent Oracle native query result mismatch");
+        }
+
+        const auto stamp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+        const auto timeoutPath = (std::filesystem::temp_directory_path() /
+                                  ("sqlconduit_oracle_timeout_" +
+                                   std::to_string(static_cast<unsigned long long>(stamp)) +
+                                   ".json")).string();
+        f.writeAsyncConfig(timeoutPath, 100);
+        sqlconduit::Client timeoutClient;
+        requireOk(timeoutClient.addDriver(sqlconduit::drivers::oracle()),
+                  "register timeout Oracle driver");
+        requireOk(timeoutClient.init(timeoutPath), "init timeout Oracle client");
+
+        const auto started = std::chrono::steady_clock::now();
+        const auto timed = timeoutClient.queryAsync(
+            "SELECT COUNT(*) AS N FROM ALL_OBJECTS A CROSS JOIN ALL_OBJECTS B "
+            "CROSS JOIN ALL_OBJECTS C").get();
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        require(timed.status.code == ErrorCode::QueryTimeout &&
+                    timed.mode == sqlconduit::async::ExecutionMode::Native,
+                "Oracle native query did not report QueryTimeout");
+        require(elapsed < std::chrono::seconds(5),
+                "Oracle native cancellation did not resolve promptly");
+
+        ResultSet reuse;
+        requireOk(timeoutClient.query("SELECT 1 AS N FROM DUAL", reuse),
+                  "reuse Oracle connection after cancellation");
+        require(reuse.rowCount() == 1 && asInt(reuse.rows()[0].at("N")) == 1,
+                "Oracle connection reuse returned the wrong result");
+        timeoutClient.shutdown(std::chrono::milliseconds(3000));
+        std::remove(timeoutPath.c_str());
+    }
 }
 
 int main() {
@@ -583,6 +679,7 @@ int main() {
         testStreamingAndErrors(f);
         testCallableApi(f);
         testSymmetryGaps(f);
+        testNativeAsyncHardening(f);
         std::cout << "Oracle integration test passed (" << gChecks << " checks)\n";
         return 0;
     } catch (const std::exception &e) {

@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | 公共 API 与配置契约 | 独立头文件编译、公共 API 断言、JSON/YAML Schema 和严格错误路径测试 | Linux、macOS、Windows 构建 |
 | 核心行为 | 22 个非实库 CTest，覆盖映射、SQL Builder、连接池、会话、事务、重试、路由、异步、可观测性、插件、缓存和生命周期 | 所有 CI 构建平台 |
-| 驱动真实行为 | MySQL、PostgreSQL、SQL Server/ODBC 实库套件，以及具备 OCI 环境时的 Oracle 套件 | MySQL/PostgreSQL、FreeTDS SQL Server 是托管 CI 门禁；Oracle 是明确的人工发布门禁 |
+| 驱动真实行为 | MySQL、PostgreSQL、SQL Server/ODBC 实库套件，以及具备 OCI 环境时的 Oracle 套件 | MySQL/PostgreSQL、FreeTDS 与 Microsoft ODBC Driver 18 SQL Server 是托管 CI 门禁；Oracle 是明确的人工发布门禁 |
 | 未定义行为与泄漏 | 全部非实库测试在 ASan、LeakSanitizer、UBSan 下执行 | Linux 托管 CI |
 | 数据竞争与锁正确性 | 缓存、连接池和执行器竞争测试在 ThreadSanitizer 下执行 | Linux 托管 CI |
 | 性能 | 12 个 Release 微基准输出 JSON 并归档 | Linux 执行；在同等硬件上比较，不使用托管 Runner 的绝对耗时阈值 |
@@ -50,15 +50,14 @@ LeakSanitizer 对整个非实库套件启用，并用非零退出码报告泄漏
 以下项目不能宣称已经全面验证：
 
 - Oracle 实库测试需要 OCI 环境，尚未进入 GitHub 托管 CI。
-- 托管 SQL Server 集成测试使用 FreeTDS；Microsoft ODBC Driver 实库执行不属于 1.0.0
-  已验证矩阵，Windows CI 目前只提供 ODBC 路径的编译和单测验证。
+- 1.0.0 矩阵只使用 FreeTDS；1.0.1 托管 SQL Server job 在 Linux 同时执行 FreeTDS fallback
+  与 Microsoft ODBC Driver 18 native 轮询。Windows CI 仍只做编译/单测，不做实库验证。
 - 自动版本矩阵尚未覆盖支持范围内的每个数据库小版本和客户端库版本。
 - 微基准使用确定性的进程内驱动；端到端数据库延迟、吞吐、服务端计划缓存和网络背压需要
   受控的外部基准环境。
 - 尚无定时多小时 soak、进程 RSS 增长门禁、网络分区代理或数据库故障切换 chaos 套件。
-- 1.0.1 开发线已加入 ODBC/Oracle 原生异步状态机。Oracle OCI 查询/执行及 LOB 结果路径由手工
-  实库套件覆盖；FreeTDS 明确验证 fallback。Microsoft ODBC Driver native 轮询仍需实库门禁，
-  还需补充长耗时取消和并发 soak。
+- 1.0.1 ODBC/Oracle 原生异步基线已覆盖 native query/execute、fallback 选择、deadline、取消、
+  并发、大字段和取消后连接复用。剩余工作是跨版本/平台扩展、故障注入和长时间 soak。
 
 ## 新增或修改功能时
 

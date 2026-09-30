@@ -125,7 +125,7 @@ set(SQLCONDUIT_CORE_SOURCES
 
 add_library(sqlconduit_core STATIC ${SQLCONDUIT_CORE_SOURCES})
 add_library(sqlconduit::core ALIAS sqlconduit_core)
-set_target_properties(sqlconduit_core PROPERTIES EXPORT_NAME core)
+set_target_properties(sqlconduit_core PROPERTIES EXPORT_NAME core DEBUG_POSTFIX d)
 target_compile_features(sqlconduit_core PUBLIC cxx_std_17)
 target_include_directories(sqlconduit_core
     PUBLIC
@@ -150,7 +150,7 @@ function(sqlconduit_add_driver_target name source)
     set(_target "sqlconduit_${_lower}")
     add_library(${_target} STATIC "${source}")
     add_library("sqlconduit::${_lower}" ALIAS ${_target})
-    set_target_properties(${_target} PROPERTIES EXPORT_NAME "${_lower}")
+    set_target_properties(${_target} PROPERTIES EXPORT_NAME "${_lower}" DEBUG_POSTFIX d)
     target_include_directories(${_target}
         PUBLIC
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -189,7 +189,17 @@ if(SQLCONDUIT_ENABLE_POSTGRES)
     sqlconduit_add_driver_target(Postgres src/driver/postgres_driver.cpp)
     target_compile_definitions(sqlconduit_postgres PRIVATE SQLCONDUIT_ENABLE_POSTGRES)
     find_path(PQXX_INCLUDE_DIR NAMES pqxx/pqxx)
-    if(UNIX AND NOT APPLE)
+    if(WIN32)
+        # vcpkg installs separate Debug/Release import libraries. Prefer its config
+        # targets so a multi-config MSVC build does not accidentally link Debug
+        # pqxx/libpq into a Release consumer.
+        find_package(libpqxx CONFIG QUIET)
+        find_package(PostgreSQL QUIET)
+    endif()
+    if(WIN32 AND TARGET libpqxx::pqxx AND TARGET PostgreSQL::PostgreSQL)
+        set(PQXX_LIBRARY libpqxx::pqxx)
+        set(PQ_LIBRARY PostgreSQL::PostgreSQL)
+    elseif(UNIX AND NOT APPLE)
         # Prefer static libpqxx on Linux. pqxx::internal::type_name is a C++17 inline
         # template variable; shared linking may create one instance in the executable and
         # another in libpqxx.so, registering two destructors and causing a double free at
@@ -199,7 +209,7 @@ if(SQLCONDUIT_ENABLE_POSTGRES)
         find_library(PQXX_LIBRARY NAMES pqxx)
     endif()
     find_path(PQ_INCLUDE_DIR    NAMES postgresql/libpq-fe.h libpq-fe.h)
-    find_library(PQ_LIBRARY     NAMES pq)
+    find_library(PQ_LIBRARY     NAMES pq libpq)
     if(NOT PQXX_INCLUDE_DIR OR NOT PQXX_LIBRARY OR NOT PQ_LIBRARY)
         message(FATAL_ERROR "SQLCONDUIT_ENABLE_POSTGRES=ON but libpqxx/libpq not found. "
             "Run: sudo apt install -y libpqxx-dev libpq-dev")
@@ -225,7 +235,14 @@ if(SQLCONDUIT_ENABLE_POSTGRES)
     endif()
 
     target_include_directories(sqlconduit_postgres PRIVATE ${PQXX_INCLUDE_DIR} ${PQ_INCLUDE_DIR})
-    sqlconduit_add_driver_dep(sqlconduit_postgres POSTGRES "${PQXX_LIBRARY}" "${PQ_LIBRARY}")
+    if(TARGET libpqxx::pqxx AND TARGET PostgreSQL::PostgreSQL)
+        target_link_libraries(sqlconduit_postgres PRIVATE
+            "$<BUILD_INTERFACE:libpqxx::pqxx>"
+            "$<BUILD_INTERFACE:PostgreSQL::PostgreSQL>")
+        set_property(GLOBAL APPEND PROPERTY SQLCONDUIT_POSTGRES_PC_LIBS_PRIVATE -lpqxx -lpq)
+    else()
+        sqlconduit_add_driver_dep(sqlconduit_postgres POSTGRES "${PQXX_LIBRARY}" "${PQ_LIBRARY}")
+    endif()
 endif()
 
 if(SQLCONDUIT_ENABLE_ODBC)

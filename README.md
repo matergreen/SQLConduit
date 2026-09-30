@@ -366,6 +366,11 @@ find_package(sqlconduit REQUIRED COMPONENTS Postgres)
 target_link_libraries(your_target PRIVATE sqlconduit::postgres)
 ```
 
+On Windows with vcpkg/libpqxx 8, use the `x64-windows-static-md` triplet for both SQLConduit and
+the consumer. It keeps the MSVC `/MD` runtime while avoiding duplicate standard-library symbols
+exported by some dynamic libpqxx builds. Pass the same `CMAKE_TOOLCHAIN_FILE` and
+`VCPKG_TARGET_TRIPLET` when configuring both projects.
+
 Register the selected driver before initialization:
 
 ```cpp

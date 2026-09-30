@@ -19,6 +19,9 @@
 
 #ifdef SQLCONDUIT_ENABLE_POSTGRES
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <winsock2.h>
 #endif
 #include <pqxx/pqxx>

@@ -25,6 +25,11 @@ description.
   binds, and exact batch-result handling for drivers that return only aggregate row counts.
 - Moved Oracle `OCIReset` onto the reactor operation thread after `OCIBreak`, eliminating a
   cross-thread reset race that could leave cancellation or process shutdown hanging.
+- Fixed the PostgreSQL component's MSVC build by preventing Windows SDK `min`/`max` macros from
+  corrupting standard-library calls in the driver source. Windows vcpkg discovery now uses imported
+  targets so Debug and Release libpqxx/libpq artifacts are selected per configuration.
+- Added a `d` postfix to installed Debug libraries so MSVC Debug and Release configurations can
+  coexist in one package prefix without silently overwriting each other.
 
 ## [1.0.0]
 

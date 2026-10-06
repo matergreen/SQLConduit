@@ -223,6 +223,36 @@ namespace {
         return config;
     }
 
+    config::GlobalConfig makeGroupConfig() {
+        auto config = makeConfig("native-primary");
+        config.default_datasource = "cluster";
+        config.datasources.front().name = "primary";
+
+        config::DataSourceConfig replica;
+        replica.name = "replica";
+        replica.type = "client-test";
+        replica.database = "native-replica";
+        config.datasources.push_back(std::move(replica));
+
+        config::DataSourceConfig shadow;
+        shadow.name = "shadow";
+        shadow.type = "client-test";
+        shadow.database = "native-shadow";
+        config.datasources.push_back(std::move(shadow));
+
+        config::DataSourceGroupConfig group;
+        group.name = "cluster";
+        group.primary = "primary";
+        config::ReplicaConfig replicaRoute;
+        replicaRoute.name = "replica";
+        replicaRoute.weight = 1;
+        group.replicas.push_back(std::move(replicaRoute));
+        group.fallback_to_primary = true;
+        group.shadow = "shadow";
+        config.groups.push_back(std::move(group));
+        return config;
+    }
+
     std::string identityFrom(const common::ResultSet &rows) {
         if (rows.rows().empty()) return {};
         const auto &value = rows.rows().front().at("client");
@@ -382,6 +412,41 @@ int main() {
           "native retries are accounted once per public operation");
     nativeRetry.shutdown(std::chrono::milliseconds(0));
 
+    Client retryShutdown;
+    auto retryShutdownConfig = makeConfig("native-retry-shutdown");
+    retryShutdownConfig.retry.max_attempts = 2;
+    retryShutdownConfig.retry.initial_backoff_ms = 10000;
+    retryShutdownConfig.retry.max_backoff_ms = 10000;
+    check(retryShutdown.init(retryShutdownConfig).ok(),
+          "retry shutdown test client initializes");
+    ClientTestConnection::retryableQueryFailures = 1;
+    auto retryDuringShutdown = retryShutdown.queryAsync("SELECT retry_during_shutdown");
+    bool retryWasDelayed = false;
+    for (int i = 0; i < 200; ++i) {
+        if (retryShutdown.asyncStats().delayedPending > 0) {
+            retryWasDelayed = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    check(retryWasDelayed, "retry enters delayed backoff before shutdown");
+    retryShutdown.shutdown(std::chrono::milliseconds(0));
+    bool retryFutureResolved =
+        retryDuringShutdown.wait_for(std::chrono::milliseconds(100)) ==
+        std::future_status::ready;
+    if (retryFutureResolved) {
+        try {
+            const auto stoppedRetry = retryDuringShutdown.get();
+            retryFutureResolved = stoppedRetry.status.code == common::ErrorCode::Overloaded ||
+                                  stoppedRetry.status.code == common::ErrorCode::ClientClosed ||
+                                  stoppedRetry.status.code == common::ErrorCode::PoolClosed;
+        } catch (...) {
+            retryFutureResolved = false;
+        }
+    }
+    check(retryFutureResolved,
+          "shutdown resolves a future parked in retry backoff without broken_promise");
+
     Client nativeCache;
     auto nativeCacheConfig = makeConfig("native-cache", true);
     check(nativeCache.init(nativeCacheConfig).ok(),
@@ -402,6 +467,60 @@ int main() {
     check(nativeCacheInterceptor->afterCalls.load() == 2,
           "async cache hit and native miss preserve interceptor lifecycle");
     nativeCache.shutdown(std::chrono::milliseconds(0));
+
+    Client nativeGroup;
+    auto nativeGroupConfig = makeGroupConfig();
+    nativeGroupConfig.retry.max_attempts = 1;
+    check(nativeGroup.init(nativeGroupConfig).ok(),
+          "native async group test client initializes");
+    const auto nativeGroupInterceptor = std::make_shared<CountingInterceptor>();
+    nativeGroup.addInterceptor(nativeGroupInterceptor);
+
+    const auto replicaRead = nativeGroup.queryAsync("SELECT group_replica").get();
+    check(replicaRead.status.ok() &&
+          replicaRead.mode == async::ExecutionMode::Native &&
+          identityFrom(replicaRead.rows) == "native-replica",
+          "async group query keeps replica driver I/O native");
+
+    const auto primaryWrite = nativeGroup.executeAsync(
+        "UPDATE t SET value = 5 WHERE id = 1").get();
+    check(primaryWrite.status.ok() && primaryWrite.affected == 1 &&
+          primaryWrite.mode == async::ExecutionMode::Native,
+          "async group execute keeps primary driver I/O native");
+
+    common::SqlContext shadowContext;
+    shadowContext.shadow = true;
+    async::QueryResult shadowRead;
+    async::ExecResult shadowWrite;
+    {
+        const common::ContextScope scope(shadowContext);
+        shadowRead = nativeGroup.queryAsync("SELECT group_shadow").get();
+        shadowWrite = nativeGroup.executeAsync(
+            "UPDATE t SET value = 6 WHERE id = 1").get();
+    }
+    check(shadowRead.status.ok() &&
+          shadowRead.mode == async::ExecutionMode::Native &&
+          identityFrom(shadowRead.rows) == "native-shadow",
+          "async group query honors the shadow route without fallback I/O");
+    check(shadowWrite.status.ok() && shadowWrite.affected == 1 &&
+          shadowWrite.mode == async::ExecutionMode::Native,
+          "async group execute honors the shadow route without fallback I/O");
+
+    const auto failoverCallsBefore = ClientTestConnection::nativeQueryCalls.load();
+    ClientTestConnection::retryableQueryFailures = 1;
+    const auto primaryFallback = nativeGroup.queryAsync(
+        "SELECT group_primary_fallback").get();
+    check(primaryFallback.status.ok() &&
+          primaryFallback.mode == async::ExecutionMode::Native &&
+          identityFrom(primaryFallback.rows) == "native-primary" &&
+          ClientTestConnection::nativeQueryCalls.load() == failoverCallsBefore + 2,
+          "async group query fails over from a replica to the primary natively");
+    check(nativeGroupInterceptor->afterCalls.load() == 5,
+          "async group operations run the interceptor lifecycle exactly once");
+    check(nativeGroup.asyncStats().nativeOperations == 5 &&
+          nativeGroup.asyncStats().fallbackOperations == 0,
+          "async group operations are accounted once at the public boundary");
+    nativeGroup.shutdown(std::chrono::milliseconds(0));
 
     Client nativeTimeout;
     auto nativeTimeoutConfig = makeConfig("native-timeout");

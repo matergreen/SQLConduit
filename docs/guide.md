@@ -1029,16 +1029,17 @@ auto er = update.get(); // er.status / er.affected
 
 符合条件的叶子数据源路径通过连接池异步借用连接：池满时请求进入 `asyncWaiting`，不会占用
 executor worker；连接归还后直接 handoff，或由主动 deadline 返回 `PoolExhausted`。数据源组
-路由、重试和影子路由仍暂时使用兼容状态机。叶子数据源的查询缓存命中无需借用连接即可完成，
+查询/执行、重试、副本失败回主库、带 fencing 的主库故障转移和影子路由已使用异步拓扑状态机，
+所选叶子驱动符合条件时仍保留 native I/O。叶子数据源的查询缓存命中无需借用连接即可完成，
 未命中则继续进入 native 驱动路径，并在结果改写拦截器运行前写入原始结果。PostgreSQL 的叶子数据源
 `queryAsync` / `executeAsync` 已通过共享 libpq socket reactor 实现 native 异步；事务、游标、
-批量及复杂拓扑路径仍走兼容状态机。MySQL 8.0.16+ 的无参数单语句 SELECT 和 DML/DDL
+批量路径仍走兼容状态机。MySQL 8.0.16+ 的无参数单语句 SELECT 和 DML/DDL
 也通过官方 nonblocking C API 与共享轮询 reactor 走 native；带参数语句为了保留 prepared
 statement 绑定而继续 fallback。1.0.1 开发线为符合条件的 Oracle 查询/执行加入 OCI nonblocking
 状态机，并在所选 ODBC 驱动报告 `SQL_AM_STATEMENT` 或 `SQL_AM_CONNECTION` 时使用轮询式
 native 查询/执行。FreeTDS 不报告 native async，继续明确走 fallback；Microsoft ODBC Driver
 18 的 native 轮询已在 Linux 实库验证，包括取消和取消后的连接复用。Oracle 临时 LOB 输入
-绑定，以及各驱动的事务、游标、批量和复杂拓扑路径仍走
+绑定，以及各驱动的事务、游标、批量、多结果集和生成键路径仍走
 兼容状态机。
 扩展驱动只有在实现
 `IDatabaseConnection::queryAsync` / `executeAsync` 回调协议并返回

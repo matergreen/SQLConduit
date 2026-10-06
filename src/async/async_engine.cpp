@@ -37,6 +37,24 @@ namespace sqlconduit::async::detail {
                             common::SqlContext context,
                             const std::chrono::milliseconds borrowTimeout,
                             core::AsyncIo io, QueryCompletion completion) {
+        if (!source || !io.usable() || !completion) return false;
+        if (source->primary_) {
+            return queryGroup(source, std::move(sql), std::move(params),
+                              std::move(context), borrowTimeout,
+                              std::move(io), std::move(completion));
+        }
+        return queryLeaf(source, std::move(sql), std::move(params),
+                         std::move(context), borrowTimeout, std::move(io),
+                         true, true, std::move(completion));
+    }
+
+    bool AsyncEngine::queryLeaf(const std::shared_ptr<core::DataSource> &source,
+                                std::string sql, common::Params params,
+                                common::SqlContext context,
+                                const std::chrono::milliseconds borrowTimeout,
+                                core::AsyncIo io, const bool applyPreGate,
+                                const bool runInterceptors,
+                                QueryCompletion completion) {
         if (!source || !io.usable() || !completion ||
             !directLeafEligible(*source, true))
             return false;
@@ -51,6 +69,8 @@ namespace sqlconduit::async::detail {
             core::AsyncIo io;
             QueryCompletion completion;
             int attempts = 1;
+            bool applyPreGate = true;
+            bool runInterceptors = true;
             std::function<void(int, bool)> run;
         };
 
@@ -64,6 +84,8 @@ namespace sqlconduit::async::detail {
         state->io = std::move(io);
         state->completion = std::move(completion);
         state->attempts = std::max(1, source->retry_.max_attempts);
+        state->applyPreGate = applyPreGate;
+        state->runInterceptors = runInterceptors;
 
         std::weak_ptr<RetryState> weak = state;
         state->run = [weak](const int attempt, const bool applyPreGate) {
@@ -87,7 +109,8 @@ namespace sqlconduit::async::detail {
             }
             const bool started = AsyncEngine::queryOne(
                 state->source, state->sql, state->params, state->context,
-                remaining, state->io, applyPreGate,
+                remaining, state->io,
+                applyPreGate && state->applyPreGate, state->runInterceptors,
                 [state, attempt](QueryResult result) mutable {
                     const bool retry = !result.status.ok() && result.status.retryable &&
                                        result.status.code != common::ErrorCode::CircuitOpen &&
@@ -121,6 +144,7 @@ namespace sqlconduit::async::detail {
                                common::SqlContext context,
                                const std::chrono::milliseconds borrowTimeout,
                                core::AsyncIo io, const bool applyPreGate,
+                               const bool runInterceptors,
                                QueryCompletion completion) {
         if (!source || !io.usable() || !completion ||
             !directLeafEligible(*source, true))
@@ -132,7 +156,8 @@ namespace sqlconduit::async::detail {
         const auto operationStarted = std::chrono::steady_clock::now();
         auto start = [source, pool = std::move(pool), sql = std::move(sql),
                  params = std::move(params), context = std::move(context),
-                 borrowTimeout, io, applyPreGate, completion, operationStarted]() mutable {
+                 borrowTimeout, io, applyPreGate, runInterceptors,
+                 completion, operationStarted]() mutable {
             const common::ContextScope scope(context);
             QueryResult rejected;
             rejected.mode = ExecutionMode::CompatibilityFallback;
@@ -147,6 +172,14 @@ namespace sqlconduit::async::detail {
             std::string cacheKey;
             common::ResultSet cachedRows;
             if (source->cacheLookup(sql, params, cachedRows, cacheKey)) {
+                if (!runInterceptors) {
+                    QueryResult result;
+                    result.status = common::Status::OK();
+                    result.rows = std::move(cachedRows);
+                    result.mode = ExecutionMode::CompatibilityFallback;
+                    completion(std::move(result));
+                    return;
+                }
                 common::SqlContext routedContext = context;
                 core::detail::runOnRoute(source->services_->interceptors,
                                          source->name_, sql,
@@ -183,7 +216,7 @@ namespace sqlconduit::async::detail {
             pool->borrowAsync(borrowTimeout, io,
                 [source, sql = std::move(sql), params = std::move(params),
                  context = std::move(context), cacheKey = std::move(cacheKey), io,
-                 borrowTimeout, operationStarted,
+                 borrowTimeout, operationStarted, runInterceptors,
                  completion = std::move(completion)](
                     std::unique_ptr<core::ConnectionPool::Handle> handle,
                     common::Status status) mutable {
@@ -202,18 +235,22 @@ namespace sqlconduit::async::detail {
 
                     if (handle->get()->asyncCapability() == core::AsyncCapability::Native) {
                         common::SqlContext routedContext = context;
-                        core::detail::runOnRoute(source->services_->interceptors,
-                                                 source->name_, sql,
-                                                 common::OperationType::Query,
-                                                 routedContext);
+                        if (runInterceptors) {
+                            core::detail::runOnRoute(source->services_->interceptors,
+                                                     source->name_, sql,
+                                                     common::OperationType::Query,
+                                                     routedContext);
+                        }
                         core::ExecutionView beforeView{
                             source->name_, sql, common::OperationType::Query,
                             &params, nullptr, 0, std::chrono::microseconds{0},
                             common::Status::OK(), false, 0, routedContext
                         };
-                        if (auto before = core::detail::runBeforeExecution(
-                                source->services_->interceptors, beforeView);
-                            !before.ok()) {
+                        const auto before = runInterceptors
+                                                ? core::detail::runBeforeExecution(
+                                                      source->services_->interceptors, beforeView)
+                                                : common::Status::OK();
+                        if (!before.ok()) {
                             beforeView.status = before;
                             source->afterAttempt(before);
                             core::detail::runOnCompletion(
@@ -232,7 +269,8 @@ namespace sqlconduit::async::detail {
                             sql, params,
                             [source, control, sql, params, cacheKey,
                              context = nativeContext,
-                             io, completion, operationStarted](common::Status nativeStatus,
+                             io, completion, operationStarted,
+                             runInterceptors](common::Status nativeStatus,
                                         common::ResultSet rows) mutable {
                                 control->driverCompleted.store(true, std::memory_order_release);
                                 if (control->resolved.exchange(true, std::memory_order_acq_rel)) {
@@ -245,7 +283,8 @@ namespace sqlconduit::async::detail {
                                 auto deliver = [source, control, sql, params, cacheKey, context,
                                             completion = std::move(completion),
                                             nativeStatus = std::move(nativeStatus),
-                                            rows = std::move(rows), operationStarted]() mutable {
+                                            rows = std::move(rows), operationStarted,
+                                            runInterceptors]() mutable {
                                     const common::ContextScope scope(context);
                                     if (nativeStatus.connectionBroken) {
                                         std::lock_guard<std::mutex> lock(control->handleMutex);
@@ -282,10 +321,12 @@ namespace sqlconduit::async::detail {
                                             return connection->renderSqlForLogging(
                                                 sql, params, options, out);
                                         }, &rows);
-                                    core::detail::runAfterExecution(
-                                        source->services_->interceptors, view);
-                                    core::detail::runOnCompletion(
-                                        source->services_->interceptors, view);
+                                    if (runInterceptors) {
+                                        core::detail::runAfterExecution(
+                                            source->services_->interceptors, view);
+                                        core::detail::runOnCompletion(
+                                            source->services_->interceptors, view);
+                                    }
                                     QueryResult result;
                                     result.status = std::move(nativeStatus);
                                     result.rows = std::move(rows);
@@ -307,7 +348,8 @@ namespace sqlconduit::async::detail {
                                     std::chrono::milliseconds(0), borrowTimeout - elapsed);
                                 io.postAfter(
                                     [source, control, sql, params, context = nativeContext,
-                                     io, completion, operationStarted]() mutable {
+                                     io, completion, operationStarted,
+                                     runInterceptors]() mutable {
                                         if (control->resolved.exchange(
                                                 true, std::memory_order_acq_rel))
                                             return;
@@ -318,7 +360,7 @@ namespace sqlconduit::async::detail {
                                         auto deliverTimeout =
                                             [source, control, sql, params, context,
                                              completion, timeoutStatus,
-                                             operationStarted]() mutable {
+                                             operationStarted, runInterceptors]() mutable {
                                                 const common::ContextScope scope(context);
                                                 source->afterAttempt(timeoutStatus);
                                                 common::OperationEvent event;
@@ -338,10 +380,12 @@ namespace sqlconduit::async::detail {
                                                 };
                                                 source->services_->observability.emitSql(
                                                     std::move(event), sql);
-                                                core::detail::runAfterExecution(
-                                                    source->services_->interceptors, view);
-                                                core::detail::runOnCompletion(
-                                                    source->services_->interceptors, view);
+                                                if (runInterceptors) {
+                                                    core::detail::runAfterExecution(
+                                                        source->services_->interceptors, view);
+                                                    core::detail::runOnCompletion(
+                                                        source->services_->interceptors, view);
+                                                }
                                                 QueryResult result;
                                                 result.status = timeoutStatus;
                                                 result.mode = ExecutionMode::Native;
@@ -378,6 +422,15 @@ namespace sqlconduit::async::detail {
                     auto session = source->makeSession(std::move(handle));
                     QueryResult result;
                     result.mode = ExecutionMode::CompatibilityFallback;
+                    if (!runInterceptors) {
+                        result.status = session->queryForAsyncEngine(
+                            sql, params, result.rows);
+                        source->afterAttempt(result.status);
+                        if (result.status.ok() && !cacheKey.empty())
+                            source->cacheStore(cacheKey, result.rows);
+                        completion(std::move(result));
+                        return;
+                    }
                     if (!cacheKey.empty()) {
                         common::SqlContext routedContext = context;
                         core::detail::runOnRoute(source->services_->interceptors,
@@ -438,6 +491,24 @@ namespace sqlconduit::async::detail {
                               common::SqlContext context,
                               const std::chrono::milliseconds borrowTimeout,
                               core::AsyncIo io, ExecuteCompletion completion) {
+        if (!source || !io.usable() || !completion) return false;
+        if (source->primary_) {
+            return executeGroup(source, std::move(sql), std::move(params),
+                                std::move(context), borrowTimeout,
+                                std::move(io), std::move(completion));
+        }
+        return executeLeaf(source, std::move(sql), std::move(params),
+                           std::move(context), borrowTimeout, std::move(io),
+                           true, true, std::move(completion));
+    }
+
+    bool AsyncEngine::executeLeaf(const std::shared_ptr<core::DataSource> &source,
+                                  std::string sql, common::Params params,
+                                  common::SqlContext context,
+                                  const std::chrono::milliseconds borrowTimeout,
+                                  core::AsyncIo io, const bool applyPreGate,
+                                  const bool runInterceptors,
+                                  ExecuteCompletion completion) {
         if (!source || !io.usable() || !completion ||
             !directLeafEligible(*source, false))
             return false;
@@ -459,6 +530,8 @@ namespace sqlconduit::async::detail {
             core::AsyncIo io;
             ExecuteCompletion completion;
             int attempts = 1;
+            bool applyPreGate = true;
+            bool runInterceptors = true;
             std::function<void(int, bool)> run;
         };
 
@@ -471,6 +544,8 @@ namespace sqlconduit::async::detail {
         state->io = std::move(io);
         state->completion = std::move(completion);
         state->attempts = attempts;
+        state->applyPreGate = applyPreGate;
+        state->runInterceptors = runInterceptors;
 
         std::weak_ptr<RetryState> weak = state;
         state->run = [weak](const int attempt, const bool applyPreGate) {
@@ -478,7 +553,8 @@ namespace sqlconduit::async::detail {
             if (!state) return;
             const bool started = AsyncEngine::executeOne(
                 state->source, state->sql, state->params, state->context,
-                state->timeout, state->io, applyPreGate,
+                state->timeout, state->io,
+                applyPreGate && state->applyPreGate, state->runInterceptors,
                 [state, attempt](ExecResult result) mutable {
                     const bool retry = !result.status.ok() && result.status.retryable &&
                                        result.status.code != common::ErrorCode::CircuitOpen &&
@@ -511,6 +587,7 @@ namespace sqlconduit::async::detail {
                                  common::SqlContext context,
                                  const std::chrono::milliseconds borrowTimeout,
                                  core::AsyncIo io, const bool applyPreGate,
+                                 const bool runInterceptors,
                                  ExecuteCompletion completion) {
         if (!source || !io.usable() || !completion ||
             !directLeafEligible(*source, false))
@@ -519,7 +596,8 @@ namespace sqlconduit::async::detail {
         if (!pool) return false;
         auto start = [source, pool = std::move(pool), sql = std::move(sql),
                  params = std::move(params), context = std::move(context),
-                 borrowTimeout, io, applyPreGate, completion]() mutable {
+                 borrowTimeout, io, applyPreGate, runInterceptors,
+                 completion]() mutable {
             const common::ContextScope scope(context);
             ExecResult rejected;
             rejected.mode = ExecutionMode::CompatibilityFallback;
@@ -539,7 +617,7 @@ namespace sqlconduit::async::detail {
             pool->borrowAsync(borrowTimeout, io,
                 [source, sql = std::move(sql), params = std::move(params),
                  context = std::move(context), io,
-                 completion = std::move(completion)](
+                 runInterceptors, completion = std::move(completion)](
                     std::unique_ptr<core::ConnectionPool::Handle> handle,
                     common::Status status) mutable {
                     const common::ContextScope scope(context);
@@ -557,18 +635,22 @@ namespace sqlconduit::async::detail {
 
                     if (handle->get()->asyncCapability() == core::AsyncCapability::Native) {
                         common::SqlContext routedContext = context;
-                        core::detail::runOnRoute(source->services_->interceptors,
-                                                 source->name_, sql,
-                                                 common::OperationType::Execute,
-                                                 routedContext);
+                        if (runInterceptors) {
+                            core::detail::runOnRoute(source->services_->interceptors,
+                                                     source->name_, sql,
+                                                     common::OperationType::Execute,
+                                                     routedContext);
+                        }
                         core::ExecutionView beforeView{
                             source->name_, sql, common::OperationType::Execute,
                             &params, nullptr, 0, std::chrono::microseconds{0},
                             common::Status::OK(), false, 0, routedContext
                         };
-                        if (auto before = core::detail::runBeforeExecution(
-                                source->services_->interceptors, beforeView);
-                            !before.ok()) {
+                        const auto before = runInterceptors
+                                                ? core::detail::runBeforeExecution(
+                                                      source->services_->interceptors, beforeView)
+                                                : common::Status::OK();
+                        if (!before.ok()) {
                             beforeView.status = before;
                             source->afterAttempt(before);
                             core::detail::runOnCompletion(
@@ -586,12 +668,13 @@ namespace sqlconduit::async::detail {
                             sql, params,
                             [source, boxed, sql, params,
                              context = std::move(routedContext), io, completion,
-                             startedAt](common::Status nativeStatus,
+                             startedAt, runInterceptors](common::Status nativeStatus,
                                         const std::int64_t affected) mutable {
                                 auto deliver = [source, boxed, sql, params, context,
                                             completion = std::move(completion),
                                             nativeStatus = std::move(nativeStatus),
-                                            affected, startedAt]() mutable {
+                                            affected, startedAt,
+                                            runInterceptors]() mutable {
                                     const common::ContextScope scope(context);
                                     if (nativeStatus.connectionBroken) (*boxed)->invalidate();
                                     source->afterAttempt(nativeStatus);
@@ -622,10 +705,12 @@ namespace sqlconduit::async::detail {
                                             return connection->renderSqlForLogging(
                                                 sql, params, options, out);
                                         });
-                                    core::detail::runAfterExecution(
-                                        source->services_->interceptors, view);
-                                    core::detail::runOnCompletion(
-                                        source->services_->interceptors, view);
+                                    if (runInterceptors) {
+                                        core::detail::runAfterExecution(
+                                            source->services_->interceptors, view);
+                                        core::detail::runOnCompletion(
+                                            source->services_->interceptors, view);
+                                    }
                                     ExecResult result;
                                     result.status = std::move(nativeStatus);
                                     result.affected = affected;
@@ -642,9 +727,12 @@ namespace sqlconduit::async::detail {
                     auto session = source->makeSession(std::move(handle));
                     ExecResult result;
                     result.mode = ExecutionMode::CompatibilityFallback;
-                    result.status = params.empty()
-                                        ? session->execute(sql, result.affected)
-                                        : session->execute(sql, params, result.affected);
+                    result.status = runInterceptors
+                                        ? (params.empty()
+                                               ? session->execute(sql, result.affected)
+                                               : session->execute(sql, params, result.affected))
+                                        : session->executeForAsyncEngine(
+                                              sql, params, result.affected);
                     source->afterAttempt(result.status);
                     if (result.status.ok()) source->markWrite();
                     completion(std::move(result));
@@ -658,6 +746,354 @@ namespace sqlconduit::async::detail {
             result.status.retryable = true;
             result.mode = ExecutionMode::CompatibilityFallback;
             completion(std::move(result));
+        }
+        return true;
+    }
+
+    bool AsyncEngine::queryGroup(const std::shared_ptr<core::DataSource> &source,
+                                 std::string sql, common::Params params,
+                                 common::SqlContext context,
+                                 const std::chrono::milliseconds borrowTimeout,
+                                 core::AsyncIo io, QueryCompletion completion) {
+        if (!source || !source->primary_ || !io.usable() || !completion) return false;
+
+        struct GroupState {
+            std::shared_ptr<core::DataSource> source;
+            std::shared_ptr<core::DataSource> target;
+            std::string sql;
+            common::Params params;
+            common::SqlContext context;
+            std::chrono::milliseconds timeout;
+            std::chrono::steady_clock::time_point started;
+            core::AsyncIo io;
+            QueryCompletion completion;
+            std::function<void(QueryResult)> finish;
+        };
+
+        auto state = std::make_shared<GroupState>();
+        state->source = source;
+        state->sql = std::move(sql);
+        state->params = std::move(params);
+        state->context = std::move(context);
+        state->timeout = borrowTimeout;
+        state->started = std::chrono::steady_clock::now();
+        state->io = std::move(io);
+        state->completion = std::move(completion);
+
+        std::weak_ptr<GroupState> weak = state;
+        state->finish = [weak](QueryResult result) mutable {
+            const auto state = weak.lock();
+            if (!state) return;
+            const common::ContextScope scope(state->context);
+            core::ExecutionView view{
+                state->source->name_, state->sql, common::OperationType::Query,
+                &state->params, result.status.ok() ? &result.rows : nullptr,
+                0, std::chrono::duration_cast<std::chrono::microseconds>(
+                       std::chrono::steady_clock::now() - state->started),
+                result.status, false, 0, state->context
+            };
+            core::detail::runAfterExecution(state->source->services_->interceptors, view);
+            core::detail::runOnCompletion(state->source->services_->interceptors, view);
+            state->completion(std::move(result));
+        };
+
+        auto start = [state]() mutable {
+            const common::ContextScope initialScope(state->context);
+            if (auto status = state->source->preGate(
+                    state->sql, common::OperationType::Query);
+                !status.ok()) {
+                QueryResult result;
+                result.status = std::move(status);
+                result.mode = ExecutionMode::CompatibilityFallback;
+                state->completion(std::move(result));
+                return;
+            }
+            core::detail::runOnRoute(state->source->services_->interceptors,
+                                     state->source->name_, state->sql,
+                                     common::OperationType::Query, state->context);
+            core::ExecutionView beforeView{
+                state->source->name_, state->sql, common::OperationType::Query,
+                &state->params, nullptr, 0, std::chrono::microseconds{0},
+                common::Status::OK(), false, 0, state->context
+            };
+            if (auto before = core::detail::runBeforeExecution(
+                    state->source->services_->interceptors, beforeView);
+                !before.ok()) {
+                beforeView.status = before;
+                core::detail::runOnCompletion(
+                    state->source->services_->interceptors, beforeView);
+                QueryResult result;
+                result.status = std::move(before);
+                result.mode = ExecutionMode::CompatibilityFallback;
+                state->completion(std::move(result));
+                return;
+            }
+
+            {
+                const common::ContextScope routedScope(state->context);
+                state->target = state->source->readTarget();
+            }
+            if (!state->target) {
+                QueryResult result;
+                result.status = common::Status::error(
+                    common::ErrorCode::PoolClosed,
+                    "group '" + state->source->name_ + "' has no readable target");
+                result.status.retryable = true;
+                result.mode = ExecutionMode::CompatibilityFallback;
+                state->finish(std::move(result));
+                return;
+            }
+
+            const auto target = state->target;
+            const bool started = AsyncEngine::queryLeaf(
+                target, state->sql, state->params, state->context,
+                state->timeout, state->io, false, false,
+                [state, target](QueryResult result) mutable {
+                    const bool fallback = target != state->source->primary_ &&
+                        state->source->fallbackToPrimary_ &&
+                        (result.status.retryable || result.status.connectionBroken ||
+                         result.status.code == common::ErrorCode::CircuitOpen);
+                    if (!fallback) {
+                        state->finish(std::move(result));
+                        return;
+                    }
+                    auto remaining = state->timeout;
+                    if (state->timeout > std::chrono::milliseconds(0)) {
+                        const auto elapsed = std::chrono::duration_cast<
+                            std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - state->started);
+                        remaining = state->timeout - elapsed;
+                        if (remaining <= std::chrono::milliseconds(0)) {
+                            state->finish(std::move(result));
+                            return;
+                        }
+                    }
+                    if (!AsyncEngine::queryLeaf(
+                            state->source->primary_, state->sql, state->params,
+                            state->context, remaining, state->io, false, false,
+                            [state](QueryResult primaryResult) mutable {
+                                state->finish(std::move(primaryResult));
+                            })) {
+                        QueryResult closed;
+                        closed.status = common::Status::error(
+                            common::ErrorCode::PoolClosed,
+                            "group primary closed before asynchronous read fallback");
+                        closed.status.retryable = true;
+                        closed.mode = ExecutionMode::CompatibilityFallback;
+                        state->finish(std::move(closed));
+                    }
+                });
+            if (!started) {
+                QueryResult result;
+                result.status = common::Status::error(
+                    common::ErrorCode::PoolClosed,
+                    "group read target closed before asynchronous execution");
+                result.status.retryable = true;
+                result.mode = ExecutionMode::CompatibilityFallback;
+                state->finish(std::move(result));
+            }
+        };
+
+        if (!state->io.post(std::move(start))) {
+            QueryResult result;
+            result.status = common::Status::error(
+                common::ErrorCode::Overloaded,
+                "client async executor queue is full or stopped");
+            result.status.retryable = true;
+            result.mode = ExecutionMode::CompatibilityFallback;
+            state->completion(std::move(result));
+        }
+        return true;
+    }
+
+    bool AsyncEngine::executeGroup(const std::shared_ptr<core::DataSource> &source,
+                                   std::string sql, common::Params params,
+                                   common::SqlContext context,
+                                   const std::chrono::milliseconds borrowTimeout,
+                                   core::AsyncIo io, ExecuteCompletion completion) {
+        if (!source || !source->primary_ || !io.usable() || !completion) return false;
+
+        struct GroupState {
+            std::shared_ptr<core::DataSource> source;
+            std::vector<std::shared_ptr<core::DataSource> > targets;
+            std::string sql;
+            common::Params params;
+            common::SqlContext context;
+            std::chrono::milliseconds timeout;
+            std::chrono::steady_clock::time_point started;
+            core::AsyncIo io;
+            ExecuteCompletion completion;
+            std::size_t index = 0;
+            bool shadowRoute = false;
+            std::function<void(ExecResult)> finish;
+            std::function<void()> run;
+        };
+
+        auto state = std::make_shared<GroupState>();
+        state->source = source;
+        state->sql = std::move(sql);
+        state->params = std::move(params);
+        state->context = std::move(context);
+        state->timeout = borrowTimeout;
+        state->started = std::chrono::steady_clock::now();
+        state->io = std::move(io);
+        state->completion = std::move(completion);
+
+        std::weak_ptr<GroupState> weak = state;
+        state->finish = [weak](ExecResult result) mutable {
+            const auto state = weak.lock();
+            if (!state) return;
+            const common::ContextScope scope(state->context);
+            core::ExecutionView view{
+                state->source->name_, state->sql, common::OperationType::Execute,
+                &state->params, nullptr,
+                result.status.ok() ? result.affected : 0,
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - state->started),
+                result.status, false, 0, state->context
+            };
+            core::detail::runAfterExecution(state->source->services_->interceptors, view);
+            core::detail::runOnCompletion(state->source->services_->interceptors, view);
+            state->completion(std::move(result));
+        };
+
+        state->run = [weak]() {
+            const auto state = weak.lock();
+            if (!state || state->index >= state->targets.size()) return;
+            const auto target = state->targets[state->index];
+            const bool started = AsyncEngine::executeLeaf(
+                target, state->sql, state->params, state->context,
+                state->timeout, state->io, false, false,
+                [state](ExecResult result) mutable {
+                    if (result.status.ok()) {
+                        if (!state->shadowRoute) state->source->markWrite();
+                        state->finish(std::move(result));
+                        return;
+                    }
+                    if (state->shadowRoute ||
+                        !core::DataSource::safeToFailoverWrite(result.status)) {
+                        state->finish(std::move(result));
+                        return;
+                    }
+                    ++state->index;
+                    if (state->index < state->targets.size()) {
+                        state->run();
+                        return;
+                    }
+                    if (state->source->writeBuffer_ &&
+                        state->source->writeBuffer_->enabled()) {
+                        const auto primary = state->source->primary_;
+                        const auto sql = state->sql;
+                        const auto params = state->params;
+                        if (state->source->writeBuffer_->enqueue(
+                                [primary, sql, params] {
+                                    std::int64_t ignored = 0;
+                                    return params.empty()
+                                               ? primary->executeUngated(sql, ignored)
+                                               : primary->executeUngated(
+                                                     sql, params, ignored);
+                                })) {
+                            result.status = common::Status::error(
+                                common::ErrorCode::Buffered,
+                                "group '" + state->source->name_ +
+                                    "': write accepted into buffer, not yet committed");
+                            result.status.retryable = false;
+                            result.affected = 0;
+                            result.mode = ExecutionMode::CompatibilityFallback;
+                        }
+                    }
+                    state->finish(std::move(result));
+                });
+            if (!started) {
+                ExecResult result;
+                result.status = common::Status::error(
+                    common::ErrorCode::PoolClosed,
+                    "group write target closed before asynchronous execution");
+                result.status.retryable = true;
+                result.mode = ExecutionMode::CompatibilityFallback;
+                state->finish(std::move(result));
+            }
+        };
+
+        auto start = [state]() mutable {
+            const common::ContextScope initialScope(state->context);
+            if (auto status = state->source->preGate(
+                    state->sql, common::OperationType::Execute);
+                !status.ok()) {
+                ExecResult result;
+                result.status = std::move(status);
+                result.mode = ExecutionMode::CompatibilityFallback;
+                state->completion(std::move(result));
+                return;
+            }
+            core::detail::runOnRoute(state->source->services_->interceptors,
+                                     state->source->name_, state->sql,
+                                     common::OperationType::Execute, state->context);
+            core::ExecutionView beforeView{
+                state->source->name_, state->sql, common::OperationType::Execute,
+                &state->params, nullptr, 0, std::chrono::microseconds{0},
+                common::Status::OK(), false, 0, state->context
+            };
+            if (auto before = core::detail::runBeforeExecution(
+                    state->source->services_->interceptors, beforeView);
+                !before.ok()) {
+                beforeView.status = before;
+                core::detail::runOnCompletion(
+                    state->source->services_->interceptors, beforeView);
+                ExecResult result;
+                result.status = std::move(before);
+                result.mode = ExecutionMode::CompatibilityFallback;
+                state->completion(std::move(result));
+                return;
+            }
+            {
+                const common::ContextScope routedScope(state->context);
+                state->shadowRoute = state->context.shadow &&
+                                     static_cast<bool>(state->source->shadow_);
+                state->targets = state->source->writeTargets();
+            }
+            if (!state->targets.empty()) {
+                state->run();
+                return;
+            }
+
+            ExecResult result;
+            result.status = common::Status::error(
+                common::ErrorCode::CircuitOpen,
+                "group '" + state->source->name_ +
+                    "': no writable primary available");
+            result.status.retryable = true;
+            result.mode = ExecutionMode::CompatibilityFallback;
+            if (!state->shadowRoute && state->source->writeBuffer_ &&
+                state->source->writeBuffer_->enabled()) {
+                const auto primary = state->source->primary_;
+                const auto sql = state->sql;
+                const auto params = state->params;
+                if (state->source->writeBuffer_->enqueue(
+                        [primary, sql, params] {
+                            std::int64_t ignored = 0;
+                            return params.empty()
+                                       ? primary->executeUngated(sql, ignored)
+                                       : primary->executeUngated(sql, params, ignored);
+                        })) {
+                    result.status = common::Status::error(
+                        common::ErrorCode::Buffered,
+                        "group '" + state->source->name_ +
+                            "': write accepted into buffer, not yet committed");
+                    result.status.retryable = false;
+                }
+            }
+            state->finish(std::move(result));
+        };
+
+        if (!state->io.post(std::move(start))) {
+            ExecResult result;
+            result.status = common::Status::error(
+                common::ErrorCode::Overloaded,
+                "client async executor queue is full or stopped");
+            result.status.retryable = true;
+            result.mode = ExecutionMode::CompatibilityFallback;
+            state->completion(std::move(result));
         }
         return true;
     }

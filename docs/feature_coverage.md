@@ -79,6 +79,7 @@ observable.
 | PostgreSQL native async | **Implemented / validated** | Eligible leaf query/execute through a shared libpq socket reactor |
 | MySQL native async | **Implemented / expanding validation** | Eligible parameter-free single-statement operations on supported MySQL clients; prepared operations fall back |
 | ODBC and Oracle native async | **Implemented / expanding validation** | OCI nonblocking and Microsoft ODBC Driver 18 polling are live-tested; FreeTDS capability detection selects fallback |
+| Async topology state machines | **Implemented / validated** | Query/execute groups, retries, cache, replica/primary fallback, fenced write failover, and shadow routing preserve eligible native leaf I/O |
 | Logs, observers, slow SQL, and pool stats | **Implemented / validated** | Per-client observers, fingerprinting, sampling/redaction, bounded aggregation |
 | Prometheus exporter | **Implemented / validated** | Stable metric/type/label contract and hard fingerprint-series limit; HTTP serving stays application-owned |
 | Performance benchmarks | **Implemented / expanding validation** | Connection borrow/return, binding, mapping, batch, cursor, and disabled-logging baselines; historical regression automation is scheduled |
@@ -165,8 +166,8 @@ Priorities are ordered; version assignment happens only when work enters a relea
   keep FreeTDS on capability-detected fallback.
 - Broaden the completed Oracle OCI nonblocking baseline across supported client versions and
   failure/soak scenarios; retain fallback for temporary-LOB input binding.
-- Move eligible parameterized MySQL and complex routing/retry/cache paths off compatibility workers
-  when vendor capability allows it.
+- Move eligible parameterized MySQL operations off compatibility workers when vendor capability
+  allows it; keep expanding failure and soak validation for the completed async topology state machines.
 - Evaluate a coroutine adapter as an optional header layered over the existing futures; futures stay
   supported and unchanged.
 

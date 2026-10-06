@@ -31,6 +31,18 @@ description.
 - Added a `d` postfix to installed Debug libraries so MSVC Debug and Release configurations can
   coexist in one package prefix without silently overwriting each other.
 
+### Async topology and lifecycle hardening
+
+- Migrated query/execute routing for read/write groups, replica-to-primary read fallback, fenced
+  primary failover, shadow traffic, retries, and query-cache hits into asynchronous state machines.
+  Eligible leaf driver I/O can therefore remain `Native` through these topologies while group-level
+  audit, routing, interceptors, observability, and cache invalidation still run exactly once.
+- Fixed shutdown with a retry parked in delayed backoff. Delayed continuations are now resumed
+  during executor shutdown and resolve their futures with a structured closed/overloaded status
+  instead of being discarded and surfacing `std::future_error(broken_promise)`.
+- Added regression coverage for native group reads/writes, shadow routing, replica fallback,
+  single group interceptor lifecycles, public-operation accounting, and retry/shutdown races.
+
 ## [1.0.0]
 
 ### First stable release

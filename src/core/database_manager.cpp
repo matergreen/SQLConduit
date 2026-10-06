@@ -430,6 +430,24 @@ namespace sqlconduit::core {
         return status;
     }
 
+    common::Status Session::executeForAsyncEngine(const std::string &sql,
+                                                  const common::Params &params,
+                                                  std::int64_t &affected) const {
+        std::uint64_t rows = 0;
+        const auto status = observeSql(
+            services_->observability, dataSource_, common::OperationType::Execute,
+            sql, params, h_->get(), rows, [&] {
+                const auto result = params.empty()
+                                        ? (*h_)->execute(sql, affected)
+                                        : runPreparedExec(sql, params, affected, nullptr);
+                rows = affected > 0 ? static_cast<std::uint64_t>(affected) : 0;
+                if (result.ok()) didWrite_ = true;
+                return result;
+            });
+        if (status.connectionBroken) h_->invalidate();
+        return status;
+    }
+
     common::Status Session::query(const std::string &sql, common::ResultSet &out) const {
         out.clear();
         if (const auto a = auditStatement(sql, common::OperationType::Query); !a.ok()) return a;

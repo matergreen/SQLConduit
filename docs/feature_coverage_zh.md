@@ -73,6 +73,7 @@ CHANGELOG 为准，每个发布版本都应复核本文。
 | PostgreSQL native 异步 | **已实现 / 已验证** | 合格叶子 query/execute 走共享 libpq socket reactor |
 | MySQL native 异步 | **已实现 / 扩大验证中** | 受支持客户端的无参数单语句路径；prepared 路径 fallback |
 | ODBC/Oracle native 异步 | **已实现 / 扩大验证中** | OCI nonblocking 与 Microsoft ODBC Driver 18 轮询均已过实库；FreeTDS 能力探测选择 fallback |
+| 异步拓扑状态机 | **已实现 / 已验证** | 查询/执行组、重试、缓存、副本/主库回退、带 fencing 的写故障转移和影子路由可保留合格叶子的 native I/O |
 | 日志、Observer、慢 SQL、池指标 | **已实现 / 已验证** | Client 级观测、指纹、采样/脱敏、有界聚合 |
 | Prometheus | **已实现 / 已验证** | 指标/类型/标签契约冻结，高基数指纹有硬上限；HTTP server 由应用提供 |
 | 性能基准 | **已实现 / 扩大验证中** | 覆盖连接借还、绑定、映射、批量、游标、关闭日志；历史回归自动化待排期 |
@@ -151,7 +152,7 @@ Driver 18 native 轮询（123 项），以及 Oracle Database Free + OCI native/
   故障注入和多小时取消/并发 soak；FreeTDS 继续按能力探测走 fallback；
 - 将已完成的 Oracle OCI nonblocking 基线扩大到更多受支持客户端版本及故障/soak 场景，
   临时 LOB 输入绑定保留 fallback；
-- 厂商能力允许时，把带参数 MySQL 及复杂路由/重试/缓存路径移出兼容 worker；
+- 厂商能力允许时，把带参数 MySQL 移出兼容 worker；继续扩大已完成异步拓扑状态机的故障与 soak 验证；
 - 评估基于现有 future 的可选协程适配头，future 入口继续保留且不变。
 
 ### D — SQL 构造与观测

@@ -32,8 +32,8 @@ namespace sqlconduit::async {
             bool tryPost(Task task) override {
                 if (!task) return false;
                 std::unique_lock<std::mutex> lk(mtx_);
-                ensureStartedLocked();
                 if (stopping_.load(std::memory_order_relaxed)) return false;
+                ensureStartedLocked();
                 if (queue_.size() >= queueLimit_) {
                     ++rejected_;
                     return false;
@@ -47,8 +47,8 @@ namespace sqlconduit::async {
             bool tryPostContinuation(Task task) override {
                 if (!task) return false;
                 std::unique_lock<std::mutex> lk(mtx_);
-                ensureStartedLocked();
                 if (stopping_.load(std::memory_order_relaxed)) return false;
+                ensureStartedLocked();
                 queue_.push_back(std::move(task));
                 ++submitted_;
                 cvWork_.notify_one();
@@ -57,29 +57,42 @@ namespace sqlconduit::async {
 
             void postAfter(Task task, std::chrono::milliseconds delay) override {
                 if (!task) return;
-                std::unique_lock<std::mutex> lk(mtx_);
-                ensureStartedLocked();
-                if (stopping_.load(std::memory_order_relaxed)) return;
-                delayed_.emplace(DelayedTask{
-                    std::chrono::steady_clock::now()
-                    + std::max<std::chrono::milliseconds>(delay, std::chrono::milliseconds(0)),
-                    seq_++, std::move(task)
-                });
-                cvTimer_.notify_one();
+                {
+                    std::unique_lock<std::mutex> lk(mtx_);
+                    if (!stopping_.load(std::memory_order_relaxed)) {
+                        ensureStartedLocked();
+                        delayed_.emplace(DelayedTask{
+                            std::chrono::steady_clock::now()
+                            + std::max<std::chrono::milliseconds>(
+                                delay, std::chrono::milliseconds(0)),
+                            seq_++, std::move(task)
+                        });
+                        cvTimer_.notify_one();
+                        return;
+                    }
+                }
+                runGuarded(task);
             }
 
             void shutdown(const std::chrono::milliseconds grace) override {
                 std::vector<std::thread> workers;
                 std::thread timer;
+                std::vector<Task> delayed;
                 {
                     std::lock_guard<std::mutex> lk(mtx_);
                     if (stopping_.exchange(true, std::memory_order_acq_rel)) return;
-                    delayed_ = {};
+                    delayed.reserve(delayed_.size());
+                    while (!delayed_.empty()) {
+                        delayed.push_back(std::move(
+                            const_cast<DelayedTask &>(delayed_.top()).task));
+                        delayed_.pop();
+                    }
                     cvWork_.notify_all();
                     cvTimer_.notify_all();
                     workers = std::move(workers_);
                     timer = std::move(timerThread_);
                 }
+                for (const auto &task: delayed) runGuarded(task);
                 if (timer.joinable()) timer.join();
                 for (auto &w: workers) {
                     if (w.joinable()) w.join();

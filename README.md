@@ -179,17 +179,19 @@ async calls return a ready future containing a `ConfigError` status.
 
 Eligible leaf-data-source paths acquire connections through the pool's asynchronous handoff
 queue, so a pool wait does not occupy an executor worker. Leaf query-cache hits complete without a
-connection and cache misses may continue into a native driver operation. Group routing, retries,
-and shadow routing still use the compatibility state machine. PostgreSQL query/execute operations on an
-eligible leaf data source use the bundled libpq socket reactor and report `Native`. MySQL
+connection and cache misses may continue into a native driver operation. Query/execute operations
+through read/write groups, retries, replica-to-primary fallback, fenced primary failover, and shadow
+routing now use asynchronous topology state machines; when the selected leaf driver is eligible,
+the database I/O remains `Native`. PostgreSQL query/execute operations on an eligible leaf data
+source use the bundled libpq socket reactor and report `Native`. MySQL
 8.0.16+ also reports `Native` for eligible parameter-free SELECT and DML/DDL through its
 nonblocking C API; parameterized MySQL statements retain prepared-statement fallback. The 1.0.1
 development line adds OCI nonblocking query/execute and polling ODBC query/execute when the selected
 ODBC driver reports statement- or connection-level async support. FreeTDS currently reports no
 native async and remains on the explicit compatibility path. The 1.0.1 live suite validates native
 polling with Microsoft ODBC Driver 18 on Linux, including cancellation and connection reuse. Oracle
-temporary-LOB input binding, transaction/cursor/batch operations, and
-complex topology paths also retain `CompatibilityFallback`. Driver extensions can opt into `Native`
+temporary-LOB input binding and transaction/cursor/batch/multi-result/generated-key operations
+retain `CompatibilityFallback`. Driver extensions can opt into `Native`
 by implementing the same nonblocking query/execute callback contract.
 
 The existing future API and execution-mode contract remain unchanged. See the

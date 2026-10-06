@@ -97,7 +97,9 @@ Compatibility fallback honors `async.statement_timeout_ms` for late read classif
 rewrite successful write, batch, or transaction results after the driver call has already completed.
 Eligible leaf-data-source paths use asynchronous pool handoff, including an active pool-wait deadline.
 Leaf query-cache hits also complete inside the async state machine without borrowing a connection;
-cache misses can continue into a native driver operation.
+cache misses can continue into a native driver operation. Query/execute group routing, retries,
+replica fallback, fenced primary failover, and shadow routing also remain inside asynchronous state
+machines and preserve native leaf I/O when the selected driver operation is eligible.
 The driver SPI now includes optional `queryAsync` / `executeAsync` callbacks; returning `false`
 means no operation was started and preserves compatibility fallback. PostgreSQL implements these
 callbacks with a bundled libpq socket reactor for eligible leaf query/execute operations. MySQL
@@ -106,7 +108,7 @@ nonblocking C API; parameterized operations remain prepared-statement fallbacks.
 development line implements eligible Oracle operations with OCI nonblocking mode and eligible ODBC
 operations with the driver's polling model. Runtime capability detection preserves fallback for
 drivers such as FreeTDS that report `SQL_AM_NONE`, for Oracle temporary-LOB input binding, and for
-transaction/cursor/batch or complex-topology paths. This is an implementation change behind the
+transaction/cursor/batch/multi-result/generated-key paths. This is an implementation change behind the
 same frozen `Client` futures, SPI callbacks, result types, and execution-mode contract.
 
 There is no process-wide async facade. Callback, cancellation-handle, and coroutine wrappers were
@@ -180,7 +182,9 @@ fallback 和 timeout 数。这组接口目前有意不提供取消句柄或协�
 成功完成后把结果重写成 timeout。PostgreSQL 叶子数据源的普通查询/执行已经使用共享 libpq
 socket reactor；MySQL 8.0.16+ 的无参数单语句 SELECT 和 DML/DDL 使用官方 nonblocking C API
 与共享轮询 reactor。1.0.1 开发线为合格 Oracle 操作实现 OCI nonblocking，为报告异步能力的
-ODBC 驱动实现轮询状态机；FreeTDS、Oracle 临时 LOB 输入绑定、事务/游标/批量和复杂拓扑仍走
-受支持且有明确统计的兼容 fallback。这些改动复用冻结的 `Client` future、SPI 回调、结果类型和
+ODBC 驱动实现轮询状态机；FreeTDS、Oracle 临时 LOB 输入绑定以及事务/游标/批量等复合操作仍走
+受支持且有明确统计的兼容 fallback。查询/执行的数据源组路由、重试、副本回退、带 fencing 的
+主库故障转移、缓存和影子流量已进入异步状态机；叶子驱动符合条件时仍保留 native I/O。
+事务、游标、批量、多结果集和生成键路径继续 fallback。这些改动复用冻结的 `Client` future、SPI 回调、结果类型和
 执行模式契约。0.7 冻结前已移除进程级 `SQLConduit`、异步自由函数、
 取消句柄和协程包装；所有异步操作都从显式 `Client` 发起并返回标准 future。

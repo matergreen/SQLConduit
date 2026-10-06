@@ -19,8 +19,8 @@ namespace sqlconduit::async::detail {
         using SessionOperation = std::function<common::Status(core::Session &)>;
         using StatusCompletion = std::function<void(common::Status)>;
 
-        // Returns false without starting work when the datasource topology requires the full
-        // synchronous compatibility path (groups, retries, cache, or shadow routing).
+        // Returns false without starting work when the datasource cannot be represented by the
+        // native leaf or asynchronous group-routing state machines.
         static bool query(const std::shared_ptr<core::DataSource> &source,
                           std::string sql, common::Params params,
                           common::SqlContext context,
@@ -50,11 +50,40 @@ namespace sqlconduit::async::detail {
     private:
         static bool directLeafEligible(const core::DataSource &source, bool query);
 
+        static bool queryLeaf(const std::shared_ptr<core::DataSource> &source,
+                              std::string sql, common::Params params,
+                              common::SqlContext context,
+                              std::chrono::milliseconds borrowTimeout,
+                              core::AsyncIo io, bool applyPreGate,
+                              bool runInterceptors,
+                              QueryCompletion completion);
+
+        static bool executeLeaf(const std::shared_ptr<core::DataSource> &source,
+                                std::string sql, common::Params params,
+                                common::SqlContext context,
+                                std::chrono::milliseconds borrowTimeout,
+                                core::AsyncIo io, bool applyPreGate,
+                                bool runInterceptors,
+                                ExecuteCompletion completion);
+
+        static bool queryGroup(const std::shared_ptr<core::DataSource> &source,
+                               std::string sql, common::Params params,
+                               common::SqlContext context,
+                               std::chrono::milliseconds borrowTimeout,
+                               core::AsyncIo io, QueryCompletion completion);
+
+        static bool executeGroup(const std::shared_ptr<core::DataSource> &source,
+                                 std::string sql, common::Params params,
+                                 common::SqlContext context,
+                                 std::chrono::milliseconds borrowTimeout,
+                                 core::AsyncIo io, ExecuteCompletion completion);
+
         static bool queryOne(const std::shared_ptr<core::DataSource> &source,
                              std::string sql, common::Params params,
                              common::SqlContext context,
                              std::chrono::milliseconds borrowTimeout,
                              core::AsyncIo io, bool applyPreGate,
+                             bool runInterceptors,
                              QueryCompletion completion);
 
         static bool executeOne(const std::shared_ptr<core::DataSource> &source,
@@ -62,6 +91,7 @@ namespace sqlconduit::async::detail {
                                common::SqlContext context,
                                std::chrono::milliseconds borrowTimeout,
                                core::AsyncIo io, bool applyPreGate,
+                               bool runInterceptors,
                                ExecuteCompletion completion);
     };
 }

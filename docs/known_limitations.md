@@ -12,9 +12,13 @@ For the complete implemented/testing/scheduled matrix, see
 
 - PostgreSQL leaf queries and writes can use the bundled libpq socket reactor. Eligible MySQL
   8.0.16+ parameter-free, single-statement operations can use the MySQL nonblocking C API.
-- Parameterized MySQL statements, older MySQL/MariaDB clients, transactions, cursors, batches, and
-  cache/retry/group/shadow topologies use the bounded `CompatibilityFallback` executor. In the
-  1.0.1 development line, eligible Oracle operations use OCI nonblocking mode and eligible ODBC
+- Query/execute group routing, retries, replica fallback, fenced primary failover, query cache, and
+  shadow routing use asynchronous topology state machines. The selected leaf operation remains
+  `Native` when its driver and statement are eligible; group-level policy and interceptor hooks run
+  once at the public operation boundary.
+- Parameterized MySQL statements, older MySQL/MariaDB clients, transactions, cursors, batches,
+  multi-result queries, and generated-key helpers use the bounded `CompatibilityFallback` executor.
+  In the 1.0.1 development line, eligible Oracle operations use OCI nonblocking mode and eligible ODBC
   operations use polling only when the selected driver reports statement- or connection-level
   async. FreeTDS reports no native async. Microsoft ODBC Driver 18 native polling is live-tested on
   Linux in the 1.0.1 line; Windows remains compile-tested. Oracle temporary-LOB input binding falls
@@ -72,7 +76,9 @@ For the complete implemented/testing/scheduled matrix, see
   FreeTDS 不报告 native async；1.0.1 已在 Linux 实库验证 Microsoft ODBC Driver 18 的 native
   轮询，Windows 仍为编译验证。Oracle
   临时 LOB 输入绑定回退兼容执行器；OCI 不支持在 nonblocking 模式读取 secure-file LOB，因而
-  LOB 结果会在 reactor worker 上切回 blocking 完成物化。事务、游标、批量和复杂拓扑继续 fallback。
+  LOB 结果会在 reactor worker 上切回 blocking 完成物化。查询/执行的数据源组、重试、缓存、
+  副本/主库回退、带 fencing 的写故障转移和影子路由已使用异步状态机；事务、游标、批量、
+  多结果集和生成键仍继续 fallback。
 - `StreamSource` 当前仍先由驱动缓冲结果，不承诺服务端常量内存流式读取。
 - SQL Builder 只覆盖可移植 CRUD；JOIN、Upsert、生成键、锁、表达式、存储过程和任意方言
   仍应编写显式 SQL。SQL Server 生成键不会自动注入 `OUTPUT`。

@@ -199,6 +199,10 @@ namespace sqlconduit {
                                                const common::Params &params,
                                                common::ResultSet &out) const;
 
+            common::Status executeForAsyncEngine(const std::string &sql,
+                                                 const common::Params &params,
+                                                 std::int64_t &affected) const;
+
             void cleanupOpenTransaction() noexcept;
 
             std::unique_ptr<ConnectionPool::Handle> h_;

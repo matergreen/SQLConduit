@@ -1003,8 +1003,9 @@ Eligible leaf-data-source paths borrow connections asynchronously. When the pool
 is parked in `asyncWaiting` and does not occupy an executor worker; it is resumed by direct handoff
 when a connection returns, or by an active pool-wait deadline. Leaf query-cache hits complete
 without borrowing a connection; misses may continue into a native driver and cache the raw result
-before transforming interceptors run. Group routing, retry, and shadow paths still use the
-compatibility state machine. PostgreSQL `queryAsync` and
+before transforming interceptors run. Query/execute group routing, retry, replica-to-primary
+fallback, fenced primary failover, and shadow paths use asynchronous topology state machines, so an
+eligible selected leaf can retain native driver I/O. PostgreSQL `queryAsync` and
 `executeAsync` on eligible leaf data sources now use a shared libpq socket reactor and report
 `Native`. MySQL 8.0.16+ also uses its official nonblocking C API and a shared polling reactor for
 parameter-free, single-statement SELECT and DML/DDL. Parameterized MySQL operations deliberately
@@ -1013,7 +1014,7 @@ for eligible Oracle operations and ODBC polling query/execute when the selected 
 `SQL_AM_STATEMENT` or `SQL_AM_CONNECTION`. FreeTDS reports no native async and remains on fallback;
 Microsoft ODBC Driver 18 native polling is live-tested on Linux, including cancellation and
 post-cancel connection reuse. Oracle temporary-LOB input binding, and all
-drivers' transaction, cursor, batch, and complex-topology paths, still use compatibility execution.
+drivers' transaction, cursor, batch, multi-result, and generated-key paths still use compatibility execution.
 A driver extension may return `Native` only after implementing the
 `IDatabaseConnection::queryAsync` / `executeAsync` callback contract and reporting
 `AsyncCapability::Native`.

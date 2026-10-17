@@ -14,6 +14,7 @@
 namespace sqlconduit::driver {
     class OdbcConnection : public core::IDatabaseConnection {
     public:
+        [[nodiscard]] common::ConnectionCapabilities capabilities() const override;
         ~OdbcConnection() override;
 
         common::Status connect(const config::DataSourceConfig &cfg) override;

@@ -25,6 +25,25 @@
 #endif
 
 namespace sqlconduit::driver {
+    common::ConnectionCapabilities OdbcConnection::capabilities() const {
+        auto out = IDatabaseConnection::capabilities();
+#ifdef SQLCONDUIT_ENABLE_ODBC
+        if (dbc_) {
+            auto info = [&](SQLUSMALLINT kind) {
+                SQLCHAR value[256] = {};
+                SQLSMALLINT length = 0;
+                const auto rc = SQLGetInfo(static_cast<SQLHDBC>(dbc_), kind, value, sizeof(value), &length);
+                return SQL_SUCCEEDED(rc) ? std::string(reinterpret_cast<const char *>(value)) : std::string{};
+            };
+            out.clientVersion = info(SQL_DRIVER_NAME) + " " + info(SQL_DRIVER_VER);
+            out.serverVersion = info(SQL_DBMS_VER);
+        }
+#endif
+        out.asyncConstraints = out.nativeAsync
+            ? "Driver reports ODBC async support; eligible query/execute uses polling, composite operations use workers"
+            : "Selected ODBC driver reports no usable native async capability; use a supported Microsoft ODBC Driver for native polling";
+        return out;
+    }
     namespace {
 #ifdef SQLCONDUIT_ENABLE_ODBC
         bool succeeded(const SQLRETURN rc) {

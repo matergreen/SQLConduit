@@ -1,0 +1,6 @@
+[requires]
+sqlconduit/1.1.0-dev
+
+[generators]
+CMakeDeps
+CMakeToolchain

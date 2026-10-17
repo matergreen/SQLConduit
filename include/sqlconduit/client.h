@@ -217,6 +217,11 @@ namespace sqlconduit {
 
         [[nodiscard]] async::ExecutorStats asyncStats() const;
 
+        // Nonblocking snapshots. No SQL, connection borrowing or ContextScope routing.
+        [[nodiscard]] common::CapabilityReport capabilities(const std::string &name = {}) const;
+
+        [[nodiscard]] common::DiagnosticsReport diagnostics() const;
+
         [[nodiscard]] std::shared_ptr<core::DataSource> dataSource(
             const std::string &name = {}) const;
 
@@ -234,6 +239,8 @@ namespace sqlconduit {
         void clearSlowSqlStats();
 
         void setObserver(common::OperationObserver observer);
+
+        void setExecutionPhaseObserver(common::ExecutionPhaseObserver observer);
 
         void setDefaultRateLimiter(std::shared_ptr<core::IRateLimiter> limiter);
 
@@ -261,6 +268,9 @@ namespace sqlconduit {
                 std::chrono::milliseconds(5000)) noexcept;
 
     private:
+        common::Status initResolved(const config::GlobalConfig &config, std::string source);
+        common::Status reloadResolved(const config::GlobalConfig &config,
+                                      std::chrono::milliseconds grace, std::string source);
         class Impl;
         std::unique_ptr<Impl> impl_;
     };

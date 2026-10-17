@@ -1,0 +1,63 @@
+# SQLConduit 1.1.0 implementation and acceptance
+
+The 1.1.0 milestone adds production onboarding, diagnosis and performance tooling while preserving
+the 1.x public source contract. This is a development checklist, not a release-validation claim.
+
+## Deliverables
+
+- [x] Offline JSON/YAML topology validation and redacted resolved configuration.
+- [x] `sqlconduitctl validate`, `explain`, offline `doctor` and explicit connection probes.
+- [x] Read-only Client capability/diagnostic reports, group participants, pool pressure, circuit,
+      retries, write-buffer depth, cache and executor statistics; cached driver/client metadata.
+- [x] Statement-specific fallback reasons and timing for pool waits, executor queueing, retries,
+      replica fallback, cancellation and rejection in observer events.
+- [x] Optional OpenTelemetry component and SDK-backed export tests; safe attributes and async parent
+      context propagation. Core must not acquire an OpenTelemetry dependency.
+- [x] Same-host historical benchmark regression gate and JSON/Markdown reports; noise must not pass.
+- [x] Tail-latency and large-result benchmarks; optimize only measured allocation/contention costs.
+- [x] Platform-aware dependency diagnostics, public installed-component metadata, vcpkg and Conan
+      consumption paths, independent component installation and multi-config verification.
+- [x] Failure injection for network loss/reset, database restart, ambiguous commit, cancellation
+      isolation, concurrent reload, prolonged pool pressure and configurable soak runs.
+- [x] Windows Microsoft ODBC Driver live execution gate and macOS MySQL/PostgreSQL smoke where
+      services are available.
+- [x] Complete local core/driver/sanitizer/installed-consumer verification, developer/API documentation,
+      changelog and capability matrix updates with precise unvalidated boundaries.
+
+## Compatibility and safety invariants
+
+Existing Client/Session/Cursor APIs remain usable. New driver SPI hooks have default implementations.
+Diagnostics never silently borrow a connection. Unobserved driver capabilities stay distinguishable
+from connected capabilities, and group reports identify each participating leaf.
+
+No raw SQL, parameters, connection strings, DSNs, credentials or vendor error messages are exported
+by the diagnostic CLI or default tracing attributes. `doctor --connect` may connect and ping each
+configured leaf but never executes application writes. Performance comparisons use the same runner,
+compiler and build configuration; p95 across whole runs is not advertised as operation tail latency.
+
+The release process (commit, push, merge, tag, publish) is a separate user-authorized step after the
+milestone's implementation and verification.
+
+## Local evidence and remaining release validation
+
+On 2026-10-17, the macOS Release build passed 27 tests with the actual OpenTelemetry C++ 1.22.0 SDK.
+The strict-warning ASan/UBSan build passed 26 tests, and the targeted ThreadSanitizer run passed
+diagnostics, fault/reload, cache and concurrency tests. Linux Docker execution passed all 27 tests,
+including MySQL 8.4, PostgreSQL 16 and SQL Server through FreeTDS. Retained-Client database restart
+probes passed for MySQL and PostgreSQL, including PostgreSQL native async recovery. A short two-second
+soak exercised repeated fault/pressure/reload scenarios; this is not a multi-hour endurance claim.
+
+Core-only and OpenTelemetry installed consumers passed, including Core consumption with SDK package
+discovery disabled. A real Conan Core package and consumer passed locally. Workflow static checks
+passed (actionlint 1.7.7 ignores only its unknown `artifact-metadata` permission scope).
+The final quiet seven-pair Release comparison against v1.0.1 passed all 12 historical cases.
+The disabled-cache fast path improved from 1.24 to 0.88 ns/op on this host; this is a local
+microbenchmark observation, not a portable application-throughput guarantee. New tail-latency and
+large-result cases are retained in raw candidate-run artifacts without invented baseline values.
+
+The new GitHub-hosted Windows LocalDB, macOS database-server, Conan, performance and OpenTelemetry
+jobs still require a pushed revision and actual hosted execution. Oracle capability metadata was
+implemented but not rebuilt or live-tested against an OCI SDK in this local run. Windows multi-config
+co-installation is covered by the workflow, not claimed as locally executed. Multi-hour soak runs
+remain an explicit manual gate. Checked deliverables above mean implementation exists; they do not
+replace these release-validation boundaries.

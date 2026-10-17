@@ -88,9 +88,8 @@ namespace sqlconduit::core {
         return replicaOnly_.load(std::memory_order_acquire);
     }
 
-    bool detail::QueryCacheState::get(const std::string &dataSource, const std::string &key,
+    bool detail::QueryCacheState::getEnabled(const std::string &dataSource, const std::string &key,
                                       common::ResultSet &out) {
-        if (!enabled_.load(std::memory_order_acquire)) return false;
         std::lock_guard<std::mutex> lk(mtx_);
         if (!cfg_.enabled) return false;
         const std::string ck = compositeKey(dataSource, key);

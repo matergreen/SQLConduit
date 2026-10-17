@@ -800,6 +800,11 @@ namespace sqlconduit::core {
         return out;
     }
 
+    common::ConnectionCapabilities ConnectionPool::capabilities() const {
+        std::lock_guard<std::mutex> lock(diagnosticsMutex_);
+        return capabilities_;
+    }
+
     std::unique_ptr<IDatabaseConnection> ConnectionPool::createConnection(common::ErrorCode &code,
                                                                           std::string &error) const {
         code = common::ErrorCode::Ok;
@@ -816,6 +821,11 @@ namespace sqlconduit::core {
             code = st.code;
             error = st.message;
             return nullptr;
+        }
+        {
+            auto observed = conn->capabilities();
+            std::lock_guard<std::mutex> lock(diagnosticsMutex_);
+            capabilities_ = std::move(observed);
         }
         return conn;
     }

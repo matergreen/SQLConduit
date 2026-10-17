@@ -117,8 +117,10 @@ namespace {
             const auto password = env("SQLCONDUIT_TEST_ODBC_PASSWORD");
             database = env("SQLCONDUIT_TEST_ODBC_DATABASE", "master");
             const auto driver = env("SQLCONDUIT_TEST_ODBC_DRIVER", "FreeTDS");
+            const auto explicitConnection = env("SQLCONDUIT_TEST_ODBC_CONNECTION_STRING");
             expectNativeAsync = driver.find("ODBC Driver") != std::string::npos;
-            require(!password.empty(), "SQLCONDUIT_TEST_ODBC_PASSWORD must be set");
+            require(!password.empty() || !explicitConnection.empty(),
+                    "SQLCONDUIT_TEST_ODBC_PASSWORD or SQLCONDUIT_TEST_ODBC_CONNECTION_STRING must be set");
             connectionString = "DRIVER={" + driver + "};";
             if (expectNativeAsync) {
                 connectionString += "SERVER=tcp:" + host + "," + port
@@ -129,6 +131,7 @@ namespace {
                                     + ";DATABASE=" + database + ";UID=" + user + ";PWD="
                                     + password + ";TDS_Version=7.4;";
             }
+            if (!explicitConnection.empty()) connectionString = explicitConnection;
             std::ofstream file(configPath);
             file << "{\"default_datasource\":\"odbc\","
                     "\"pool\":{\"min\":0,\"max\":4,\"borrow_timeout_ms\":3000},"

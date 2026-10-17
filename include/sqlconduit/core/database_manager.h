@@ -400,6 +400,8 @@ namespace sqlconduit {
 
             bool poolStats(ConnectionPool::Stats &out) const;
 
+            [[nodiscard]] common::DataSourceDiagnostics diagnostics() const;
+
             void applyCursorConfig(const config::CursorConfig &cfg) {
                 cursorEnabled_ = cfg.enabled;
                 defaultBatchSize_ = cfg.default_batch_size > 0 ? cfg.default_batch_size : 256;
@@ -533,6 +535,8 @@ namespace sqlconduit {
             config::RetryConfig retry_;
             config::CircuitBreakerConfig circuitBreaker_;
             mutable std::atomic<int> consecutiveFailures_{0};
+            mutable std::atomic<common::ErrorCode> lastError_{common::ErrorCode::Ok};
+            mutable std::atomic<common::ErrorCode> lastCancellationError_{common::ErrorCode::Ok};
             mutable std::atomic<bool> halfOpenInFlight_{false};
             mutable std::atomic<std::chrono::steady_clock::time_point> circuitOpenUntil_{};
             std::shared_ptr<DataSource> primary_;
@@ -605,6 +609,8 @@ namespace sqlconduit {
             size_t dataSourceCount() const;
 
             std::vector<NamedPoolStats> allPoolStats() const;
+
+            [[nodiscard]] std::vector<common::DataSourceDiagnostics> diagnostics() const;
 
         private:
             friend class ::sqlconduit::Client;

@@ -98,6 +98,7 @@ namespace sqlconduit::common {
         if (!copyHex(header, 36, 16, tmp.spanId)) return false;
         std::string flagsBuf;
         if (!copyHex(header, 53, 2, flagsBuf)) return false;
+        tmp.traceFlags = static_cast<std::uint8_t>(std::stoul(flagsBuf, nullptr, 16));
 
         bool allZero = true;
         for (char c: tmp.traceId) {
@@ -135,7 +136,10 @@ namespace sqlconduit::common {
         out.append(ctx.traceId);
         out.append("-");
         out.append(ctx.spanId);
-        out.append("-01");
+        constexpr char digits[] = "0123456789abcdef";
+        out.push_back('-');
+        out.push_back(digits[ctx.traceFlags >> 4]);
+        out.push_back(digits[ctx.traceFlags & 15]);
         return out;
     }
 }

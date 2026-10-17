@@ -126,6 +126,8 @@ namespace {
         std::uint64_t repetitions = 0;
         double nanosecondsPerOperation = 0;
         double operationsPerSecond = 0;
+        double operationP95Ns = 0;
+        double operationP99Ns = 0;
     };
 
     template<class Fn>
@@ -176,6 +178,34 @@ namespace {
         std::sort(samples.begin(), samples.end());
         const double medianNs = samples[samples.size() / 2];
         return {std::move(name), measuredOperations, repetitions, medianNs, 1e9 / medianNs};
+    }
+
+    template<class Fn>
+    Result measureLatency(std::string name, const std::uint64_t samplesPerThread,
+                          const std::size_t threads, Fn &&fn) {
+        std::vector<std::vector<double>> samples(threads);
+        std::vector<std::thread> workers;
+        std::atomic<bool> start{false};
+        for (std::size_t t = 0; t < threads; ++t) {
+            samples[t].reserve(samplesPerThread);
+            workers.emplace_back([&, t] {
+                while (!start.load(std::memory_order_acquire)) std::this_thread::yield();
+                for (std::uint64_t i = 0; i < samplesPerThread; ++i) {
+                    const auto begin = std::chrono::steady_clock::now();
+                    fn();
+                    samples[t].push_back(std::chrono::duration<double, std::nano>(
+                        std::chrono::steady_clock::now() - begin).count());
+                }
+            });
+        }
+        start.store(true, std::memory_order_release);
+        for (auto &worker : workers) worker.join();
+        std::vector<double> sorted;
+        for (const auto &thread : samples) sorted.insert(sorted.end(), thread.begin(), thread.end());
+        std::sort(sorted.begin(), sorted.end());
+        const auto p50 = sorted[sorted.size() / 2];
+        return {std::move(name), samplesPerThread * threads, 1, p50, 1e9 / p50,
+                sorted[(sorted.size() * 95 - 1) / 100], sorted[(sorted.size() * 99 - 1) / 100]};
     }
 
     void requireOk(const common::Status &status, const char *operation) {
@@ -353,6 +383,31 @@ int main(int argc, char **argv) {
         queryCache.put("benchmark", "replace", cachedRows);
     }));
 
+    results.push_back(measureLatency("pool_borrow_latency_contended_8t", 2000, 8, [&] {
+        common::ErrorCode code = common::ErrorCode::Unknown;
+        std::string error;
+        auto handle = pool->borrow(code, error);
+        if (!handle) throw std::runtime_error("latency borrow: " + error);
+    }));
+    results.push_back(measureParallel("query_cache_hit_contended_8t", iterations, 8, [&] {
+        common::ResultSet local;
+        if (!queryCache.get("benchmark", "hit", local))
+            throw std::runtime_error("contended cache hit missed");
+        parallelSink.fetch_add(local.rowCount(), std::memory_order_relaxed);
+    }));
+    common::ResultSet largeResult;
+    largeResult.setFields({"id", "payload"});
+    for (std::int64_t id = 0; id < 1024; ++id) {
+        common::Row row;
+        row.set("id", id);
+        row.set("payload", std::string(1024, 'x'));
+        largeResult.addRow(std::move(row));
+    }
+    results.push_back(measure("result_copy_1024_rows_1k", (std::max<std::uint64_t>)(100, iterations / 1000), [&] {
+        const auto copy = largeResult;
+        benchmarkSink += copy.rowCount();
+    }));
+
     pool->shutdown();
     benchmarkSink += parallelSink.load(std::memory_order_relaxed);
 
@@ -380,7 +435,11 @@ int main(int argc, char **argv) {
                  << ", \"nanoseconds_per_operation_median\": "
                  << std::fixed << std::setprecision(3) << result.nanosecondsPerOperation
                  << ", \"operations_per_second\": " << std::setprecision(3)
-                 << result.operationsPerSecond << "}";
+                 << result.operationsPerSecond;
+            if (result.operationP95Ns > 0)
+                json << ", \"operation_p95_ns\": " << result.operationP95Ns
+                     << ", \"operation_p99_ns\": " << result.operationP99Ns;
+            json << "}";
             if (i + 1 != results.size()) json << ',';
             json << '\n';
         }

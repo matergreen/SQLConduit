@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
-project(sqlconduit VERSION 1.0.1 LANGUAGES CXX)
-set(SQLCONDUIT_VERSION_PRERELEASE "")
+project(sqlconduit VERSION 1.1.0 LANGUAGES CXX)
+set(SQLCONDUIT_VERSION_PRERELEASE "dev")
 if(SQLCONDUIT_VERSION_PRERELEASE)
     set(SQLCONDUIT_VERSION_FULL "${PROJECT_VERSION}-${SQLCONDUIT_VERSION_PRERELEASE}")
 else()
@@ -8,6 +8,7 @@ else()
 endif()
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/public_api.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/dependency_diagnostics.cmake")
 file(GLOB_RECURSE _sqlconduit_header_inventory CONFIGURE_DEPENDS
      RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/include"
      "${CMAKE_CURRENT_SOURCE_DIR}/include/sqlconduit/*.h")
@@ -71,6 +72,8 @@ option(SQLCONDUIT_ENABLE_ODBC     "Build ODBC driver (for example SQL Server)"  
 option(SQLCONDUIT_ENABLE_ORACLE   "Build Oracle driver (needs OCI / Instant Client)" OFF)
 option(SQLCONDUIT_BUILD_TESTS     "Build core behaviour tests (no external deps)"   OFF)
 option(SQLCONDUIT_BUILD_BENCHMARKS "Build dependency-free performance benchmarks"   OFF)
+option(SQLCONDUIT_BUILD_TOOLS "Build the offline configuration and connection doctor CLI" ON)
+option(SQLCONDUIT_ENABLE_OPENTELEMETRY "Build optional OpenTelemetry observer adapter" OFF)
 option(SQLCONDUIT_INSTALL         "Generate install and package config rules"       ON)
 option(SQLCONDUIT_BUILD_INTEGRATION_TESTS
        "Build integration tests that require live database services"          OFF)
@@ -105,6 +108,7 @@ set(SQLCONDUIT_CORE_SOURCES
     src/common/sql_builder.cpp
     src/config/datasource_config.cpp
     src/config/config_loader.cpp
+    src/config/config_diagnostics.cpp
     src/config/yaml_parser.cpp
     src/async/executor.cpp
     src/async/async_engine.cpp
@@ -178,8 +182,7 @@ if(SQLCONDUIT_ENABLE_MYSQL)
     find_path(MYSQL_INCLUDE_DIR NAMES mysql.h PATH_SUFFIXES mysql)
     find_library(MYSQL_LIBRARY  NAMES mysqlclient libmysql)
     if(NOT MYSQL_INCLUDE_DIR OR NOT MYSQL_LIBRARY)
-        message(FATAL_ERROR "SQLCONDUIT_ENABLE_MYSQL=ON but libmysqlclient not found. "
-            "Run: sudo apt install -y default-libmysqlclient-dev")
+        sqlconduit_missing_dependency(MySQL "mysql.h / libmysqlclient (MYSQL_INCLUDE_DIR / MYSQL_LIBRARY)")
     endif()
     target_include_directories(sqlconduit_mysql PRIVATE ${MYSQL_INCLUDE_DIR})
     sqlconduit_add_driver_dep(sqlconduit_mysql MYSQL "${MYSQL_LIBRARY}")
@@ -211,8 +214,7 @@ if(SQLCONDUIT_ENABLE_POSTGRES)
     find_path(PQ_INCLUDE_DIR    NAMES postgresql/libpq-fe.h libpq-fe.h)
     find_library(PQ_LIBRARY     NAMES pq libpq)
     if(NOT PQXX_INCLUDE_DIR OR NOT PQXX_LIBRARY OR NOT PQ_LIBRARY)
-        message(FATAL_ERROR "SQLCONDUIT_ENABLE_POSTGRES=ON but libpqxx/libpq not found. "
-            "Run: sudo apt install -y libpqxx-dev libpq-dev")
+        sqlconduit_missing_dependency(Postgres "pqxx headers / libpqxx / libpq (PQXX_INCLUDE_DIR / PQXX_LIBRARY / PQ_LIBRARY)")
     endif()
 
     file(STRINGS "${PQXX_INCLUDE_DIR}/pqxx/version.hxx" _sqlconduit_pqxx_major_line
@@ -254,8 +256,7 @@ if(SQLCONDUIT_ENABLE_ODBC)
         find_path(ODBC_INCLUDE_DIR NAMES sql.h)
         find_library(ODBC_LIBRARY NAMES odbc)
         if(NOT ODBC_INCLUDE_DIR OR NOT ODBC_LIBRARY)
-            message(FATAL_ERROR "SQLCONDUIT_ENABLE_ODBC=ON but unixODBC not found. "
-                "Run: sudo apt install -y unixodbc-dev")
+            sqlconduit_missing_dependency(ODBC "sql.h / libodbc (ODBC_INCLUDE_DIR / ODBC_LIBRARY)")
         endif()
         target_include_directories(sqlconduit_odbc PRIVATE ${ODBC_INCLUDE_DIR})
     endif()
@@ -268,12 +269,33 @@ if(SQLCONDUIT_ENABLE_ORACLE)
     find_path(OCI_INCLUDE_DIR NAMES oci.h)
     find_library(OCI_LIBRARY  NAMES clntsh oci)
     if(NOT OCI_INCLUDE_DIR OR NOT OCI_LIBRARY)
-        message(FATAL_ERROR "SQLCONDUIT_ENABLE_ORACLE=ON but the Oracle client was not found "
-            "(oci.h / libclntsh). Install the Oracle Instant Client Basic + SDK packages and "
-            "pass -DOCI_INCLUDE_DIR=<dir> -DOCI_LIBRARY=<path>.")
+        sqlconduit_missing_dependency(Oracle "oci.h / libclntsh (OCI_INCLUDE_DIR / OCI_LIBRARY)")
     endif()
     target_include_directories(sqlconduit_oracle PRIVATE ${OCI_INCLUDE_DIR})
     sqlconduit_add_driver_dep(sqlconduit_oracle ORACLE "${OCI_LIBRARY}")
+endif()
+
+if(SQLCONDUIT_ENABLE_OPENTELEMETRY)
+    find_package(opentelemetry-cpp CONFIG REQUIRED)
+    add_library(sqlconduit_opentelemetry STATIC src/exporters/opentelemetry.cpp)
+    add_library(sqlconduit::opentelemetry ALIAS sqlconduit_opentelemetry)
+    set_target_properties(sqlconduit_opentelemetry PROPERTIES EXPORT_NAME opentelemetry DEBUG_POSTFIX d)
+    target_link_libraries(sqlconduit_opentelemetry PUBLIC sqlconduit_core PRIVATE opentelemetry-cpp::api)
+    list(APPEND SQLCONDUIT_INSTALL_TARGETS sqlconduit_opentelemetry)
+    list(APPEND SQLCONDUIT_BUILT_COMPONENTS OpenTelemetry)
+endif()
+
+if(SQLCONDUIT_BUILD_TOOLS)
+    add_executable(sqlconduitctl tools/sqlconduitctl.cpp)
+    target_link_libraries(sqlconduitctl PRIVATE sqlconduit_core)
+    target_include_directories(sqlconduitctl PRIVATE ${_nl_inc_dir})
+    foreach(_driver MYSQL POSTGRES ODBC ORACLE)
+        if(SQLCONDUIT_ENABLE_${_driver})
+            string(TOLOWER "${_driver}" _driver_lower)
+            target_link_libraries(sqlconduitctl PRIVATE sqlconduit_${_driver_lower})
+            target_compile_definitions(sqlconduitctl PRIVATE SQLCONDUIT_CTL_${_driver})
+        endif()
+    endforeach()
 endif()
 
 if(SQLCONDUIT_BUILD_TESTS)
@@ -291,6 +313,10 @@ endif()
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
+
+if(SQLCONDUIT_BUILD_TOOLS)
+    install(TARGETS sqlconduitctl RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 
 install(TARGETS ${SQLCONDUIT_INSTALL_TARGETS}
         EXPORT sqlconduitTargets

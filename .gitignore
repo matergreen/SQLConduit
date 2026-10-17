@@ -22,3 +22,6 @@ out/
 
 third_party/*/build/
 .workbuddy
+__pycache__/
+*.pyc
+CMakeUserPresets.json

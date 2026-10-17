@@ -4,9 +4,11 @@
 #include "async/async_engine.h"
 #include "sqlconduit/common/context.h"
 #include "sqlconduit/config/config_loader.h"
+#include "sqlconduit/version.h"
 #include "sqlconduit/core/runtime_services.h"
 
 #include <atomic>
+#include <algorithm>
 #include <exception>
 #include <mutex>
 #include <utility>
@@ -120,12 +122,18 @@ namespace sqlconduit {
 
             const auto& context = common::ContextScope::current();
             const auto timeoutMs = asyncTimeoutMs.load(std::memory_order_acquire);
+            const auto enqueuedAt = std::chrono::steady_clock::now();
             auto task = [promise, executor, source = std::move(source), context,
+                        runtime = services, enqueuedAt,
                         timeoutMs, lateTimeoutIsError, fn = std::move(fn)]() mutable {
                 Result result;
                 result.mode = async::ExecutionMode::CompatibilityFallback;
                 executor->recordFallbackOperation();
                 const auto started = std::chrono::steady_clock::now();
+                runtime->phase(common::ExecutionPhase::Queue, context,
+                    std::chrono::duration_cast<std::chrono::microseconds>(started - enqueuedAt));
+                runtime->phase(common::ExecutionPhase::Fallback, context, {}, common::ErrorCode::Ok,
+                               common::FallbackReason::CompositeOperation);
                 try {
                     const common::ContextScope scope(context);
                     fn(*source, result);
@@ -152,6 +160,7 @@ namespace sqlconduit {
             };
 
             if (!executor->tryPost(std::move(task))) {
+                services->phase(common::ExecutionPhase::Rejected, context, {}, common::ErrorCode::Overloaded);
                 Result result;
                 result.status = common::Status::error(
                     common::ErrorCode::Overloaded,
@@ -460,6 +469,9 @@ namespace sqlconduit {
         std::shared_ptr<async::IExecutor> asyncExecutor;
         std::atomic<std::int64_t> asyncTimeoutMs{0};
         std::atomic<State> state{State::Empty};
+        std::atomic<bool> sqlAuditEnabled{false};
+        std::atomic<bool> rateLimitEnabled{false};
+        std::atomic<int> configSource{0};
     };
 
     Client::Client() : impl_(std::make_unique<Impl>()) {
@@ -493,10 +505,14 @@ namespace sqlconduit {
         std::string error;
         if (!config::ConfigLoader::loadFromFile(configPath, config, error))
             return common::Status::error(common::ErrorCode::ConfigError, std::move(error));
-        return init(config);
+        return initResolved(config, "file");
     }
 
     common::Status Client::init(const config::GlobalConfig &config) {
+        return initResolved(config, "programmatic");
+    }
+
+    common::Status Client::initResolved(const config::GlobalConfig &config, std::string source) {
         if (!impl_) return clientClosed();
         if (const auto st = validateAsyncConfig(config.async); !st.ok()) return st;
         std::lock_guard<std::mutex> lock(impl_->lifecycleMutex);
@@ -508,6 +524,9 @@ namespace sqlconduit {
         const auto status = impl_->manager.init(config);
         if (status.ok()) {
             impl_->configureAsync(config.async);
+            impl_->sqlAuditEnabled = config.sql_audit.enabled;
+            impl_->rateLimitEnabled = config.rate_limit.enabled;
+            impl_->configSource.store(source == "file" ? 1 : 2, std::memory_order_release);
             impl_->state.store(Impl::State::Running, std::memory_order_release);
         }
         return status;
@@ -519,17 +538,27 @@ namespace sqlconduit {
         std::string error;
         if (!config::ConfigLoader::loadFromFile(configPath, config, error))
             return common::Status::error(common::ErrorCode::ConfigError, std::move(error));
-        return reload(config, grace);
+        return reloadResolved(config, grace, "file");
     }
 
     common::Status Client::reload(const config::GlobalConfig &config,
                                   const std::chrono::milliseconds grace) {
+        return reloadResolved(config, grace, "programmatic");
+    }
+
+    common::Status Client::reloadResolved(const config::GlobalConfig &config,
+                                         const std::chrono::milliseconds grace, std::string source) {
         if (!impl_) return clientClosed();
         if (const auto st = validateAsyncConfig(config.async); !st.ok()) return st;
         std::lock_guard<std::mutex> lock(impl_->lifecycleMutex);
         if (const auto st = impl_->requireRunning(); !st.ok()) return st;
         const auto status = impl_->manager.init(config, grace);
-        if (status.ok()) impl_->configureAsync(config.async);
+        if (status.ok()) {
+            impl_->configureAsync(config.async);
+            impl_->sqlAuditEnabled = config.sql_audit.enabled;
+            impl_->rateLimitEnabled = config.rate_limit.enabled;
+            impl_->configSource.store(source == "file" ? 1 : 2, std::memory_order_release);
+        }
         return status;
     }
 
@@ -907,6 +936,42 @@ namespace sqlconduit {
         return executor ? executor->stats() : async::ExecutorStats{};
     }
 
+    common::CapabilityReport Client::capabilities(const std::string &name) const {
+        common::CapabilityReport out;
+        if (!impl_) { out.status = clientClosed(); return out; }
+        if (const auto st = impl_->requireRunning(); !st.ok()) { out.status = st; return out; }
+        const auto source = name.empty() ? impl_->manager.getDefault() : impl_->manager.getDataSource(name);
+        if (!source) { out.status = dataSourceNotFound(name); return out; }
+        const auto all = impl_->manager.diagnostics();
+        const auto selected = source->diagnostics();
+        for (const auto &d : all) {
+            if (d.name == selected.name || d.name == selected.primary || d.name == selected.shadow ||
+                std::find(selected.replicas.begin(), selected.replicas.end(), d.name) != selected.replicas.end() ||
+                std::find(selected.failoverPrimaries.begin(), selected.failoverPrimaries.end(), d.name) != selected.failoverPrimaries.end())
+                out.sources.push_back(d);
+        }
+        out.status = common::Status::OK();
+        return out;
+    }
+
+    common::DiagnosticsReport Client::diagnostics() const {
+        common::DiagnosticsReport out;
+        out.version = versionString;
+        if (!impl_) return out;
+        out.running = isRunning();
+        const auto origin = impl_->configSource.load(std::memory_order_acquire);
+        out.configSource = origin == 1 ? "file" : origin == 2 ? "programmatic" : "";
+        out.executor = asyncStats();
+        out.sources = impl_->manager.diagnostics();
+        const auto cache = impl_->services->queryCache.stats();
+        out.cacheEntries = cache.entries;
+        out.cacheHits = cache.hits;
+        out.cacheMisses = cache.misses;
+        out.sqlAuditEnabled = impl_->sqlAuditEnabled.load(std::memory_order_acquire);
+        out.rateLimitEnabled = impl_->rateLimitEnabled.load(std::memory_order_acquire);
+        return out;
+    }
+
     std::shared_ptr<core::DataSource> Client::dataSource(const std::string &name) const {
         if (!impl_) return {};
         std::shared_ptr<core::DataSource> out;
@@ -943,6 +1008,10 @@ namespace sqlconduit {
 
     void Client::setObserver(common::OperationObserver observer) {
         if (impl_) impl_->services->observability.setObserver(std::move(observer));
+    }
+
+    void Client::setExecutionPhaseObserver(common::ExecutionPhaseObserver observer) {
+        if (impl_) impl_->services->setPhaseObserver(std::move(observer));
     }
 
     void Client::setDefaultRateLimiter(std::shared_ptr<core::IRateLimiter> limiter) {

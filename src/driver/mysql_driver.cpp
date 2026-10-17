@@ -21,6 +21,17 @@
 #endif
 
 namespace sqlconduit::driver {
+    common::ConnectionCapabilities MySQLConnection::capabilities() const {
+        auto out = IDatabaseConnection::capabilities();
+#ifdef SQLCONDUIT_ENABLE_MYSQL
+        out.clientVersion = mysql_get_client_info();
+        if (m_) out.serverVersion = mysql_get_server_info(m_);
+#endif
+        out.asyncConstraints = out.nativeAsync
+            ? "Native only for eligible parameter-free single statements outside transactions; prepared/parameterized and composite operations use workers"
+            : "Client library lacks the supported MySQL nonblocking API; use Oracle MySQL client 8.0.16+ for eligible native operations";
+        return out;
+    }
     namespace {
         [[maybe_unused]] bool validSavepointName(const std::string &name) {
             if (name.empty() || !(std::isalpha(static_cast<unsigned char>(name[0])) ||

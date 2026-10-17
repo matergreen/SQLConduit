@@ -8,6 +8,11 @@ on:
   pull_request:
     branches: ["main", "master"]
   workflow_dispatch:
+    inputs:
+      soak_seconds:
+        description: 'Optional fault/lifecycle soak duration (0..10800 seconds)'
+        type: number
+        default: 0
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -179,7 +184,29 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
+      - name: Verify co-installed Debug and Release components (MSVC)
+        if: runner.os == 'Windows' && matrix.tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $prefix = Join-Path $PWD 'smoke-prefix'
+          cmake --build build --config Debug -j --target sqlconduit_core sqlconduit_odbc sqlconduitctl
+          cmake --install build --config Debug --prefix $prefix
+          foreach ($component in @('Core', 'ODBC')) {
+            cmake -S tests/consumer -B "smoke-find-package-$component" -A x64 `
+              "-DCMAKE_PREFIX_PATH=$prefix" "-DSQLCONDUIT_CONSUMER_COMPONENT=$component"
+            foreach ($config in @('Debug', 'Release')) {
+              $consumer = "smoke-find-package-$component"
+              cmake --build $consumer --config $config
+              & ".\$consumer\$config\sqlconduit_consumer_smoke.exe"
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+
       - name: Install to dist
+        # Release and Debug must coexist without overwriting one another.
+        # Debug is verified in the same installed prefix before packaging Release.
         if: github.ref != 'refs/heads/dev'
         run: cmake --install build --config Release --prefix dist
 
@@ -279,10 +306,11 @@ jobs:
       - run: >-
           cmake --build build-tsan -j
           --target sqlconduit_query_cache_test sqlconduit_concurrency_test
+          sqlconduit_diagnostics_test sqlconduit_fault_injection_test
       - name: Run cache and lifecycle contention tests under TSan
         env:
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
-        run: ctest --test-dir build-tsan --output-on-failure -L concurrency
+        run: ctest --test-dir build-tsan --output-on-failure -R 'query_cache|concurrency|diagnostics|fault_injection'
 
   coverage:
     name: core coverage report
@@ -379,6 +407,14 @@ jobs:
           -DSQLCONDUIT_BUILD_INTEGRATION_TESTS=ON
       - run: cmake --build build-integration -j
       - run: ctest --test-dir build-integration --output-on-failure -R 'mysql_integration|postgres_integration'
+      - name: Recover existing pools after real database disconnect and restart
+        run: |
+          python3 tests/run_live_recovery.py --engine mysql --container '${{ job.services.mysql.id }}' \
+            --probe build-integration/tests/sqlconduit_live_recovery_probe
+          python3 tests/run_live_recovery.py --engine postgres --container '${{ job.services.postgres.id }}' \
+            --probe build-integration/tests/sqlconduit_live_recovery_probe
+          python3 tests/run_live_recovery.py --engine postgres --container '${{ job.services.postgres.id }}' \
+            --probe build-integration/tests/sqlconduit_live_recovery_probe --mode async
 
   integration-sqlserver:
     name: live SQL Server / ODBC integration
@@ -430,9 +466,210 @@ jobs:
           SQLCONDUIT_TEST_ODBC_DRIVER: ODBC Driver 18 for SQL Server
         run: ctest --test-dir build-integration --output-on-failure -R odbc_integration
 
+  conan:
+    name: Conan Core package + consumer
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+      - name: Build local package and consume installed metadata
+        run: |
+          python3 -m venv "$RUNNER_TEMP/conan-env"
+          "$RUNNER_TEMP/conan-env/bin/pip" install conan==2.33.0
+          export PATH="$RUNNER_TEMP/conan-env/bin:$PATH"
+          export CONAN_HOME="$RUNNER_TEMP/sqlconduit-conan-home"
+          conan profile detect
+          conan create . -s build_type=Release -s compiler.cppstd=17 --build=missing --no-remote -c tools.build:jobs=2
+          conan install tests/consumer --output-folder="$PWD/build-conan-consumer" \
+            -s build_type=Release -s compiler.cppstd=17 --no-remote
+          cmake -S tests/consumer -B build-conan-consumer -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/build-conan-consumer/conan_toolchain.cmake"
+          cmake --build build-conan-consumer -j2
+          ./build-conan-consumer/sqlconduit_consumer_smoke
+
+  soak:
+    name: optional fault and lifecycle soak
+    if: github.event_name == 'workflow_dispatch' && inputs.soak_seconds > 0
+    runs-on: ubuntu-24.04
+    timeout-minutes: 190
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+      - run: |
+          cmake -S . -B build-soak -DCMAKE_BUILD_TYPE=Release -DSQLCONDUIT_BUILD_TESTS=ON
+          cmake --build build-soak -j2 --target sqlconduit_fault_injection_test
+      - name: Repeat fault, pressure and concurrent reload scenarios
+        env:
+          SQLCONDUIT_SOAK_SECONDS: ${{ inputs.soak_seconds }}
+        run: ./build-soak/tests/sqlconduit_fault_injection_test
+
+  integration-macos:
+    name: live macOS MySQL + PostgreSQL
+    runs-on: macos-14
+    env:
+      SQLCONDUIT_TEST_MYSQL_HOST: 127.0.0.1
+      SQLCONDUIT_TEST_MYSQL_PORT: 53306
+      SQLCONDUIT_TEST_MYSQL_USER: root
+      SQLCONDUIT_TEST_MYSQL_PASSWORD: SQLConduit-macos-test
+      SQLCONDUIT_TEST_MYSQL_DATABASE: sqlconduit_test
+      SQLCONDUIT_TEST_PG_HOST: 127.0.0.1
+      SQLCONDUIT_TEST_PG_PORT: 55432
+      SQLCONDUIT_TEST_PG_USER: postgres
+      SQLCONDUIT_TEST_PG_PASSWORD: SQLConduit-macos-test
+      SQLCONDUIT_TEST_PG_DATABASE: sqlconduit_test
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+      - name: Install client SDKs and isolated database servers
+        run: |
+          brew install mysql@8.4 postgresql@16 libpq libpqxx ninja
+          echo "MYSQL_ROOT=$(brew --prefix mysql@8.4)" >> "$GITHUB_ENV"
+          echo "PG_ROOT=$(brew --prefix postgresql@16)" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix mysql@8.4):$(brew --prefix libpq):$(brew --prefix libpqxx)" >> "$GITHUB_ENV"
+      - name: Initialize temporary databases
+        run: |
+          "$PG_ROOT/bin/initdb" -D "$RUNNER_TEMP/pgdata" -U postgres --auth=trust
+          "$PG_ROOT/bin/pg_ctl" -D "$RUNNER_TEMP/pgdata" -l "$RUNNER_TEMP/postgres.log" \
+            -o '-p 55432 -h 127.0.0.1' -w start
+          "$PG_ROOT/bin/createdb" -h 127.0.0.1 -p 55432 -U postgres sqlconduit_test
+          "$MYSQL_ROOT/bin/mysqld" --initialize-insecure --datadir="$RUNNER_TEMP/mysqldata"
+          "$MYSQL_ROOT/bin/mysqld" --datadir="$RUNNER_TEMP/mysqldata" --port=53306 \
+            --bind-address=127.0.0.1 --socket="$RUNNER_TEMP/mysql.sock" \
+            --pid-file="$RUNNER_TEMP/mysql.pid" --log-error="$RUNNER_TEMP/mysql.log" --daemonize
+          for attempt in {1..30}; do
+            if "$MYSQL_ROOT/bin/mysqladmin" --socket="$RUNNER_TEMP/mysql.sock" -uroot ping; then break; fi
+            sleep 2
+          done
+          "$MYSQL_ROOT/bin/mysql" --socket="$RUNNER_TEMP/mysql.sock" -uroot \
+            -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$SQLCONDUIT_TEST_MYSQL_PASSWORD'; CREATE DATABASE sqlconduit_test;"
+      - name: Run live driver suites
+        run: |
+          cmake -S . -B build-macos-live -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSQLCONDUIT_ENABLE_MYSQL=ON -DSQLCONDUIT_ENABLE_POSTGRES=ON \
+            -DSQLCONDUIT_BUILD_TESTS=ON -DSQLCONDUIT_BUILD_INTEGRATION_TESTS=ON
+          cmake --build build-macos-live -j2 --target sqlconduit_mysql_integration_test sqlconduit_postgres_integration_test
+          ctest --test-dir build-macos-live --output-on-failure -R 'mysql_integration|postgres_integration'
+      - name: Preserve database startup logs
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: macos-database-logs
+          path: |
+            ${{ runner.temp }}/mysql.log
+            ${{ runner.temp }}/postgres.log
+
+  integration-windows:
+    name: live Windows Microsoft ODBC + LocalDB
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+      - name: Start isolated SQL Server LocalDB
+        shell: pwsh
+        run: |
+          $local = Get-ChildItem 'C:\Program Files\Microsoft SQL Server' -Filter SqlLocalDB.exe -Recurse |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $local) { throw 'SQL Server LocalDB runtime is required' }
+          & $local.FullName create SQLConduitCI
+          if ($LASTEXITCODE -ne 0) { throw 'LocalDB create failed' }
+          & $local.FullName start SQLConduitCI
+          if ($LASTEXITCODE -ne 0) { throw 'LocalDB start failed' }
+          $driver = Get-OdbcDriver -Platform '64-bit' |
+            Where-Object { $_.Name -match '^ODBC Driver (18|17) for SQL Server$' } |
+            Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $driver) { throw 'Microsoft ODBC Driver 17/18 is required' }
+          "SQLCONDUIT_TEST_ODBC_DRIVER=$($driver.Name)" >> $env:GITHUB_ENV
+          "SQLCONDUIT_TEST_ODBC_CONNECTION_STRING=DRIVER={$($driver.Name)};SERVER=(localdb)\SQLConduitCI;DATABASE=master;Trusted_Connection=yes;Encrypt=no;" >> $env:GITHUB_ENV
+      - name: Build and run complete ODBC suite
+        shell: pwsh
+        run: |
+          cmake -S . -B build-live -A x64 -DSQLCONDUIT_ENABLE_ODBC=ON `
+            -DSQLCONDUIT_BUILD_TESTS=ON -DSQLCONDUIT_BUILD_INTEGRATION_TESTS=ON
+          if ($LASTEXITCODE -ne 0) { throw 'Configure failed' }
+          cmake --build build-live --config Release -j --target sqlconduit_odbc_integration_test
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
+          ctest --test-dir build-live -C Release --output-on-failure -R odbc_integration
+          if ($LASTEXITCODE -ne 0) { throw 'Windows ODBC integration failed' }
+
+  observability:
+    name: OpenTelemetry adapter + installed consumers
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          repository: open-telemetry/opentelemetry-cpp
+          ref: 9ee0c27886f4cc6afc1afbec07a7e8d99b33a9ce # v1.22.0
+          path: otel-source
+          persist-credentials: false
+      - name: Install OpenTelemetry SDK
+        run: |
+          cmake -S otel-source -B otel-build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PWD/otel-prefix" -DCMAKE_CXX_STANDARD=17 \
+            -DBUILD_TESTING=OFF -DWITH_EXAMPLES=OFF -DWITH_OTLP_GRPC=OFF -DWITH_OTLP_HTTP=OFF
+          cmake --build otel-build -j2
+          cmake --install otel-build
+      - name: Build and test optional component
+        run: |
+          cmake -S . -B build-otel -DCMAKE_BUILD_TYPE=Release -DSQLCONDUIT_BUILD_TESTS=ON \
+            -DSQLCONDUIT_ENABLE_OPENTELEMETRY=ON -DCMAKE_PREFIX_PATH="$PWD/otel-prefix"
+          cmake --build build-otel -j2
+          ctest --test-dir build-otel --output-on-failure -R 'diagnostics|opentelemetry|cli'
+          cmake --install build-otel --prefix "$PWD/otel-consumer-prefix"
+          for component in Core OpenTelemetry; do
+            cmake -S tests/consumer -B "consumer-$component" -DCMAKE_BUILD_TYPE=Release \
+              -DSQLCONDUIT_CONSUMER_COMPONENT="$component" \
+              -DCMAKE_PREFIX_PATH="$PWD/otel-consumer-prefix;$PWD/otel-prefix"
+            cmake --build "consumer-$component" -j2
+            "./consumer-$component/sqlconduit_consumer_smoke"
+          done
+
+  performance:
+    name: paired performance regression gate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+          path: candidate
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+          ref: v1.0.1
+          path: baseline
+      - name: Build both versions on the same runner
+        run: |
+          for tree in baseline candidate; do
+            cmake -S "$tree" -B "$tree/build-perf" -DCMAKE_BUILD_TYPE=Release \
+              -DSQLCONDUIT_BUILD_BENCHMARKS=ON -DSQLCONDUIT_BUILD_TOOLS=OFF
+            cmake --build "$tree/build-perf" -j2
+          done
+      - name: Compare paired samples
+        run: |
+          python3 candidate/tests/test_benchmark_compare.py
+          python3 candidate/benchmarks/compare.py \
+            --baseline baseline/build-perf/benchmarks/sqlconduit_benchmark \
+            --candidate candidate/build-perf/benchmarks/sqlconduit_benchmark \
+            --baseline-ref v1.0.1 --candidate-ref "${{ github.sha }}" \
+            --iterations 100000 --runs 7
+      - name: Preserve performance history
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: benchmark-comparison
+          path: benchmark-comparison.*
+          if-no-files-found: error
+          retention-days: 90
+
   release:
     name: publish release
-    needs: [build, sanitizers, concurrency-sanitizer, coverage, integration-open-source, integration-sqlserver]
+    needs: [build, sanitizers, concurrency-sanitizer, coverage, integration-open-source, integration-sqlserver, integration-windows, integration-macos, performance, observability, conan]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

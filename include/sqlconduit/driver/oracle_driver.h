@@ -21,6 +21,7 @@
 namespace sqlconduit::driver {
     class OracleConnection : public core::IDatabaseConnection {
     public:
+        [[nodiscard]] common::ConnectionCapabilities capabilities() const override;
         OracleConnection() = default;
 
         ~OracleConnection() override { OracleConnection::close(); }

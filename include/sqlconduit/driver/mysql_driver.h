@@ -34,6 +34,8 @@ namespace sqlconduit::driver {
     public:
         MySQLConnection() = default;
 
+        [[nodiscard]] common::ConnectionCapabilities capabilities() const override;
+
         ~MySQLConnection() override { MySQLConnection::close(); }
 
         common::Status connect(const config::DataSourceConfig &cfg) override;

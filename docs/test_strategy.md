@@ -9,6 +9,21 @@ The matrix is reviewed for every `1.x` release candidate together with
 
 ## Release gates
 
+The 1.1 development workflow adds real Windows Microsoft ODBC/LocalDB execution, native macOS
+MySQL/PostgreSQL services, paired performance comparisons, optional OpenTelemetry export tests,
+Conan consumers and MSVC Debug/Release co-installation. These are new gates, not claims that the
+1.0.1 published archives were validated through those paths.
+
+The deterministic `sqlconduit_fault_injection_test` covers reset/reconnect, ambiguous writes and
+commit outcomes, exhausted pools, and concurrent reload. Set `SQLCONDUIT_SOAK_SECONDS` (0..10800)
+when running the executable directly, or use the workflow_dispatch input, to repeat the scenarios.
+CTest's normal timeout remains short; long soak runs invoke the executable directly.
+
+`tests/run_live_recovery.py --engine mysql|postgres --container NAME --probe EXECUTABLE` stops and
+starts the explicitly named disposable Docker database. It retains the same Client and pool across
+the interruption and verifies synchronous recovery and async reuse. Use only dedicated test
+containers. These disruptive tests run sequentially after ordinary integration suites in CI.
+
 | Risk | Automated evidence | Release gate |
 | --- | --- | --- |
 | Public API and configuration contracts | Standalone-header compilation, public API assertions, JSON/YAML schema and strict error-path tests | Linux, macOS, and Windows builds |

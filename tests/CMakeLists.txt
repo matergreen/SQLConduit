@@ -69,6 +69,33 @@ target_link_libraries(sqlconduit_query_cache_test PRIVATE sqlconduit_core)
 add_executable(sqlconduit_concurrency_test sqlconduit_concurrency_test.cpp)
 target_link_libraries(sqlconduit_concurrency_test PRIVATE sqlconduit_core)
 
+add_executable(sqlconduit_diagnostics_test sqlconduit_diagnostics_test.cpp)
+target_link_libraries(sqlconduit_diagnostics_test PRIVATE sqlconduit_core)
+target_include_directories(sqlconduit_diagnostics_test PRIVATE ${_nl_inc_dir})
+add_test(NAME sqlconduit_diagnostics_test COMMAND sqlconduit_diagnostics_test)
+
+add_executable(sqlconduit_fault_injection_test sqlconduit_fault_injection_test.cpp)
+target_link_libraries(sqlconduit_fault_injection_test PRIVATE sqlconduit_core)
+add_test(NAME sqlconduit_fault_injection_test COMMAND sqlconduit_fault_injection_test)
+set_tests_properties(sqlconduit_fault_injection_test PROPERTIES LABELS "fault;lifecycle" TIMEOUT 120)
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME sqlconduit_benchmark_gate_test
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_benchmark_compare.py)
+    if(SQLCONDUIT_BUILD_TOOLS)
+        add_test(NAME sqlconduit_cli_test
+                 COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli.py $<TARGET_FILE:sqlconduitctl>)
+    endif()
+endif()
+
+if(SQLCONDUIT_ENABLE_OPENTELEMETRY)
+    add_executable(sqlconduit_opentelemetry_test sqlconduit_opentelemetry_test.cpp)
+    target_link_libraries(sqlconduit_opentelemetry_test PRIVATE sqlconduit_opentelemetry
+                          opentelemetry-cpp::trace opentelemetry-cpp::in_memory_span_exporter)
+    add_test(NAME sqlconduit_opentelemetry_test COMMAND sqlconduit_opentelemetry_test)
+endif()
+
 # Every installed header must compile as the first and only project include. This
 # catches accidental reliance on transitive includes before an API release.
 set(SQLCONDUIT_PUBLIC_HEADERS ${SQLCONDUIT_FROZEN_PUBLIC_HEADERS})
@@ -90,6 +117,18 @@ if(SQLCONDUIT_BUILD_INTEGRATION_TESTS AND SQLCONDUIT_ENABLE_POSTGRES)
     target_link_libraries(sqlconduit_postgres_integration_test PRIVATE sqlconduit_postgres)
     add_test(NAME sqlconduit_postgres_integration_test COMMAND sqlconduit_postgres_integration_test)
     set_tests_properties(sqlconduit_postgres_integration_test PROPERTIES LABELS "integration;postgres")
+endif()
+
+if(SQLCONDUIT_BUILD_INTEGRATION_TESTS AND (SQLCONDUIT_ENABLE_MYSQL OR SQLCONDUIT_ENABLE_POSTGRES))
+    add_executable(sqlconduit_live_recovery_probe live_recovery_probe.cpp)
+    target_link_libraries(sqlconduit_live_recovery_probe PRIVATE sqlconduit_core)
+    foreach(_driver MYSQL POSTGRES)
+        if(SQLCONDUIT_ENABLE_${_driver})
+            string(TOLOWER "${_driver}" _lower)
+            target_link_libraries(sqlconduit_live_recovery_probe PRIVATE sqlconduit_${_lower})
+            target_compile_definitions(sqlconduit_live_recovery_probe PRIVATE SQLCONDUIT_CTL_${_driver})
+        endif()
+    endforeach()
 endif()
 
 if(SQLCONDUIT_BUILD_INTEGRATION_TESTS AND SQLCONDUIT_ENABLE_MYSQL)

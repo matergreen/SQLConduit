@@ -2,6 +2,7 @@
 #define SQLCONDUIT_COMMON_CONTEXT_H
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,7 @@ namespace sqlconduit::common {
         bool shadow = false;
         bool wroteInThisRequest = false;
         Idempotency idempotency = Idempotency::Unspecified;
+        std::uint8_t traceFlags = 1;
 
         [[nodiscard]] bool empty() const {
             return traceId.empty() && spanId.empty() && tenantId.empty()

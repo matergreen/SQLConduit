@@ -1048,7 +1048,10 @@ namespace sqlconduit::core {
 
     common::Status DataSource::preGate(const std::string &sql,
                                        const common::OperationType type) const {
-        if (const auto s = services_->sqlAuditor.check(sql, type, readOnly_); !s.ok()) return s;
+        if (const auto s = services_->sqlAuditor.check(sql, type, readOnly_); !s.ok()) {
+            services_->phase(common::ExecutionPhase::Rejected, common::ContextScope::current(), {}, s.code);
+            return s;
+        }
         if (const auto limiter = std::atomic_load(&rateLimiter_)) {
             const std::uint64_t fp = limiter->usesFingerprint()
                                          ? common::sql::fingerprintTemplate(sql)
@@ -1057,6 +1060,7 @@ namespace sqlconduit::core {
                 auto status = common::Status::error(common::ErrorCode::RateLimited,
                                                     "datasource '" + name_ + "' rate limited");
                 status.retryable = false;
+                services_->phase(common::ExecutionPhase::Rejected, common::ContextScope::current(), {}, status.code);
                 return status;
             }
         }
@@ -1070,6 +1074,7 @@ namespace sqlconduit::core {
             auto status = common::Status::error(common::ErrorCode::RateLimited,
                                                 "datasource '" + name_ + "' rate limited");
             status.retryable = false;
+            services_->phase(common::ExecutionPhase::Rejected, common::ContextScope::current(), {}, status.code);
             return status;
         }
         return common::Status::OK();
@@ -1157,12 +1162,14 @@ namespace sqlconduit::core {
         const auto now = std::chrono::steady_clock::now();
         const auto openUntil = circuitOpenUntil_.load(std::memory_order_acquire);
         if (openUntil > now) {
+            services_->phase(common::ExecutionPhase::Rejected, common::ContextScope::current(), {}, common::ErrorCode::CircuitOpen);
             return common::Status::error(common::ErrorCode::CircuitOpen,
                                          "datasource '" + name_ + "' circuit is open");
         }
         if (openUntil != std::chrono::steady_clock::time_point{}) {
             if (bool expected = false; !halfOpenInFlight_.compare_exchange_strong(expected, true,
                 std::memory_order_acq_rel)) {
+                services_->phase(common::ExecutionPhase::Rejected, common::ContextScope::current(), {}, common::ErrorCode::CircuitOpen);
                 return common::Status::error(common::ErrorCode::CircuitOpen,
                                              "datasource '" + name_ + "' circuit is half-open");
             }
@@ -1171,6 +1178,7 @@ namespace sqlconduit::core {
     }
 
     void DataSource::afterAttempt(const common::Status &status) const {
+        if (!status.ok()) lastError_.store(status.code, std::memory_order_relaxed);
         if (circuitBreaker_.failure_threshold <= 0) return;
         if (status.ok()) {
             consecutiveFailures_.store(0, std::memory_order_release);
@@ -2870,6 +2878,43 @@ namespace sqlconduit::core {
     size_t DatabaseManager::dataSourceCount() const {
         std::lock_guard<std::mutex> lk(mtx_);
         return datasources_.size();
+    }
+
+    common::DataSourceDiagnostics DataSource::diagnostics() const {
+        common::DataSourceDiagnostics out;
+        out.name = name_;
+        out.driver = driverType_;
+        out.group = static_cast<bool>(primary_);
+        out.readOnly = readOnly_;
+        if (primary_) out.primary = primary_->name();
+        std::unordered_set<std::string> seen;
+        for (const auto &r : replicas_)
+            if (r && seen.insert(r->name()).second) out.replicas.push_back(r->name());
+        for (const auto &p : failoverPrimaries_)
+            if (p) out.failoverPrimaries.push_back(p->name());
+        out.shadow = shadowName_;
+        out.maxAttempts = retry_.max_attempts;
+        out.consecutiveFailures = consecutiveFailures_.load(std::memory_order_relaxed);
+        out.lastError = lastError_.load(std::memory_order_relaxed);
+        out.lastCancellationError = lastCancellationError_.load(std::memory_order_relaxed);
+        if (halfOpenInFlight_.load(std::memory_order_acquire)) out.circuitState = "half_open";
+        else if (isCircuitOpen()) out.circuitState = "open";
+        else if (circuitBreaker_.failure_threshold > 0 &&
+                 circuitOpenUntil_.load(std::memory_order_acquire) != std::chrono::steady_clock::time_point{})
+            out.circuitState = "half_open";
+        out.bufferedWrites = writeBuffer_ ? writeBuffer_->pending() : 0;
+        (void) poolStats(out.pool);
+        if (const auto pool = pool_.lock()) out.capabilities = pool->capabilities();
+        return out;
+    }
+
+    std::vector<common::DataSourceDiagnostics> DatabaseManager::diagnostics() const {
+        std::lock_guard<std::mutex> lock(mtx_);
+        std::vector<common::DataSourceDiagnostics> out;
+        out.reserve(datasources_.size());
+        for (const auto &entry : datasources_) out.push_back(entry.second->diagnostics());
+        std::sort(out.begin(), out.end(), [](const auto &a, const auto &b) { return a.name < b.name; });
+        return out;
     }
 
     std::vector<NamedPoolStats> DatabaseManager::allPoolStats() const {

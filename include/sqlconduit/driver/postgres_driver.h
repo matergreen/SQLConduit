@@ -60,6 +60,8 @@ namespace sqlconduit::driver {
     public:
         PostgresConnection() = default;
 
+        [[nodiscard]] common::ConnectionCapabilities capabilities() const override;
+
         ~PostgresConnection() override { PostgresConnection::close(); }
 
         common::Status connect(const config::DataSourceConfig &cfg) override;

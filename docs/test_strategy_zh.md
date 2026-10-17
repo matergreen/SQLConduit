@@ -1,5 +1,14 @@
 # 测试策略与覆盖范围
 
+1.1 开发版增加配置 CLI、诊断快照、OpenTelemetry SDK 导出、Conan consumer、同机配对性能门禁、
+Windows LocalDB 实库、macOS MySQL/PostgreSQL 和 MSVC Debug/Release 共存检查。这些是新增的
+验证任务，不代表 1.0.1 已发布包已经通过这些路径。
+
+`sqlconduit_fault_injection_test` 覆盖断线重连、未知结果的写入与提交、连接池耗尽恢复及并发 reload。
+直接运行时可设置 `SQLCONDUIT_SOAK_SECONDS=0..10800`，或通过 workflow_dispatch 输入持续测试；
+长时间 soak 不走 CTest 的短超时。`tests/run_live_recovery.py` 会停止并启动显式指定的专用测试
+Docker 数据库，保留同一个 Client 和连接池验证恢复。此类破坏连接的测试必须放在普通套件之后串行运行。
+
 > 基础版本：[English](test_strategy.md)
 
 本文说明 SQLConduit 的各类测试能够证明什么、在哪些环境执行，以及哪些风险尚未完全自动化。

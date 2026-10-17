@@ -430,6 +430,10 @@ an SPDX JSON SBOM, and build provenance verifiable with `gh attestation verify`.
 
 ## Detailed documentation
 
+The development branch targets **1.1.0-dev**. New configuration tools, diagnostic APIs and optional
+OpenTelemetry usage are described in [Diagnostics](docs/diagnostics.md); package-manager consumption
+is covered in [Package managers](docs/package_managers.md). Stable downloads remain under Releases.
+
 See the [SQLConduit detailed guide](docs/guide_en.md) for connection pooling, asynchronous APIs,
 entity mapping, routines and scripts, PostgreSQL types, cursors, failover, observability, error
 codes, configuration, and driver extensions.

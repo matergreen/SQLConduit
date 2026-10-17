@@ -43,6 +43,15 @@
 #endif
 
 namespace sqlconduit::driver {
+    common::ConnectionCapabilities PostgresConnection::capabilities() const {
+        auto out = IDatabaseConnection::capabilities();
+#ifdef SQLCONDUIT_ENABLE_POSTGRES
+        out.clientVersion = "libpq " + std::to_string(PQlibVersion()) + "; libpqxx " + PQXX_VERSION;
+        if (conn_) out.serverVersion = std::to_string(conn_->server_version());
+#endif
+        out.asyncConstraints = "Native query/execute outside transactions; cursors, batches, routines, multiple results and generated keys use workers";
+        return out;
+    }
     namespace {
         [[maybe_unused]] common::Status notConnected(const char *where) {
             return common::Status::error(common::ErrorCode::NotConnected,
@@ -64,9 +73,21 @@ namespace sqlconduit::driver {
             std::string state;
             if (const auto *sql = dynamic_cast<const pqxx::sql_error *>(&error))
                 state = sql->sqlstate();
-            return common::Status::databaseError(
+            auto status = common::Status::databaseError(
                 fallback, std::string("PostgreSQL ") + where + ": " + error.what(),
                 std::move(state));
+            // libpqxx broken_connection is not a sql_error and commonly carries
+            // no SQLSTATE. Server shutdown also uses class 57 rather than 08.
+            // Both must poison the physical connection; keep the operation's
+            // fallback code so an ambiguous write is not mistaken for a safe
+            // pre-dispatch connection failure by failover policy.
+            if (dynamic_cast<const pqxx::broken_connection *>(&error) ||
+                status.sqlState == "57P01" || status.sqlState == "57P02" ||
+                status.sqlState == "57P03") {
+                status.connectionBroken = true;
+                status.retryable = true;
+            }
+            return status;
         }
 
         struct PgResultDeleter {

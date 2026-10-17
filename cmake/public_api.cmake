@@ -7,6 +7,7 @@ set(SQLCONDUIT_FROZEN_PUBLIC_HEADERS
     sqlconduit/client.h
     sqlconduit/common/connection_pool_stats.h
     sqlconduit/common/context.h
+    sqlconduit/common/diagnostics.h
     sqlconduit/common/logger.h
     sqlconduit/common/observer.h
     sqlconduit/common/oracle_types.h
@@ -33,6 +34,7 @@ set(SQLCONDUIT_FROZEN_PUBLIC_HEADERS
     sqlconduit/drivers/oracle.h
     sqlconduit/drivers/postgres.h
     sqlconduit/exporters/prometheus.h
+    sqlconduit/exporters/opentelemetry.h
     sqlconduit/mapping.h
     sqlconduit/public.h
     sqlconduit/sql_builder.h

@@ -131,6 +131,9 @@ namespace sqlconduit::core {
 
         [[nodiscard]] Stats stats() const;
 
+        // Last successful connection metadata; never borrows or opens a connection.
+        [[nodiscard]] common::ConnectionCapabilities capabilities() const;
+
     private:
         struct State : std::enable_shared_from_this<State> {
             struct IdleConnection {
@@ -195,6 +198,8 @@ namespace sqlconduit::core {
                             bool slotReserved) const;
 
         std::shared_ptr<State> state_;
+        mutable std::mutex diagnosticsMutex_;
+        mutable common::ConnectionCapabilities capabilities_;
         std::unique_ptr<driver::IDriver> driver_;
         config::DataSourceConfig cfg_;
         int minConn_;

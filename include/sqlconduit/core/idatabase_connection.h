@@ -2,6 +2,7 @@
 #define SQLCONDUIT_CORE_IDATABASE_CONNECTION_H
 
 #include "sqlconduit/common/types.h"
+#include "sqlconduit/common/diagnostics.h"
 #include "sqlconduit/config/datasource_config.h"
 #include "sqlconduit/core/cursor.h"
 #include <functional>
@@ -75,6 +76,18 @@ namespace sqlconduit::core {
 
         [[nodiscard]] virtual AsyncCapability asyncCapability() const {
             return AsyncCapability::ThreadPoolFallback;
+        }
+
+        // Called while the connection is exclusively owned. No SQL is executed.
+        [[nodiscard]] virtual common::ConnectionCapabilities capabilities() const {
+            common::ConnectionCapabilities out;
+            out.observed = isOpen();
+            out.nativeAsync = asyncCapability() == AsyncCapability::Native;
+            out.parameters = supportsParams();
+            out.prepared = supportsPrepared();
+            out.multipleResults = supportsMultipleResultSets();
+            out.asyncConstraints = "Eligibility depends on statement, parameters and transaction state; composite operations use compatibility workers";
+            return out;
         }
 
         // A native implementation must return immediately after starting the operation and

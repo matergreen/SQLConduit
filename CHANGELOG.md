@@ -6,6 +6,30 @@ description.
 
 ## [Unreleased]
 
+### Production diagnostics (1.1.0)
+
+- Added offline topology validation and redacted effective-configuration reports through
+  `ConfigLoader::validateTopology` and `ConfigLoader::explain`.
+- Added `sqlconduitctl validate`, `explain` and `doctor`; connection probes require `--connect`.
+- Added the installed `common/diagnostics.h` header and read-only `Client::capabilities` /
+  `Client::diagnostics` snapshots, plus an optional driver capability metadata extension.
+- Added the optional installed `exporters/opentelemetry.h` adapter and `OpenTelemetry` CMake
+  component, explicit request-context capture, and execution-phase observation.
+- Preserved W3C sampling flags when parsing and formatting traceparent headers.
+- Added paired same-host performance regression reports and a release gate against v1.0.1.
+- Added per-operation pool-wait tail-latency, contended-cache and large-result copy benchmarks;
+  comparison artifacts preserve raw runs, including newly introduced cases.
+- Added platform-aware SDK dependency hints, installed-component discovery, a local Conan Core
+  recipe, package-manager guidance and Debug/Release installed-consumer verification.
+- Added deterministic connection-reset, ambiguous-write/commit, pool-pressure and reload fault
+  tests, configurable soak runs and retained-Client MySQL/PostgreSQL restart probes.
+- Added macOS live MySQL/PostgreSQL and Windows Microsoft ODBC/LocalDB CI gates, plus optional
+  OpenTelemetry SDK-backed tests and independent installed consumers.
+- Inlined the disabled query-cache fast path to avoid an out-of-line call when caching is off.
+- Fixed PostgreSQL pool recovery after server restart: libpqxx `broken_connection` exceptions and
+  server-shutdown SQLSTATEs now invalidate physical connections even when no class-08 state exists.
+  Execution-time write errors remain ambiguous and are not treated as safe failover signals.
+
 ## [1.0.1]
 
 ### Native Oracle and SQL Server async

@@ -520,6 +520,7 @@ namespace sqlconduit::common {
 
             {
                 const SqlContext &ctx = ContextScope::current();
+                event.traceFlags = ctx.traceFlags;
                 if (!ctx.traceId.empty()) event.traceId = ctx.traceId;
                 if (!ctx.spanId.empty()) {
                     event.spanId = ctx.spanId;

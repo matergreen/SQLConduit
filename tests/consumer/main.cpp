@@ -1,6 +1,9 @@
 #include "sqlconduit/client.h"
 #include "sqlconduit/sql_builder.h"
 #include "sqlconduit/version.h"
+#ifdef SQLCONDUIT_CONSUMER_OPENTELEMETRY
+#include "sqlconduit/exporters/opentelemetry.h"
+#endif
 
 #if defined(SQLCONDUIT_CONSUMER_MYSQL)
 #include "sqlconduit/drivers/mysql.h"
@@ -17,8 +20,8 @@
 
 int main() {
     static_assert(SQLCONDUIT_VERSION_MAJOR == 1);
-    static_assert(SQLCONDUIT_VERSION_MINOR == 0);
-    static_assert(std::string_view(SQLCONDUIT_VERSION_STRING) == "1.0.1");
+    static_assert(SQLCONDUIT_VERSION_MINOR == 1);
+    static_assert(std::string_view(SQLCONDUIT_VERSION_STRING) == "1.1.0-dev");
 
     const auto statement = sqlconduit::sql::Builder::select("consumer_probe")
         .columns({"id"})
@@ -30,6 +33,16 @@ int main() {
     }
 
     sqlconduit::Client client;
+    if (client.diagnostics().version != SQLCONDUIT_VERSION_STRING ||
+        client.capabilities().status.code != sqlconduit::common::ErrorCode::NotInitialized) {
+        std::printf("consumer smoke FAILED: diagnostics package contract mismatch\n");
+        return 1;
+    }
+#ifdef SQLCONDUIT_CONSUMER_OPENTELEMETRY
+    client.setObserver(sqlconduit::exporters::openTelemetryObserver());
+    client.setExecutionPhaseObserver(sqlconduit::exporters::openTelemetryPhaseObserver());
+    (void) sqlconduit::exporters::openTelemetryContext();
+#endif
     client.setObserver([](const sqlconduit::common::OperationEvent &) {
     });
     if (!client.slowSqlStats().empty() || !client.recentSlowSql().empty()) {
@@ -71,6 +84,8 @@ int main() {
         return 1;
     }
     std::printf("consumer smoke: registered %s\n", registration.type.c_str());
+#elif defined(SQLCONDUIT_CONSUMER_OPENTELEMETRY)
+    std::printf("consumer smoke: OpenTelemetry adapter\n");
 #else
     std::printf("consumer smoke: core only\n");
 #endif

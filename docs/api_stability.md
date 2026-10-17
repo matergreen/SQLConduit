@@ -19,11 +19,13 @@ These are the preferred entry points for application code:
   `Client`;
 - `sqlconduit/sqlconduit.h`: the full convenience umbrella header;
 - `sqlconduit/common/types.h`, `common/context.h`, and `common/observer.h`;
+- `sqlconduit/common/diagnostics.h` (since 1.1): capability snapshots and execution-phase events;
 - `sqlconduit/config/datasource_config.h` and `config/config_loader.h`;
 - `sqlconduit/async/async_types.h`: result and executor-statistics types returned by `Client`;
 - `sqlconduit/common/pg_types.h`, `common/oracle_types.h`, `sqlconduit/mapping.h`,
   `sqlconduit/util.h`, and `sqlconduit/version.h`;
 - `sqlconduit/exporters/prometheus.h` and its documented metric names and bounded labels;
+- `sqlconduit/exporters/opentelemetry.h` (since 1.1): optional observer/context adapter;
 - `sqlconduit/sql_builder.h` and `sqlconduit/common/sql_dialect.h` for portable CRUD construction
   and explicit identifier dialect selection.
 

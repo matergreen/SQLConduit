@@ -44,6 +44,10 @@ namespace sqlconduit::common {
         bool slow = false;
         bool shadow = false;
         bool transformed = false;
+        std::uint8_t traceFlags = 1;
+        int diagnosticPhase = -1;
+        int fallbackReason = 0;
+        int attempt = 0;
     };
 
     struct SlowSqlStats {

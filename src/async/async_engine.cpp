@@ -122,6 +122,9 @@ namespace sqlconduit::async::detail {
                         return;
                     }
                     const auto delay = state->source->retryDelay(attempt);
+                    state->source->services_->phase(common::ExecutionPhase::Retry, state->context,
+                        {},
+                        result.status.code, common::FallbackReason::None, attempt);
                     state->io.postAfter(
                         [state, next = attempt + 1] { state->run(next, false); }, delay);
                 });
@@ -159,6 +162,8 @@ namespace sqlconduit::async::detail {
                  borrowTimeout, io, applyPreGate, runInterceptors,
                  completion, operationStarted]() mutable {
             const common::ContextScope scope(context);
+            source->services_->phase(common::ExecutionPhase::Queue, context,
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - operationStarted));
             QueryResult rejected;
             rejected.mode = ExecutionMode::CompatibilityFallback;
             if (applyPreGate) {
@@ -172,6 +177,8 @@ namespace sqlconduit::async::detail {
             std::string cacheKey;
             common::ResultSet cachedRows;
             if (source->cacheLookup(sql, params, cachedRows, cacheKey)) {
+                source->services_->phase(common::ExecutionPhase::CacheHit, context, {},
+                    common::ErrorCode::Ok, common::FallbackReason::CacheHit);
                 if (!runInterceptors) {
                     QueryResult result;
                     result.status = common::Status::OK();
@@ -213,14 +220,17 @@ namespace sqlconduit::async::detail {
                 return;
             }
 
+            const auto poolWaitStarted = std::chrono::steady_clock::now();
             pool->borrowAsync(borrowTimeout, io,
                 [source, sql = std::move(sql), params = std::move(params),
                  context = std::move(context), cacheKey = std::move(cacheKey), io,
-                 borrowTimeout, operationStarted, runInterceptors,
+                 borrowTimeout, operationStarted, poolWaitStarted, runInterceptors,
                  completion = std::move(completion)](
                     std::unique_ptr<core::ConnectionPool::Handle> handle,
                     common::Status status) mutable {
                     const common::ContextScope scope(context);
+                    source->services_->phase(common::ExecutionPhase::PoolWait, context,
+                        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - poolWaitStarted), status.code);
                     if (!status.ok() || !handle) {
                         source->afterAttempt(status);
                         QueryResult result;
@@ -340,6 +350,7 @@ namespace sqlconduit::async::detail {
                                 if (!io.deliver(deliver)) deliver();
                             });
                         if (started) {
+                            source->services_->phase(common::ExecutionPhase::Native, context);
                             if (borrowTimeout > std::chrono::milliseconds(0)) {
                                 const auto elapsed = std::chrono::duration_cast<
                                     std::chrono::milliseconds>(
@@ -400,17 +411,23 @@ namespace sqlconduit::async::detail {
                                                 }
                                             };
                                         bool delivered = false;
+                                        const auto cancelStarted = std::chrono::steady_clock::now();
+                                        auto cancelCode = common::ErrorCode::Unknown;
                                         {
                                             std::lock_guard<std::mutex> lock(
                                                 control->handleMutex);
                                             delivered = io.deliver(deliverTimeout);
                                             if (*control->handle) {
                                                 try {
-                                                    (void) (*control->handle)->get()->cancel();
+                                                    cancelCode = (*control->handle)->get()->cancel().code;
                                                 } catch (...) {
                                                 }
                                             }
                                         }
+                                        if (cancelCode != common::ErrorCode::Ok)
+                                            source->lastCancellationError_.store(cancelCode, std::memory_order_relaxed);
+                                        source->services_->phase(common::ExecutionPhase::Cancel, context,
+                                            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - cancelStarted), cancelCode);
                                         if (!delivered) deliverTimeout();
                                     }, remaining);
                             }
@@ -419,6 +436,11 @@ namespace sqlconduit::async::detail {
                         handle = std::move(*control->handle);
                     }
 
+                    source->services_->phase(common::ExecutionPhase::Fallback, context, {},
+                        common::ErrorCode::Ok,
+                        handle->get()->asyncCapability() == core::AsyncCapability::Native
+                            ? common::FallbackReason::DriverDeclinedStatement
+                            : common::FallbackReason::DriverUnsupported);
                     auto session = source->makeSession(std::move(handle));
                     QueryResult result;
                     result.mode = ExecutionMode::CompatibilityFallback;
@@ -476,6 +498,7 @@ namespace sqlconduit::async::detail {
         };
         if (!io.post(start)) {
             QueryResult result;
+            source->services_->phase(common::ExecutionPhase::Rejected, common::ContextScope::current(), {}, common::ErrorCode::Overloaded);
             result.status = common::Status::error(
                 common::ErrorCode::Overloaded,
                 "client async executor queue is full or stopped");
@@ -565,6 +588,9 @@ namespace sqlconduit::async::detail {
                         return;
                     }
                     const auto delay = state->source->retryDelay(attempt);
+                    state->source->services_->phase(common::ExecutionPhase::Retry, state->context,
+                        {},
+                        result.status.code, common::FallbackReason::None, attempt);
                     state->io.postAfter(
                         [state, next = attempt + 1] { state->run(next, false); }, delay);
                 });
@@ -594,11 +620,14 @@ namespace sqlconduit::async::detail {
             return false;
         auto pool = source->pool_.lock();
         if (!pool) return false;
+        const auto enqueuedAt = std::chrono::steady_clock::now();
         auto start = [source, pool = std::move(pool), sql = std::move(sql),
                  params = std::move(params), context = std::move(context),
                  borrowTimeout, io, applyPreGate, runInterceptors,
-                 completion]() mutable {
+                 completion, enqueuedAt]() mutable {
             const common::ContextScope scope(context);
+            source->services_->phase(common::ExecutionPhase::Queue, context,
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - enqueuedAt));
             ExecResult rejected;
             rejected.mode = ExecutionMode::CompatibilityFallback;
             if (applyPreGate) {
@@ -614,13 +643,16 @@ namespace sqlconduit::async::detail {
                 completion(std::move(rejected));
                 return;
             }
+            const auto poolWaitStarted = std::chrono::steady_clock::now();
             pool->borrowAsync(borrowTimeout, io,
                 [source, sql = std::move(sql), params = std::move(params),
                  context = std::move(context), io,
-                 runInterceptors, completion = std::move(completion)](
+                 runInterceptors, poolWaitStarted, completion = std::move(completion)](
                     std::unique_ptr<core::ConnectionPool::Handle> handle,
                     common::Status status) mutable {
                     const common::ContextScope scope(context);
+                    source->services_->phase(common::ExecutionPhase::PoolWait, context,
+                        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - poolWaitStarted), status.code);
                     if (!status.ok() || !handle) {
                         source->afterAttempt(status);
                         ExecResult result;
@@ -720,10 +752,18 @@ namespace sqlconduit::async::detail {
                                 };
                                 if (!io.deliver(deliver)) deliver();
                             });
-                        if (started) return;
+                        if (started) {
+                            source->services_->phase(common::ExecutionPhase::Native, context);
+                            return;
+                        }
                         handle = std::move(*boxed);
                     }
 
+                    source->services_->phase(common::ExecutionPhase::Fallback, context, {},
+                        common::ErrorCode::Ok,
+                        handle->get()->asyncCapability() == core::AsyncCapability::Native
+                            ? common::FallbackReason::DriverDeclinedStatement
+                            : common::FallbackReason::DriverUnsupported);
                     auto session = source->makeSession(std::move(handle));
                     ExecResult result;
                     result.mode = ExecutionMode::CompatibilityFallback;
@@ -740,6 +780,7 @@ namespace sqlconduit::async::detail {
         };
         if (!io.post(start)) {
             ExecResult result;
+            source->services_->phase(common::ExecutionPhase::Rejected, common::ContextScope::current(), {}, common::ErrorCode::Overloaded);
             result.status = common::Status::error(
                 common::ErrorCode::Overloaded,
                 "client async executor queue is full or stopped");
@@ -858,6 +899,8 @@ namespace sqlconduit::async::detail {
                         return;
                     }
                     auto remaining = state->timeout;
+                    state->source->services_->phase(common::ExecutionPhase::ReplicaFallback, state->context,
+                        {}, result.status.code);
                     if (state->timeout > std::chrono::milliseconds(0)) {
                         const auto elapsed = std::chrono::duration_cast<
                             std::chrono::milliseconds>(
@@ -1111,8 +1154,11 @@ namespace sqlconduit::async::detail {
         if (!pool) return false;
         auto start = [source, pool = std::move(pool), sql = std::move(sql), type, write,
                  context = std::move(context), borrowTimeout, io,
-                 operation = std::move(operation), completion]() mutable {
+                 operation = std::move(operation), completion,
+                 enqueuedAt = std::chrono::steady_clock::now()]() mutable {
             const common::ContextScope scope(context);
+            source->services_->phase(common::ExecutionPhase::Queue, context,
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - enqueuedAt));
             if (auto status = source->preGate(sql, type); !status.ok()) {
                 completion(std::move(status));
                 return;
@@ -1121,14 +1167,19 @@ namespace sqlconduit::async::detail {
                 completion(std::move(status));
                 return;
             }
+            const auto poolWaitStarted = std::chrono::steady_clock::now();
             pool->borrowAsync(borrowTimeout, io,
-                [source, context = std::move(context), write,
+                [source, context = std::move(context), write, poolWaitStarted,
                  operation = std::move(operation),
                  completion = std::move(completion)](
                     std::unique_ptr<core::ConnectionPool::Handle> handle,
                     common::Status status) mutable {
                     const common::ContextScope scope(context);
+                    source->services_->phase(common::ExecutionPhase::PoolWait, context,
+                        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - poolWaitStarted), status.code);
                     if (status.ok() && handle) {
+                        source->services_->phase(common::ExecutionPhase::Fallback, context, {}, common::ErrorCode::Ok,
+                                                 common::FallbackReason::CompositeOperation);
                         handle->get()->setPreparedCacheLimit(
                             source->services_->preparedCacheMaxPerConnection.load(
                                 std::memory_order_relaxed));
@@ -1154,6 +1205,7 @@ namespace sqlconduit::async::detail {
             auto status = common::Status::error(
                 common::ErrorCode::Overloaded,
                 "client async executor queue is full or stopped");
+            source->services_->phase(common::ExecutionPhase::Rejected, common::ContextScope::current(), {}, common::ErrorCode::Overloaded);
             status.retryable = true;
             completion(std::move(status));
         }
@@ -1173,8 +1225,11 @@ namespace sqlconduit::async::detail {
         if (!pool) return false;
         auto start = [source, pool = std::move(pool), options,
                  operation = std::move(operation), context = std::move(context),
-                 borrowTimeout, io, completion]() mutable {
+                 borrowTimeout, io, completion,
+                 enqueuedAt = std::chrono::steady_clock::now()]() mutable {
             const common::ContextScope scope(context);
+            source->services_->phase(common::ExecutionPhase::Queue, context,
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - enqueuedAt));
             if (auto status = source->gateSession(); !status.ok()) {
                 completion(std::move(status));
                 return;
@@ -1183,12 +1238,15 @@ namespace sqlconduit::async::detail {
                 completion(std::move(status));
                 return;
             }
+            const auto poolWaitStarted = std::chrono::steady_clock::now();
             pool->borrowAsync(borrowTimeout, io,
-                [source, options, operation = std::move(operation),
+                [source, options, operation = std::move(operation), poolWaitStarted,
                  context = std::move(context), completion = std::move(completion)](
                     std::unique_ptr<core::ConnectionPool::Handle> handle,
                     common::Status status) mutable {
                     const common::ContextScope scope(context);
+                    source->services_->phase(common::ExecutionPhase::PoolWait, context,
+                        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - poolWaitStarted), status.code);
                     if (!status.ok() || !handle) {
                         source->afterAttempt(status);
                         completion(std::move(status));
@@ -1197,6 +1255,8 @@ namespace sqlconduit::async::detail {
                     handle->get()->setPreparedCacheLimit(
                         source->services_->preparedCacheMaxPerConnection.load(
                             std::memory_order_relaxed));
+                    source->services_->phase(common::ExecutionPhase::Fallback, context, {}, common::ErrorCode::Ok,
+                                             common::FallbackReason::CompositeOperation);
                     status = source->transactionWithHandle(
                         std::move(handle), options, operation, source->readOnly_);
                     completion(std::move(status));
@@ -1206,6 +1266,7 @@ namespace sqlconduit::async::detail {
             auto status = common::Status::error(
                 common::ErrorCode::Overloaded,
                 "client async executor queue is full or stopped");
+            source->services_->phase(common::ExecutionPhase::Rejected, common::ContextScope::current(), {}, common::ErrorCode::Overloaded);
             status.retryable = true;
             completion(std::move(status));
         }

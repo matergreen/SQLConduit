@@ -4,6 +4,7 @@ include(CMakeFindDependencyMacro)
 find_dependency(Threads)
 
 set(_sqlconduit_built_components "@SQLCONDUIT_BUILT_COMPONENTS@")
+set(sqlconduit_AVAILABLE_COMPONENTS "${_sqlconduit_built_components}")
 set_and_check(sqlconduit_SCHEMA_FILE
               "@PACKAGE_CMAKE_INSTALL_DATADIR@/sqlconduit/sqlconduit.schema.json")
 
@@ -24,7 +25,9 @@ foreach(_sqlconduit_component IN LISTS sqlconduit_FIND_COMPONENTS)
     endif()
 
     set(sqlconduit_${_sqlconduit_component}_FOUND TRUE)
-    if(NOT _sqlconduit_component STREQUAL "Core")
+    if(_sqlconduit_component STREQUAL "OpenTelemetry")
+        find_dependency(opentelemetry-cpp CONFIG)
+    elseif(NOT _sqlconduit_component STREQUAL "Core")
         string(TOUPPER "${_sqlconduit_component}" SQLCONDUIT_DRIVER_DEP_NAMES)
         sqlconduit_resolve_driver_deps(_sqlconduit_driver_libs)
         string(TOLOWER "${_sqlconduit_component}" _sqlconduit_target_name)

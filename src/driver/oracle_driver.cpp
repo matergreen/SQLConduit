@@ -17,6 +17,16 @@
 #include <vector>
 
 namespace sqlconduit::driver {
+    common::ConnectionCapabilities OracleConnection::capabilities() const {
+        auto out = IDatabaseConnection::capabilities();
+#ifdef SQLCONDUIT_ENABLE_ORACLE
+        sword major = 0, minor = 0, update = 0, patch = 0, port = 0;
+        OCIClientVersion(&major, &minor, &update, &patch, &port);
+        out.clientVersion = std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(update);
+#endif
+        out.asyncConstraints = "Native query/execute when OCI nonblocking is enabled; temporary LOB input and composite operations use workers; LOB results require blocking materialization";
+        return out;
+    }
     namespace {
         [[maybe_unused]] common::Status notConnected(const char *where) {
             return common::Status::error(common::ErrorCode::NotConnected,

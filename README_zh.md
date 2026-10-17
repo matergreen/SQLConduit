@@ -399,6 +399,10 @@ target_link_libraries(your_target PRIVATE sqlconduit::postgres)
 
 ## 详细文档
 
+开发分支当前为 **1.1.0-dev**。配置工具、诊断 API 与可选 OpenTelemetry 用法见
+[1.1 诊断说明](docs/diagnostics_zh.md)，包管理方式见 [Package managers](docs/package_managers.md)。
+稳定版本仍以 Releases 为准。
+
 连接池、异步 API、实体映射、例程与脚本、PostgreSQL 类型、游标、故障转移、可观测性、
 错误码、配置项和驱动扩展等内容见 [SQLConduit 详细指南](docs/guide.md)。
 指标兼容性与标签基数约束见 [指标契约](docs/metrics.md)，测试边界见

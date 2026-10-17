@@ -5,7 +5,8 @@ applicable reports and may publish a patch; it does not promise an SLA.
 
 | Version line | Status | Support level |
 | --- | --- | --- |
-| `1.0.x` | Supported | Security, correctness, build, and documented compatibility fixes |
+| `1.1.x` | Supported | Security, correctness, build, and documented compatibility fixes |
+| `1.0.x` | Maintenance | Security and critical correctness fixes at least through 2027-01-16 |
 | `1.0.0-rc.x` | Superseded | Upgrade to the final 1.0.x release |
 | `0.7.x` | Transition | Security fixes for 90 days after the 1.0.0 release |
 | `0.8.x`, `0.9.x` | Development snapshots | Upgrade to 1.0; these were not production support lines |
@@ -35,20 +36,20 @@ toolchain versions. Build the library and application with compatible settings.
 
 ## Database validation
 
-The 1.0 release is validated against these representative combinations:
+The 1.x line is validated against these representative combinations:
 
 | SQLConduit component | Validated server/client path | Validation |
 | --- | --- | --- |
 | MySQL | MySQL 8.4 with libmysqlclient-compatible headers | Automated live integration |
 | PostgreSQL | PostgreSQL 16+ with libpq/libpqxx | Automated live integration |
-| ODBC / SQL Server | SQL Server 2022 through unixODBC with FreeTDS and Microsoft ODBC Driver 18 | Automated live Linux integration for both paths in the 1.0.1 line; Windows compile/test validation |
+| ODBC / SQL Server | SQL Server 2022 through unixODBC with FreeTDS and Microsoft ODBC Driver 18; Windows Microsoft ODBC with LocalDB | Automated live Linux integration for both paths; Windows LocalDB live integration from 1.1.0 |
 | Oracle | Oracle Database Free with OCI 23 | Manual release integration |
 
 These are validation targets, not artificial minimum server versions. Other versions are supported
 when both the database vendor and client SDK support them, but reports must include a reproduction.
 Microsoft ODBC Driver live execution was not part of the 1.0.0 validated support matrix. The 1.0.1
-line adds a Linux live gate for Driver 18, including its native asynchronous path; Windows remains
-a compile/test gate rather than a live-database gate.
+line adds a Linux live gate for Driver 18, including its native asynchronous path. The 1.1.0 line
+adds live Windows Microsoft ODBC/LocalDB and macOS MySQL/PostgreSQL gates.
 Oracle is not included in prebuilt archives because redistributing the OCI SDK is outside this
 project's release workflow; build the Oracle component from source against an installed Instant
 Client SDK.

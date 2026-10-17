@@ -1,6 +1,6 @@
 # 1.1 配置工具与运行时诊断
 
-开发分支当前为 `1.1.0-dev`。默认构建并安装 `sqlconduitctl`，通过
+`1.1.0` 默认构建并安装 `sqlconduitctl`，通过
 `SQLCONDUIT_BUILD_TOOLS=OFF` 可关闭。
 
 ```sh

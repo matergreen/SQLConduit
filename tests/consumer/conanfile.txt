@@ -1,5 +1,5 @@
 [requires]
-sqlconduit/1.1.0-dev
+sqlconduit/1.1.0
 
 [generators]
 CMakeDeps

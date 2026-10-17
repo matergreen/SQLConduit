@@ -130,21 +130,21 @@ Priorities are ordered; version assignment happens only when work enters a relea
 | Workstream | Status | Planning horizon | Frozen-entry strategy |
 | --- | --- | --- | --- |
 | Failure injection and four-driver test expansion | **In progress** | 1.0.x hardening | Tests and fixes behind existing contracts |
-| Dependency/install diagnostics and config tooling | **Implemented; validation expanding** | 1.1.0 development | Offline CLI, runtime snapshots, installed component metadata and local Conan Core recipe |
-| Historical performance regression gate | **Implemented** | 1.1.0 development | Paired same-runner comparisons, variance checks and JSON/Markdown history |
+| Dependency/install diagnostics and config tooling | **Implemented; validation expanding** | 1.1.0 | Offline CLI, runtime snapshots, installed component metadata and local Conan Core recipe |
+| Historical performance regression gate | **Implemented** | 1.1.0 | Paired same-runner comparisons, variance checks and JSON/Markdown history |
 | Allocation, pool contention, batch, and cursor optimization | **Scheduled** | Incremental throughout 1.x | Existing methods and result semantics |
 | Incremental `StreamSource` consumption | **Scheduled** | Later 1.x | Reuse current type and overloads |
 | Native ODBC and Oracle async baseline | **Implemented / validated** | 1.0.1 | Same future API; capability-gated mode selection, cancellation, concurrency, large values, and connection reuse |
 | SQL Builder dialect extensions | **Scheduled** | Later 1.x | Additive extension types; portable builder remains valid |
-| Optional tracing adapter | **Implemented; validation expanding** | 1.1.0 development | Separate OpenTelemetry component; safe attributes and explicit context capture |
+| Optional tracing adapter | **Implemented; validation expanding** | 1.1.0 | Separate OpenTelemetry component; safe attributes and explicit context capture |
 | Optional coroutine adapter | **Evaluating** | Unassigned | Separate optional header over futures |
 
 ### Priority A — reliability and adoption
 
-The 1.1 development implementation is documented in [Diagnostics](diagnostics.md) and
-[Package managers](package_managers.md). New Windows LocalDB and macOS live jobs are release gates
-to run for the candidate; their presence is not evidence of a completed hosted run. Local development
-validation includes the core/optional SDK suite, Conan consumers, fault injection, and Docker drivers.
+The 1.1 implementation is documented in [Diagnostics](diagnostics.md) and
+[Package managers](package_managers.md). Hosted validation includes Windows LocalDB, macOS live
+databases, the optional SDK suite and Conan consumers. Every release still requires green gates
+for its exact tagged commit; Oracle validation remains a separate manual boundary.
 
 - Broaden failure-injection and live-database integration scenarios, including upgrade/reconnect and
   transaction ambiguity tests.

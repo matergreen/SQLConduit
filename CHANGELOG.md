@@ -6,6 +6,8 @@ description.
 
 ## [Unreleased]
 
+## [1.1.0]
+
 ### Production diagnostics (1.1.0)
 
 - Added offline topology validation and redacted effective-configuration reports through
@@ -40,6 +42,18 @@ description.
 - Fixed PostgreSQL pool recovery after server restart: libpqxx `broken_connection` exceptions and
   server-shutdown SQLSTATEs now invalidate physical connections even when no class-08 state exists.
   Execution-time write errors remain ambiguous and are not treated as safe failover signals.
+
+### Upgrade notes and validation boundaries
+
+- Rebuild applications against matching headers and libraries; 1.x preserves public source
+  compatibility, not cross-version C++ binary ABI compatibility.
+- FreeTDS UTF-8 narrow binding requires `ClientCharset=UTF-8` (or the equivalent DSN setting).
+  Existing incorrectly encoded database values are not automatically repaired.
+- OpenTelemetry is an optional source-build component; Core does not require its SDK. The local
+  Conan recipe packages Core only and is not a claim of publication to a public package registry.
+- Automated gates cover Linux/macOS/Windows builds, live MySQL/PostgreSQL and SQL Server ODBC,
+  sanitizer checks, installed consumers, OpenTelemetry, Conan and paired performance tests.
+  Oracle/OCI remains a source-build, manually validated path and is not included in release archives.
 
 ## [1.0.1]
 

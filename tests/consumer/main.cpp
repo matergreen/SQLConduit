@@ -21,7 +21,7 @@
 int main() {
     static_assert(SQLCONDUIT_VERSION_MAJOR == 1);
     static_assert(SQLCONDUIT_VERSION_MINOR == 1);
-    static_assert(std::string_view(SQLCONDUIT_VERSION_STRING) == "1.1.0-dev");
+    static_assert(std::string_view(SQLCONDUIT_VERSION_STRING) == "1.1.0");
 
     const auto statement = sqlconduit::sql::Builder::select("consumer_probe")
         .columns({"id"})

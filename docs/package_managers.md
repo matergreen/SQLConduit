@@ -49,7 +49,7 @@ In a consuming project's `conanfile.txt`:
 
 ```ini
 [requires]
-sqlconduit/1.1.0-dev
+sqlconduit/1.1.0
 
 [generators]
 CMakeDeps

@@ -51,8 +51,8 @@ Core-only and OpenTelemetry installed consumers passed, including Core consumpti
 discovery disabled. A real Conan Core package and consumer passed locally. Workflow static checks
 passed (actionlint 1.7.7 ignores only its unknown `artifact-metadata` permission scope).
 The final quiet seven-pair Release comparison against v1.0.1 passed all 12 historical cases.
-The disabled-cache fast path improved from 1.24 to 0.88 ns/op on this host; this is a local
-microbenchmark observation, not a portable application-throughput guarantee. New tail-latency and
+The initial inline disabled-cache experiment improved local microbenchmarks but was subsequently
+reverted after repeatable hosted GCC regressions (see below). New tail-latency and
 large-result cases are retained in raw candidate-run artifacts without invented baseline values.
 
 The new GitHub-hosted Windows LocalDB, macOS database-server, Conan, performance and OpenTelemetry
@@ -83,3 +83,16 @@ The patched development commit passed all mandatory hosted jobs, including Windo
 the shared-harness performance gate. The final release-metadata commit must pass the gates again.
 Oracle/OCI was not revalidated for 1.1.0. On 2026-10-18 the release owner explicitly approved
 publication with this exception disclosed in the release notes; no new Oracle validation is claimed.
+
+Two subsequent release-candidate runs reported roughly 13% disabled-cache regressions; one also
+reported a cache-miss regression. The inline lookup experiment was removed, restoring the exact
+v1.0.1 cache implementation instead of relaxing the performance threshold. All 28 local Release
+tests and the targeted ASan/UBSan and TSan cache tests passed after this change. Hosted performance
+qualification must still pass for the final commit before the main merge and release tag.
+
+After restoring that implementation, its GCC object file was byte-for-byte identical to the
+baseline, yet the monolithic benchmark reported a repeatable hit-path difference. Cache API calls
+and literal conversions are now isolated in a shared translation unit, as already done for logging;
+neither workload nor thresholds were removed or relaxed. Seven fresh Linux ARM64/GCC pairs passed
+all 15 cases (disabled cache +0.4%, hit +3.2%, miss +5.4%, disabled logging -18.8%). These are local
+microbenchmarks, not a claim of portable application throughput or hosted qualification.

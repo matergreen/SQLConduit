@@ -1,2 +1,2 @@
-add_executable(sqlconduit_benchmark sqlconduit_benchmark.cpp observer_workload.cpp)
+add_executable(sqlconduit_benchmark sqlconduit_benchmark.cpp observer_workload.cpp cache_workload.cpp)
 target_link_libraries(sqlconduit_benchmark PRIVATE sqlconduit_core Threads::Threads)

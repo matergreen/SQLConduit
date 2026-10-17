@@ -27,7 +27,8 @@ description.
   tests, configurable soak runs and retained-Client MySQL/PostgreSQL restart probes.
 - Added macOS live MySQL/PostgreSQL and Windows Microsoft ODBC/LocalDB CI gates, plus optional
   OpenTelemetry SDK-backed tests and independent installed consumers.
-- Inlined the disabled query-cache fast path to avoid an out-of-line call when caching is off.
+- Retained the out-of-line query-cache lookup fast path after paired GCC release validation
+  exposed regressions from inlining; disabled lookups still skip locks and composite-key work.
 - Short-circuited disabled SQL observability before trace-context enrichment, preserving observer
   reconfiguration; isolated the enabled path's formatting/aggregation stack frame from disabled
   calls. An atomic enabled gate, updated under the configuration mutex, avoids refreshing a

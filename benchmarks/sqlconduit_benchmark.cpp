@@ -4,6 +4,7 @@
 #include "sqlconduit/driver/idriver.h"
 #include "sqlconduit/mapping.h"
 #include "observer_workload.h"
+#include "cache_workload.h"
 
 #include <algorithm>
 #include <atomic>
@@ -350,7 +351,7 @@ int main(int argc, char **argv) {
     disabledCache.configure({});
     common::ResultSet cacheOutput;
     results.push_back(measure("query_cache_disabled_get", iterations, [&] {
-        if (disabledCache.get("benchmark", "missing", cacheOutput))
+        if (sqlconduit::benchmarks::getCacheEntry(disabledCache, "missing", cacheOutput))
             throw std::runtime_error("disabled cache returned an entry");
     }));
 
@@ -368,16 +369,16 @@ int main(int argc, char **argv) {
     cachedRows.addRow(std::move(cachedRow));
     queryCache.put("benchmark", "hit", cachedRows);
     results.push_back(measure("query_cache_hit", iterations, [&] {
-        if (!queryCache.get("benchmark", "hit", cacheOutput))
+        if (!sqlconduit::benchmarks::getCacheEntry(queryCache, "hit", cacheOutput))
             throw std::runtime_error("cache hit benchmark missed");
         benchmarkSink += cacheOutput.rowCount();
     }));
     results.push_back(measure("query_cache_miss", iterations, [&] {
-        if (queryCache.get("benchmark", "missing", cacheOutput))
+        if (sqlconduit::benchmarks::getCacheEntry(queryCache, "missing", cacheOutput))
             throw std::runtime_error("cache miss benchmark hit");
     }));
     results.push_back(measure("query_cache_replace", iterations, [&] {
-        queryCache.put("benchmark", "replace", cachedRows);
+        sqlconduit::benchmarks::putCacheEntry(queryCache, "replace", cachedRows);
     }));
 
     results.push_back(measureLatency("pool_borrow_latency_contended_8t", 2000, 8, [&] {
@@ -388,7 +389,7 @@ int main(int argc, char **argv) {
     }));
     results.push_back(measureParallel("query_cache_hit_contended_8t", iterations, 8, [&] {
         common::ResultSet local;
-        if (!queryCache.get("benchmark", "hit", local))
+        if (!sqlconduit::benchmarks::getCacheEntry(queryCache, "hit", local))
             throw std::runtime_error("contended cache hit missed");
         parallelSink.fetch_add(local.rowCount(), std::memory_order_relaxed);
     }));

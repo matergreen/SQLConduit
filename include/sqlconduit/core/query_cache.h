@@ -34,12 +34,7 @@ namespace sqlconduit::core {
             [[nodiscard]] bool replicaOnly() const;
 
             bool get(const std::string &dataSource, const std::string &key,
-                     common::ResultSet &out) {
-                // Keep the disabled default path at the call site; avoid an
-                // out-of-line call and any composite-key work when caching is off.
-                if (!enabled_.load(std::memory_order_acquire)) return false;
-                return getEnabled(dataSource, key, out);
-            }
+                     common::ResultSet &out);
 
             void put(const std::string &dataSource, const std::string &key,
                      const common::ResultSet &rs);
@@ -49,8 +44,6 @@ namespace sqlconduit::core {
             [[nodiscard]] QueryCacheStats stats() const;
 
         private:
-            bool getEnabled(const std::string &dataSource, const std::string &key,
-                            common::ResultSet &out);
             struct Entry {
                 common::ResultSet rs;
                 std::chrono::steady_clock::time_point expire;

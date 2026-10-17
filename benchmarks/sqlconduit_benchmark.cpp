@@ -3,6 +3,7 @@
 #include "sqlconduit/core/query_cache.h"
 #include "sqlconduit/driver/idriver.h"
 #include "sqlconduit/mapping.h"
+#include "observer_workload.h"
 
 #include <algorithm>
 #include <atomic>
@@ -341,11 +342,7 @@ int main(int argc, char **argv) {
         return common::Status::OK();
     };
     results.push_back(measure("logging_disabled_emit", iterations, [&] {
-        common::OperationEvent event;
-        event.dataSource = "benchmark";
-        event.type = common::OperationType::Execute;
-        event.status = common::Status::OK();
-        common::Observability::emitSql(std::move(event), statement, renderer);
+        sqlconduit::benchmarks::emitDisabledLogEvent(statement, renderer);
     }));
     if (rendererCalls != 0) throw std::runtime_error("disabled logging invoked SQL renderer");
 

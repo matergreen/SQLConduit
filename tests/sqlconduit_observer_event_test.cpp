@@ -8,6 +8,7 @@
 #include <iostream>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace sqlconduit;
@@ -245,6 +246,74 @@ static void test_error_event_carries_marks() {
     }
 }
 
+static void test_disabled_fast_path_and_reenable() {
+    clearCapture();
+    Observability::clearSlowSqlStats();
+    sqlconduit::config::ObservabilityConfig config;
+    config.sql_log.enabled = false;
+    config.slow_sql.enabled = false;
+    Observability::configure(config);
+    Observability::setObserver({});
+    SqlContext context;
+    context.traceId = std::string(32, 'a');
+    context.spanId = std::string(16, 'b');
+    context.traceFlags = 0;
+    context.shadow = true;
+    ContextScope scope(context);
+    int renders = 0;
+    const common::SqlRenderer renderer = [&](const common::SqlRenderOptions &, std::string &) {
+        ++renders;
+        return Status::OK();
+    };
+    OperationEvent event;
+    event.duration = std::chrono::seconds(10);
+    Observability::emitSql(event, "SELECT secret FROM t", renderer);
+    check(renders == 0 && Observability::slowSqlStats().empty() &&
+          Observability::recentSlowSql().empty(), "disabled observability has no rendering or statistics side effects");
+    Observability::setObserver(&capObserver);
+    Observability::emitSql(event, "SELECT secret FROM t", renderer);
+    {
+        std::lock_guard<std::mutex> lock(g_capMtx);
+        check(g_captured.size() == 1 && g_captured[0].traceId == context.traceId &&
+              g_captured[0].spanId == context.spanId && g_captured[0].traceFlags == 0 &&
+              g_captured[0].shadow, "reenabled observer receives complete unsampled context");
+    }
+    check(renders == 0, "observer-only mode does not render SQL");
+    check(event.traceId.empty() && event.spanId.empty() && event.traceFlags == 1 && !event.shadow,
+          "by-value emitSql never mutates an lvalue caller's event");
+    std::thread configuring([&] {
+        for (int i = 0; i < 50; ++i) Observability::configure(config);
+    });
+    std::thread observing([] {
+        for (int i = 0; i < 50; ++i) {
+            Observability::setObserver(&capObserver);
+            Observability::setObserver({});
+        }
+    });
+    for (int i = 0; i < 100; ++i) Observability::emitSql(event, "SELECT 1");
+    configuring.join();
+    observing.join();
+    clearCapture();
+    Observability::setObserver(&capObserver);
+    Observability::configure(config);
+    Observability::emitSql(event, "SELECT 1");
+    {
+        std::lock_guard<std::mutex> lock(g_capMtx);
+        check(g_captured.size() == 1, "concurrent setters cannot leave the enabled gate stale");
+    }
+    Observability::setObserver({});
+    config.slow_sql.enabled = true;
+    config.slow_sql.threshold_ms = 0;
+    Observability::configure(config);
+    Observability::emitSql(event, "SELECT 1");
+    check(!Observability::slowSqlStats().empty(), "slow-SQL-only configuration enables emission");
+    config.slow_sql.enabled = false;
+    Observability::configure(config);
+    Observability::clearSlowSqlStats();
+    Observability::emitSql(event, "SELECT 1");
+    check(Observability::slowSqlStats().empty(), "disabling the final consumer restores the fast path");
+}
+
 int main() {
     test_defaults_without_ctx_or_result();
     test_shadow_propagates_from_ctx();
@@ -254,6 +323,7 @@ int main() {
     test_write_path_keeps_transformed_false();
     test_shadow_and_transformed_together();
     test_error_event_carries_marks();
+    test_disabled_fast_path_and_reenable();
     Observability::setObserver(nullptr);
     Observability::configure({});
     std::cout << "\n===== total PASS=" << g_passed << " FAIL=" << g_failed << " =====\n";

@@ -61,3 +61,18 @@ implemented but not rebuilt or live-tested against an OCI SDK in this local run.
 co-installation is covered by the workflow, not claimed as locally executed. Multi-hour soak runs
 remain an explicit manual gate. Checked deliverables above mean implementation exists; they do not
 replace these release-validation boundaries.
+
+## CI follow-up
+
+GitHub build 77 executed the new hosted gates: macOS live databases, Conan, OpenTelemetry and
+MSVC multi-config consumers passed. Windows LocalDB exposed an ODBC narrow-character Unicode
+read defect, and the performance job exposed disabled-observability overhead. The follow-up patch
+uses wide-character result decoding and an atomic disabled-event gate with concurrent-setter tests.
+FreeTDS fixtures explicitly configure UTF-8 so narrow-input/output symmetry cannot hide incorrectly
+stored text. Existing incorrectly encoded database values are not automatically repaired.
+
+Performance comparisons now compile the same harness against separately installed packages, and
+isolate the unchanged logging workload in a separate translation unit. Seven Linux ARM64/GCC pairs
+passed all 15 cases locally; disabled logging measured 28.53 ns/op for v1.0.1 versus 22.19 ns/op for
+the patched library. Original regression/noise thresholds remain unchanged. The patched Windows
+LocalDB path and x86_64 GitHub performance gate still require actual hosted reruns.

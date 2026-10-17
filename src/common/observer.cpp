@@ -33,6 +33,7 @@ namespace sqlconduit::common {
             PoolMetricsCollector poolCollector;
             const void *poolCollectorOwner = nullptr;
             std::atomic<std::uint64_t> stateVersion{1};
+            std::atomic<bool> sqlEventsEnabled{false};
             std::unordered_map<std::uint64_t, SlowSqlStats> slowStats;
             std::deque<SlowSqlRecord> recentSlow;
             std::list<std::uint64_t> lru;
@@ -395,6 +396,10 @@ namespace sqlconduit::common {
         {
             std::lock_guard<std::mutex> lock(g_stateMutex);
             g_observer = std::move(observer);
+            auto &state = currentStateData();
+            state.sqlEventsEnabled.store(static_cast<bool>(state.observer) ||
+                state.config.sql_log.enabled || state.config.slow_sql.enabled,
+                std::memory_order_release);
         }
         g_stateVersion.fetch_add(1, std::memory_order_release);
     }
@@ -487,6 +492,10 @@ namespace sqlconduit::common {
         {
             std::lock_guard<std::mutex> lock(g_stateMutex);
             g_config = std::move(normalized);
+            auto &state = currentStateData();
+            state.sqlEventsEnabled.store(static_cast<bool>(state.observer) ||
+                state.config.sql_log.enabled || state.config.slow_sql.enabled,
+                std::memory_order_release);
         }
         g_stateVersion.fetch_add(1, std::memory_order_release);
 
@@ -507,17 +516,15 @@ namespace sqlconduit::common {
             g_recentSlow.pop_front();
     }
 
-    void Observability::emitSql(OperationEvent event, const std::string &sql,
-                                const SqlRenderer &renderer,
-                                const common::ResultSet *result) noexcept {
+    static void emitSqlEnabled(OperationEvent &event, const std::string &sql,
+                               const SqlRenderer &renderer, const ResultSet *result,
+                               const Snapshot &snapshot) noexcept {
         try {
-            const Snapshot &snapshot = currentSnapshot();
             const config::ObservabilityConfig &config = snapshot.config;
             const OperationObserver &observer = snapshot.observer;
 
             const bool slowEnabled = config.slow_sql.enabled;
             const bool logEnabled = config.sql_log.enabled;
-
             {
                 const SqlContext &ctx = ContextScope::current();
                 event.traceFlags = ctx.traceFlags;
@@ -530,8 +537,6 @@ namespace sqlconduit::common {
                 if (ctx.shadow) event.shadow = true;
             }
             if (result && result->transformed) event.transformed = true;
-
-            if (!observer && !slowEnabled && !logEnabled) return;
 
             const std::string structure = (slowEnabled || logEnabled)
                                               ? structuralSql(sql)
@@ -659,6 +664,22 @@ namespace sqlconduit::common {
                 try { observer(event); } catch (...) {
                 }
             }
+        } catch (...) {
+        }
+    }
+
+    void Observability::emitSql(OperationEvent event, const std::string &sql,
+                                const SqlRenderer &renderer,
+                                const common::ResultSet *result) noexcept {
+        try {
+            if (!currentStateData().sqlEventsEnabled.load(std::memory_order_acquire)) return;
+            const Snapshot &snapshot = currentSnapshot();
+            if (!snapshot.observer && !snapshot.config.slow_sql.enabled &&
+                !snapshot.config.sql_log.enabled) return;
+            // Keep enrichment, formatting and aggregation in a separate body so
+            // disabled calls do not pay its stack-frame/register-save cost.
+            // Pass by reference here: the public by-value contract already owns event.
+            emitSqlEnabled(event, sql, renderer, result, snapshot);
         } catch (...) {
         }
     }

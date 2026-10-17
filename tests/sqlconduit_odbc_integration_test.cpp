@@ -129,7 +129,7 @@ namespace {
             } else {
                 connectionString += "SERVER=" + host + ";PORT=" + port
                                     + ";DATABASE=" + database + ";UID=" + user + ";PWD="
-                                    + password + ";TDS_Version=7.4;";
+                                    + password + ";TDS_Version=7.4;ClientCharset=UTF-8;";
             }
             if (!explicitConnection.empty()) connectionString = explicitConnection;
             std::ofstream file(configPath);
@@ -317,9 +317,12 @@ namespace {
                         " payload VARBINARY(MAX))",
                       affected), "create async large-value table");
 
-        std::string largeText;
+        // Place a supplementary character at the 2047-unit UTF-16 chunk boundary.
+        std::string largeText(2046, 'x');
+        largeText += u8"😀";
         largeText.reserve(18000);
         for (int i = 0; i < 6000; ++i) largeText += "数";
+        largeText += std::string("\0tail", 5);
         sqlconduit::common::Blob largeBlob(20000);
         for (std::size_t i = 0; i < largeBlob.size(); ++i)
             largeBlob[i] = static_cast<unsigned char>((i * 17 + 11) & 0xff);
@@ -337,9 +340,28 @@ namespace {
         requireOk(read.status, "async chunked large-value query");
         require((read.mode == sqlconduit::async::ExecutionMode::Native) == f.expectNativeAsync,
                 "async chunked large-value query mode mismatch");
-        require(read.rows.rowCount() == 1 &&
-                    asString(read.rows.rows()[0].at("text_value")) == largeText,
-                "async NVARCHAR(MAX) round trip mismatch");
+        require(read.rows.rowCount() == 1, "async Unicode query row-count mismatch");
+        const auto &returnedText = asString(read.rows.rows()[0].at("text_value"));
+        std::size_t mismatch = 0;
+        while (mismatch < largeText.size() && mismatch < returnedText.size() &&
+               largeText[mismatch] == returnedText[mismatch]) ++mismatch;
+        require(returnedText == largeText,
+                "async NVARCHAR(MAX) round trip mismatch: expected bytes=" + std::to_string(largeText.size()) +
+                ", actual bytes=" + std::to_string(returnedText.size()) + ", first mismatch=" + std::to_string(mismatch));
+        ResultSet synchronous;
+        requireOk(g_client.query("SELECT text_value FROM " + asyncTable + " WHERE id=1", synchronous),
+                  "synchronous Unicode chunked query");
+        require(synchronous.rowCount() == 1 &&
+                    asString(synchronous.rows()[0].at("text_value")) == largeText,
+                "synchronous NVARCHAR(MAX) round trip mismatch");
+        const auto emptyAndNull = g_client.queryAsync(
+            "SELECT CAST(N'' AS NVARCHAR(MAX)) AS empty_value, "
+            "CAST(NULL AS NVARCHAR(MAX)) AS null_value").get();
+        requireOk(emptyAndNull.status, "async empty and NULL Unicode query");
+        require(emptyAndNull.rows.rowCount() == 1 &&
+                    asString(emptyAndNull.rows.rows()[0].at("empty_value")).empty() &&
+                    std::holds_alternative<std::nullptr_t>(emptyAndNull.rows.rows()[0].at("null_value")),
+                "empty Unicode text must remain distinct from NULL");
         const auto &returnedBlob =
             std::get<sqlconduit::common::Blob>(read.rows.rows()[0].at("payload"));
         require(returnedBlob.size() == largeBlob.size(),

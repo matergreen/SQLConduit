@@ -26,6 +26,17 @@ description.
 - Added macOS live MySQL/PostgreSQL and Windows Microsoft ODBC/LocalDB CI gates, plus optional
   OpenTelemetry SDK-backed tests and independent installed consumers.
 - Inlined the disabled query-cache fast path to avoid an out-of-line call when caching is off.
+- Short-circuited disabled SQL observability before trace-context enrichment, preserving observer
+  reconfiguration; isolated the enabled path's formatting/aggregation stack frame from disabled
+  calls. An atomic enabled gate, updated under the configuration mutex, avoids refreshing a
+  thread-local snapshot when there are no SQL-event consumers. Public event fields remain unchanged.
+  The existing performance regression threshold remains unchanged.
+- Built the same benchmark harness against separately installed baseline/candidate libraries to
+  avoid compiler-layout artifacts from comparing different generations of the benchmark program.
+- Fixed ODBC Unicode result decoding through wide-character reads and incremental UTF-8 conversion
+  in synchronous and native-async paths, including split surrogate pairs and embedded NULs.
+  FreeTDS integration fixtures now explicitly select UTF-8 instead of hiding incorrectly stored
+  text behind symmetric narrow-character conversion; documented the client-charset requirement.
 - Fixed PostgreSQL pool recovery after server restart: libpqxx `broken_connection` exceptions and
   server-shutdown SQLSTATEs now invalidate physical connections even when no class-08 state exists.
   Execution-time write errors remain ambiguous and are not treated as safe failover signals.

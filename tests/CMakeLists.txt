@@ -74,6 +74,11 @@ target_link_libraries(sqlconduit_diagnostics_test PRIVATE sqlconduit_core)
 target_include_directories(sqlconduit_diagnostics_test PRIVATE ${_nl_inc_dir})
 add_test(NAME sqlconduit_diagnostics_test COMMAND sqlconduit_diagnostics_test)
 
+# The decoder is SDK-independent so Windows UTF-16 chunk boundaries are tested on every host.
+add_executable(sqlconduit_odbc_unicode_test sqlconduit_odbc_unicode_test.cpp)
+add_test(NAME sqlconduit_odbc_unicode_test COMMAND sqlconduit_odbc_unicode_test)
+set_tests_properties(sqlconduit_odbc_unicode_test PROPERTIES LABELS "unit;odbc;unicode")
+
 add_executable(sqlconduit_fault_injection_test sqlconduit_fault_injection_test.cpp)
 target_link_libraries(sqlconduit_fault_injection_test PRIVATE sqlconduit_core)
 add_test(NAME sqlconduit_fault_injection_test COMMAND sqlconduit_fault_injection_test)

@@ -306,11 +306,11 @@ jobs:
       - run: >-
           cmake --build build-tsan -j
           --target sqlconduit_query_cache_test sqlconduit_concurrency_test
-          sqlconduit_diagnostics_test sqlconduit_fault_injection_test
+          sqlconduit_diagnostics_test sqlconduit_fault_injection_test sqlconduit_observer_event_test
       - name: Run cache and lifecycle contention tests under TSan
         env:
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
-        run: ctest --test-dir build-tsan --output-on-failure -R 'query_cache|concurrency|diagnostics|fault_injection'
+        run: ctest --test-dir build-tsan --output-on-failure -R 'query_cache|concurrency|diagnostics|fault_injection|observer_event'
 
   coverage:
     name: core coverage report
@@ -647,15 +647,20 @@ jobs:
         run: |
           for tree in baseline candidate; do
             cmake -S "$tree" -B "$tree/build-perf" -DCMAKE_BUILD_TYPE=Release \
-              -DSQLCONDUIT_BUILD_BENCHMARKS=ON -DSQLCONDUIT_BUILD_TOOLS=OFF
+              -DCMAKE_INSTALL_PREFIX="$PWD/$tree/install-perf" \
+              -DSQLCONDUIT_BUILD_BENCHMARKS=OFF -DSQLCONDUIT_BUILD_TOOLS=OFF
             cmake --build "$tree/build-perf" -j2
+            cmake --install "$tree/build-perf"
+            cmake -S candidate/benchmarks/consumer -B "$tree/build-harness" \
+              -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$PWD/$tree/install-perf"
+            cmake --build "$tree/build-harness" -j2
           done
       - name: Compare paired samples
         run: |
           python3 candidate/tests/test_benchmark_compare.py
           python3 candidate/benchmarks/compare.py \
-            --baseline baseline/build-perf/benchmarks/sqlconduit_benchmark \
-            --candidate candidate/build-perf/benchmarks/sqlconduit_benchmark \
+            --baseline baseline/build-harness/sqlconduit_benchmark \
+            --candidate candidate/build-harness/sqlconduit_benchmark \
             --baseline-ref v1.0.1 --candidate-ref "${{ github.sha }}" \
             --iterations 100000 --runs 7
       - name: Preserve performance history

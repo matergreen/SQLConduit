@@ -2,6 +2,7 @@
 #include "sqlconduit/drivers/odbc.h"
 #include "sqlconduit/driver/driver_registry.h"
 #include "polling_async_reactor.h"
+#include "odbc_unicode.h"
 
 #include <algorithm>
 #include <iterator>
@@ -293,15 +294,42 @@ namespace sqlconduit::driver {
             }
         }
 
+        bool wideTextType(const SQLSMALLINT type) {
+            if (type == SQL_WCHAR || type == SQL_WVARCHAR || type == SQL_WLONGVARCHAR) return true;
+#ifdef _WIN32
+            // SQL_C_CHAR on Windows uses the process code page, not necessarily UTF-8.
+            if (type == SQL_CHAR || type == SQL_VARCHAR || type == SQL_LONGVARCHAR) return true;
+#endif
+            return false;
+        }
+
+        template<class Unit>
+        std::size_t textChunkUnits(const Unit *buffer, std::size_t capacity, SQLLEN byteLength) {
+            if (byteLength >= 0)
+                return (std::min)(capacity - 1, static_cast<std::size_t>(byteLength) / sizeof(Unit));
+            // SQL_NO_TOTAL is legal for streamed values. The driver must still terminate text.
+            return static_cast<std::size_t>(std::find(buffer, buffer + capacity - 1, Unit{}) - buffer);
+        }
+
+        common::Status invalidWideText() {
+            return common::Status::error(common::ErrorCode::QueryError,
+                                         "ODBC returned malformed Unicode text");
+        }
+
         common::Status readTextColumn(SQLHSTMT stmt, const SQLUSMALLINT column,
                                       const SQLSMALLINT sqlType, common::Value &out) {
             std::string value;
             char buffer[4096];
+            SQLWCHAR wideBuffer[2048];
+            detail::OdbcWideText<SQLWCHAR> wideText;
+            const bool wide = wideTextType(sqlType);
             for (;;) {
                 std::memset(buffer, 0, sizeof(buffer));
+                std::memset(wideBuffer, 0, sizeof(wideBuffer));
                 SQLLEN length = 0;
-                const SQLRETURN rc = SQLGetData(stmt, column, SQL_C_CHAR, buffer,
-                                                sizeof(buffer), &length);
+                const SQLRETURN rc = SQLGetData(stmt, column, wide ? SQL_C_WCHAR : SQL_C_CHAR,
+                    wide ? static_cast<SQLPOINTER>(wideBuffer) : static_cast<SQLPOINTER>(buffer),
+                    wide ? sizeof(wideBuffer) : sizeof(buffer), &length);
                 if (rc == SQL_NO_DATA) break;
                 if (length == SQL_NULL_DATA) {
                     out = nullptr;
@@ -310,8 +338,15 @@ namespace sqlconduit::driver {
                 if (!succeeded(rc))
                     return odbcError(common::ErrorCode::QueryError, SQL_HANDLE_STMT,
                                      stmt, "SQLGetData(text)");
-                value.append(buffer, std::strlen(buffer));
+                if (wide) {
+                    if (!wideText.append(wideBuffer, textChunkUnits(wideBuffer, 2048, length)))
+                        return invalidWideText();
+                } else value.append(buffer, textChunkUnits(buffer, sizeof(buffer), length));
                 if (rc == SQL_SUCCESS) break;
+            }
+            if (wide) {
+                if (!wideText.complete()) return invalidWideText();
+                value = wideText.take();
             }
             out = textValue(sqlType, std::move(value));
             return common::Status::OK();
@@ -1143,9 +1178,11 @@ namespace sqlconduit::driver {
                     return false;
                 }
                 const bool binary = binaryType(types_[readColumn_ - 1]);
+                const bool wide = !binary && wideTextType(types_[readColumn_ - 1]);
                 const SQLRETURN rc = SQLGetData(
-                    guard_.get(), readColumn_, binary ? SQL_C_BINARY : SQL_C_CHAR,
-                    readBuffer_, sizeof(readBuffer_), &readLength_);
+                    guard_.get(), readColumn_, binary ? SQL_C_BINARY : wide ? SQL_C_WCHAR : SQL_C_CHAR,
+                    wide ? static_cast<SQLPOINTER>(readWideBuffer_) : static_cast<SQLPOINTER>(readBuffer_),
+                    wide ? sizeof(readWideBuffer_) : sizeof(readBuffer_), &readLength_);
                 if (rc == SQL_STILL_EXECUTING) return false;
                 if (readLength_ == SQL_NULL_DATA) {
                     currentRow_.set(names_[readColumn_ - 1], common::Value{nullptr});
@@ -1166,16 +1203,28 @@ namespace sqlconduit::driver {
                             count = std::min<std::size_t>(
                                 sizeof(readBuffer_), static_cast<std::size_t>(readLength_));
                         readBinary_.insert(readBinary_.end(), readBuffer_, readBuffer_ + count);
+                    } else if (wide) {
+                        if (!readWideText_.append(readWideBuffer_, textChunkUnits(readWideBuffer_, 2048, readLength_))) {
+                            finish(invalidWideText());
+                            return true;
+                        }
                     } else {
                         readText_.append(reinterpret_cast<const char *>(readBuffer_),
-                                         std::strlen(
-                                             reinterpret_cast<const char *>(readBuffer_)));
+                            textChunkUnits(readBuffer_, sizeof(readBuffer_), readLength_));
                     }
                 }
                 if (rc == SQL_SUCCESS_WITH_INFO) {
                     std::memset(readBuffer_, 0, sizeof(readBuffer_));
+                    std::memset(readWideBuffer_, 0, sizeof(readWideBuffer_));
                     readLength_ = 0;
                     return false;
+                }
+                if (wide) {
+                    if (!readWideText_.complete()) {
+                        finish(invalidWideText());
+                        return true;
+                    }
+                    readText_ = readWideText_.take();
                 }
                 if (binary)
                     currentRow_.set(names_[readColumn_ - 1],
@@ -1198,6 +1247,8 @@ namespace sqlconduit::driver {
 
             void resetReadBuffer() {
                 std::memset(readBuffer_, 0, sizeof(readBuffer_));
+                std::memset(readWideBuffer_, 0, sizeof(readWideBuffer_));
+                readWideText_.clear();
                 readLength_ = 0;
                 readText_.clear();
                 readBinary_.clear();
@@ -1259,6 +1310,8 @@ namespace sqlconduit::driver {
             common::Row currentRow_;
             SQLUSMALLINT readColumn_ = 1;
             unsigned char readBuffer_[4096] = {};
+            SQLWCHAR readWideBuffer_[2048] = {};
+            detail::OdbcWideText<SQLWCHAR> readWideText_;
             SQLLEN readLength_ = 0;
             std::string readText_;
             common::Blob readBinary_;

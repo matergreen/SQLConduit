@@ -30,11 +30,17 @@ row count in the benchmark name.
 
 Microbenchmark numbers are meaningful only when compiler, build type, CPU model, power policy, and
 runner load are comparable. The 1.1 CI gate builds v1.0.1 and the candidate with the same compiler on
-the same runner, then alternates their execution order across seven pairs:
+the same runner, installs each Core package separately, builds the identical current
+`benchmarks/consumer` harness against each package, then alternates their execution order across
+seven pairs. This avoids comparing different benchmark programs and their compiler-layout effects.
+
+The disabled-logging workload is compiled in its own translation unit, with the same event
+construction, move and destruction included in both measurements. Unrelated new cases therefore
+cannot change its inlining/register allocation inside the benchmark's large `main()` function.
 
 ```sh
-python3 benchmarks/compare.py --baseline /path/to/old/sqlconduit_benchmark \
-  --candidate ./build-bench/benchmarks/sqlconduit_benchmark \
+python3 benchmarks/compare.py --baseline /path/to/baseline-harness/sqlconduit_benchmark \
+  --candidate /path/to/candidate-harness/sqlconduit_benchmark \
   --baseline-ref v1.0.1 --candidate-ref working-tree --runs 7 --iterations 100000
 ```
 
@@ -47,4 +53,9 @@ results fail. New cases are allowed without inventing historical data. CI keeps 
 Only `pool_borrow_latency_contended_8t` reports individual-operation `operation_p95_ns` and
 `operation_p99_ns`; these include steady-clock measurement overhead. Its median is sampled across
 individual operations. The large-result case includes allocation/copy/destruction costs. New cases
-become historically comparable when a later release's baseline contains them.
+cannot be compared using historical binaries that lack those cases.
+
+The CI shared harness can also measure a new case against an older library when the old public API
+supports that case. These are fresh same-host measurements, not invented historical artifacts.
+To reproduce, install both library versions to separate prefixes and configure `benchmarks/consumer`
+twice with the corresponding `CMAKE_PREFIX_PATH`, using Release and the same compiler for both.

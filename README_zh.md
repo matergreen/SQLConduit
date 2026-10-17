@@ -175,7 +175,7 @@ if (!result.status.ok()) return 1;
 带 fencing 的主库故障转移和影子流量已经迁入异步拓扑状态机；所选叶子驱动符合条件时，实际
 数据库 I/O 仍会报告 `Native`，组级审计、拦截器、观测和缓存失效只执行一次。
 
-1.0.1 开发线已为符合条件的 Oracle 操作实现 OCI nonblocking，并在 ODBC 驱动报告
+1.0.1 已为符合条件的 Oracle 操作实现 OCI nonblocking，并在 ODBC 驱动报告
 statement/connection 级异步能力时启用轮询状态机。Linux 实库测试已覆盖 Microsoft ODBC
 Driver 18 的 native 查询/执行、取消后连接复用、并发和大字段；FreeTDS 不报告异步能力，
 继续走明确且可观测的兼容 fallback。Oracle 临时 LOB 输入，以及事务、游标、批量、多结果集
@@ -381,7 +381,7 @@ g++ -std=c++17 app.cpp $(pkg-config --cflags sqlconduit-postgres) \
 include(FetchContent)
 FetchContent_Declare(sqlconduit
     GIT_REPOSITORY https://github.com/matergreen/SQLConduit.git
-    GIT_TAG        v1.0.0)
+    GIT_TAG        v1.0.1)
 FetchContent_MakeAvailable(sqlconduit)
 
 target_link_libraries(your_target PRIVATE sqlconduit::postgres)

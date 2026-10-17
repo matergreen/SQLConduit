@@ -3,7 +3,7 @@
 > [English](feature_coverage.md)
 
 本文是 SQLConduit 1.0 当前能力的统一清单，分别回答三个问题：功能是否已经实现、验证范围有
-多大、后续工作属于已排期还是仅在评估。快照日期为 **2026-09-30**；具体版本仍以对应的
+多大、后续工作属于已排期还是仅在评估。快照日期为 **2026-10-17**；具体版本仍以对应的
 CHANGELOG 为准，每个发布版本都应复核本文。
 
 ## 状态定义
@@ -98,7 +98,7 @@ SQL Server 2022 + unixODBC/FreeTDS（79 项），以及 Oracle Database Free + O
 （85 项）。数量只是当前快照，不属于兼容契约。平台和客户端矩阵见
 [版本支持](../SUPPORT.md)，精确排除项见[已知限制](known_limitations.md)。
 
-1.0.1 开发验证还通过了 SQL Server 2022 + FreeTDS fallback（116 项）、Microsoft ODBC
+1.0.1 验证通过了 SQL Server 2022 + FreeTDS fallback（116 项）、Microsoft ODBC
 Driver 18 native 轮询（123 项），以及 Oracle Database Free + OCI native/fallback（119 项）。
 新增覆盖包括并发、deadline、取消、取消后连接复用、多字节文本和大 LOB/二进制值。
 

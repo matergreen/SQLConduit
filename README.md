@@ -185,8 +185,8 @@ routing now use asynchronous topology state machines; when the selected leaf dri
 the database I/O remains `Native`. PostgreSQL query/execute operations on an eligible leaf data
 source use the bundled libpq socket reactor and report `Native`. MySQL
 8.0.16+ also reports `Native` for eligible parameter-free SELECT and DML/DDL through its
-nonblocking C API; parameterized MySQL statements retain prepared-statement fallback. The 1.0.1
-development line adds OCI nonblocking query/execute and polling ODBC query/execute when the selected
+nonblocking C API; parameterized MySQL statements retain prepared-statement fallback. SQLConduit
+1.0.1 adds OCI nonblocking query/execute and polling ODBC query/execute when the selected
 ODBC driver reports statement- or connection-level async support. FreeTDS currently reports no
 native async and remains on the explicit compatibility path. The 1.0.1 live suite validates native
 polling with Microsoft ODBC Driver 18 on Linux, including cancellation and connection reuse. Oracle
@@ -411,7 +411,7 @@ environments, prefer `find_package`.
 include(FetchContent)
 FetchContent_Declare(sqlconduit
     GIT_REPOSITORY https://github.com/matergreen/SQLConduit.git
-    GIT_TAG        v1.0.0)
+    GIT_TAG        v1.0.1)
 FetchContent_MakeAvailable(sqlconduit)
 
 target_link_libraries(your_target PRIVATE sqlconduit::postgres)

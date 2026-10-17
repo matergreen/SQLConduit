@@ -104,8 +104,8 @@ The driver SPI now includes optional `queryAsync` / `executeAsync` callbacks; re
 means no operation was started and preserves compatibility fallback. PostgreSQL implements these
 callbacks with a bundled libpq socket reactor for eligible leaf query/execute operations. MySQL
 8.0.16+ implements parameter-free single-statement SELECT and DML/DDL through its official
-nonblocking C API; parameterized operations remain prepared-statement fallbacks. The 1.0.1
-development line implements eligible Oracle operations with OCI nonblocking mode and eligible ODBC
+nonblocking C API; parameterized operations remain prepared-statement fallbacks. SQLConduit 1.0.1
+implements eligible Oracle operations with OCI nonblocking mode and eligible ODBC
 operations with the driver's polling model. Runtime capability detection preserves fallback for
 drivers such as FreeTDS that report `SQL_AM_NONE`, for Oracle temporary-LOB input binding, and for
 transaction/cursor/batch/multi-result/generated-key paths. This is an implementation change behind the
@@ -181,7 +181,7 @@ fallback 和 timeout 数。这组接口目前有意不提供取消句柄或协�
 `async.statement_timeout_ms` 对超时读请求做 late classification，但不会在写、批量或事务已经
 成功完成后把结果重写成 timeout。PostgreSQL 叶子数据源的普通查询/执行已经使用共享 libpq
 socket reactor；MySQL 8.0.16+ 的无参数单语句 SELECT 和 DML/DDL 使用官方 nonblocking C API
-与共享轮询 reactor。1.0.1 开发线为合格 Oracle 操作实现 OCI nonblocking，为报告异步能力的
+与共享轮询 reactor。1.0.1 为合格 Oracle 操作实现 OCI nonblocking，为报告异步能力的
 ODBC 驱动实现轮询状态机；FreeTDS、Oracle 临时 LOB 输入绑定以及事务/游标/批量等复合操作仍走
 受支持且有明确统计的兼容 fallback。查询/执行的数据源组路由、重试、副本回退、带 fencing 的
 主库故障转移、缓存和影子流量已进入异步状态机；叶子驱动符合条件时仍保留 native I/O。

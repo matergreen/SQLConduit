@@ -6,6 +6,8 @@ description.
 
 ## [Unreleased]
 
+## [1.0.1]
+
 ### Native Oracle and SQL Server async
 
 - Added OCI nonblocking query/execute state machines for eligible Oracle leaf-datasource operations,

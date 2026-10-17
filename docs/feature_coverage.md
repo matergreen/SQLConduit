@@ -8,7 +8,7 @@ This is the current capability map for SQLConduit 1.0. It answers three separate
 2. How broadly has the implementation been validated?
 3. Is further work committed, being evaluated, or intentionally outside the project?
 
-The snapshot date is **2026-09-30**. Release notes remain authoritative for a particular version;
+The snapshot date is **2026-10-17**. Release notes remain authoritative for a particular version;
 this document describes the direction of the supported `1.x` line and is reviewed at each release.
 
 ## Status vocabulary
@@ -105,7 +105,7 @@ Server 2022 through unixODBC/FreeTDS (79 checks), and Oracle Database Free with 
 [Support](../SUPPORT.md) for the platform/client matrix and
 [Known limitations](known_limitations.md) for exact exclusions.
 
-The 1.0.1 development validation additionally passes SQL Server 2022 through FreeTDS fallback
+The 1.0.1 validation passes SQL Server 2022 through FreeTDS fallback
 (116 checks), Microsoft ODBC Driver 18 native polling (123 checks), and Oracle Database Free through
 OCI native/fallback paths (119 checks). These suites cover concurrent operations, deadlines,
 cancellation, post-cancel connection reuse, multibyte text, and large LOB/binary values.

@@ -1009,7 +1009,7 @@ eligible selected leaf can retain native driver I/O. PostgreSQL `queryAsync` and
 `executeAsync` on eligible leaf data sources now use a shared libpq socket reactor and report
 `Native`. MySQL 8.0.16+ also uses its official nonblocking C API and a shared polling reactor for
 parameter-free, single-statement SELECT and DML/DDL. Parameterized MySQL operations deliberately
-retain prepared-statement fallback. The 1.0.1 development line adds OCI nonblocking query/execute
+retain prepared-statement fallback. SQLConduit 1.0.1 adds OCI nonblocking query/execute
 for eligible Oracle operations and ODBC polling query/execute when the selected driver reports
 `SQL_AM_STATEMENT` or `SQL_AM_CONNECTION`. FreeTDS reports no native async and remains on fallback;
 Microsoft ODBC Driver 18 native polling is live-tested on Linux, including cancellation and

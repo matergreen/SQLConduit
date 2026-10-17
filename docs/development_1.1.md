@@ -76,3 +76,10 @@ isolate the unchanged logging workload in a separate translation unit. Seven Lin
 passed all 15 cases locally; disabled logging measured 28.53 ns/op for v1.0.1 versus 22.19 ns/op for
 the patched library. Original regression/noise thresholds remain unchanged. The patched Windows
 LocalDB path and x86_64 GitHub performance gate still require actual hosted reruns.
+
+## 1.1.0 release qualification
+
+The patched development commit passed all mandatory hosted jobs, including Windows LocalDB and
+the shared-harness performance gate. The final release-metadata commit must pass the gates again.
+Oracle/OCI was not revalidated for 1.1.0. On 2026-10-18 the release owner explicitly approved
+publication with this exception disclosed in the release notes; no new Oracle validation is claimed.

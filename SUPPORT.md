@@ -43,7 +43,7 @@ The 1.x line is validated against these representative combinations:
 | MySQL | MySQL 8.4 with libmysqlclient-compatible headers | Automated live integration |
 | PostgreSQL | PostgreSQL 16+ with libpq/libpqxx | Automated live integration |
 | ODBC / SQL Server | SQL Server 2022 through unixODBC with FreeTDS and Microsoft ODBC Driver 18; Windows Microsoft ODBC with LocalDB | Automated live Linux integration for both paths; Windows LocalDB live integration from 1.1.0 |
-| Oracle | Oracle Database Free with OCI 23 | Manual release integration |
+| Oracle | Oracle Database Free with OCI 23 | Historical manual validation; Oracle/OCI was not revalidated for 1.1.0 |
 
 These are validation targets, not artificial minimum server versions. Other versions are supported
 when both the database vendor and client SDK support them, but reports must include a reproduction.

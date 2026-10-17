@@ -54,6 +54,8 @@ description.
 - Automated gates cover Linux/macOS/Windows builds, live MySQL/PostgreSQL and SQL Server ODBC,
   sanitizer checks, installed consumers, OpenTelemetry, Conan and paired performance tests.
   Oracle/OCI remains a source-build, manually validated path and is not included in release archives.
+- **Oracle/OCI was not revalidated for 1.1.0.** This release proceeds with that explicit validation
+  exception; previous Oracle validation is historical evidence, not a fresh 1.1.0 certification.
 
 ## [1.0.1]
 

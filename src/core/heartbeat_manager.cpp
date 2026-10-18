@@ -21,6 +21,7 @@ namespace sqlconduit::core {
     }
 
     void HeartbeatManager::start() {
+        if (interval_ <= std::chrono::milliseconds(0)) return;
         if (running_.exchange(true)) return;
         stopFlag_ = false;
         thread_ = std::thread([this]() { loop(); });

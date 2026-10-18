@@ -5,8 +5,21 @@ target_compile_definitions(sqlconduit_core_test PRIVATE SQLCONDUIT_SOURCE_DIR="$
 add_executable(sqlconduit_mapping_test sqlconduit_mapping_test.cpp)
 target_link_libraries(sqlconduit_mapping_test PRIVATE sqlconduit_core)
 
+add_executable(sqlconduit_query_api_test sqlconduit_query_api_test.cpp)
+add_executable(sqlconduit_operation_test sqlconduit_operation_test.cpp)
+target_link_libraries(sqlconduit_operation_test PRIVATE sqlconduit_core)
+add_test(NAME sqlconduit_operation_test COMMAND sqlconduit_operation_test)
+set_tests_properties(sqlconduit_operation_test PROPERTIES LABELS "operation;async;concurrency" TIMEOUT 30)
+target_link_libraries(sqlconduit_query_api_test PRIVATE sqlconduit_core)
+add_test(NAME sqlconduit_query_api_test COMMAND sqlconduit_query_api_test)
+set_tests_properties(sqlconduit_query_api_test PROPERTIES LABELS "query;mapping;async;concurrency" TIMEOUT 30)
+
 add_executable(sqlconduit_sql_builder_test sqlconduit_sql_builder_test.cpp)
 target_link_libraries(sqlconduit_sql_builder_test PRIVATE sqlconduit_core)
+add_executable(sqlconduit_typed_builder_test sqlconduit_typed_builder_test.cpp)
+target_link_libraries(sqlconduit_typed_builder_test PRIVATE sqlconduit_core)
+add_test(NAME sqlconduit_typed_builder_test COMMAND sqlconduit_typed_builder_test)
+set_tests_properties(sqlconduit_typed_builder_test PROPERTIES LABELS "query;mapping;builder")
 
 add_executable(sqlconduit_pg_types_test sqlconduit_pg_types_test.cpp)
 target_link_libraries(sqlconduit_pg_types_test PRIVATE sqlconduit_core)

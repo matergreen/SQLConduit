@@ -251,6 +251,18 @@ namespace sqlconduit::core {
         for (size_t i = 0; i < n; ++i) {
             const char c = sql[i];
 
+            // Oracle alternative literals may contain ordinary apostrophes and '?'.
+            if ((c == 'q' || c == 'Q') && i + 2 < n && sql[i + 1] == '\'') {
+                const char open = sql[i + 2];
+                const char close = open == '[' ? ']' : open == '(' ? ')' : open == '{' ? '}' : open == '<' ? '>' : open;
+                const auto end = sql.find(std::string{close, '\''}, i + 3);
+                if (end != std::string::npos) {
+                    out.append(sql, i, end + 2 - i);
+                    i = end + 1;
+                    continue;
+                }
+            }
+
             if (c == '$') {
                 size_t tagEnd = i + 1;
                 while (tagEnd < n &&
@@ -271,19 +283,23 @@ namespace sqlconduit::core {
                 }
             }
 
-            if (c == '\'' || c == '"' || c == '`') {
+            const bool bracketIdentifier = c == '[' && (i == 0 ||
+                (!std::isalnum(static_cast<unsigned char>(sql[i - 1])) && sql[i - 1] != '_' &&
+                 sql[i - 1] != ')' && sql[i - 1] != ']' && sql[i - 1] != '?'));
+            if (c == '\'' || c == '"' || c == '`' || bracketIdentifier) {
+                const char closing = c == '[' ? ']' : c;
                 out.push_back(c);
                 ++i;
                 while (i < n) {
                     out.push_back(sql[i]);
-                    if (sql[i] == '\\' && i + 1 < n) {
+                    if (sql[i] == '\\' && c != '[' && i + 1 < n) {
                         ++i;
                         out.push_back(sql[i]);
                         ++i;
                         continue;
                     }
-                    if (sql[i] == c) {
-                        if (i + 1 < n && sql[i + 1] == c) {
+                    if (sql[i] == closing) {
+                        if (i + 1 < n && sql[i + 1] == closing) {
                             ++i;
                             out.push_back(sql[i]);
                         } else {
@@ -305,17 +321,16 @@ namespace sqlconduit::core {
             }
 
             if (c == '/' && i + 1 < n && sql[i + 1] == '*') {
-                out.push_back(c);
-                ++i;
-                while (i < n) {
-                    out.push_back(sql[i]);
-                    if (sql[i] == '*' && i + 1 < n && sql[i + 1] == '/') {
-                        ++i;
-                        out.push_back(sql[i]);
-                        break;
-                    }
-                    ++i;
+                const auto start = i;
+                i += 2;
+                unsigned depth = 1;
+                while (i < n && depth) {
+                    if (sql.compare(i, 2, "/*") == 0) { ++depth; i += 2; }
+                    else if (sql.compare(i, 2, "*/") == 0) { --depth; i += 2; }
+                    else ++i;
                 }
+                out.append(sql, start, i - start);
+                --i;
                 continue;
             }
 

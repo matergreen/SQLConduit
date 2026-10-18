@@ -6,10 +6,13 @@
 #include "sqlconduit/common/oracle_types.h"
 #include "sqlconduit/core/cursor.h"
 #include "sqlconduit/core/database_manager.h"
-#include "sqlconduit/sqlconduit.h"
+#include "sqlconduit/client.h"
+#include "sqlconduit/public.h"
 #include "sqlconduit/sql_builder.h"
 #include "sqlconduit/util.h"
+#include "sqlconduit/version.h"
 
+#include <any>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -27,12 +30,57 @@ namespace sqlconduit {
     struct EntityResult {
         common::Status status;
         std::vector<T> items;
+        async::ExecutionMode mode = async::ExecutionMode::Native;
+        [[nodiscard]] bool ok() const { return status.ok(); }
+        std::vector<T> &itemsOrThrow() & { common::throwIfError(status); return items; }
+        const std::vector<T> &itemsOrThrow() const & { common::throwIfError(status); return items; }
+        std::vector<T> itemsOrThrow() && { common::throwIfError(status); return std::move(items); }
     };
 
     template<class T>
     struct EntityOne {
         common::Status status;
         std::optional<T> value;
+        async::ExecutionMode mode = async::ExecutionMode::Native;
+        [[nodiscard]] bool ok() const { return status.ok(); }
+
+        const T &valueOrThrow() const & {
+            common::throwIfError(status);
+            if (!value) throw common::StatusError(mappingMissing());
+            return *value;
+        }
+        T valueOrThrow() && {
+            common::throwIfError(status);
+            if (!value) throw common::StatusError(mappingMissing());
+            return std::move(*value);
+        }
+        common::Status mappingMissing() const {
+            return common::Status::error(common::ErrorCode::MappingError, "query returned no row");
+        }
+    };
+
+    template<class T>
+    struct ScalarResult {
+        common::Status status;
+        std::optional<T> value;
+        bool hasRow = false;
+        bool isNull = false;
+        async::ExecutionMode mode = async::ExecutionMode::Native;
+        [[nodiscard]] bool ok() const { return status.ok(); }
+
+        const T &valueOrThrow() const & {
+            common::throwIfError(status);
+            if (!value) throw common::StatusError(mappingMissing());
+            return *value;
+        }
+        T valueOrThrow() && {
+            common::throwIfError(status);
+            if (!value) throw common::StatusError(mappingMissing());
+            return std::move(*value);
+        }
+        common::Status mappingMissing() const {
+            return common::Status::error(common::ErrorCode::MappingError, isNull ? "scalar is SQL NULL" : "query returned no row");
+        }
     };
 
     template<class T>
@@ -40,12 +88,14 @@ namespace sqlconduit {
         common::Status status;
         std::int64_t affected = 0;
         common::GeneratedKeys keys;
+        [[nodiscard]] bool ok() const { return status.ok(); }
     };
 
     template<class T>
     struct BatchWriteResult {
         common::Status status;
         common::BatchResult batch;
+        [[nodiscard]] bool ok() const { return status.ok(); }
     };
 }
 
@@ -637,6 +687,7 @@ namespace sqlconduit::mapping {
             FieldFlags flags = FieldFlags::None;
             Assign assign;
             Write write;
+            std::any member;
         };
 
         template<class M>
@@ -645,6 +696,7 @@ namespace sqlconduit::mapping {
             c.name = column;
             c.target = TypeName<M>::name();
             c.flags = flags;
+            c.member = ptr;
             c.assign = [ptr, flags, target = c.target](const common::Value &v, T &out) -> common::Status {
                 auto s = ValueConverter<M>::fromValue(v, out.*ptr, flags);
                 if (!s.ok() && s.code != common::ErrorCode::MappingError)
@@ -659,6 +711,24 @@ namespace sqlconduit::mapping {
         Mapping &extraColumns(const ExtraColumns p) {
             extra_ = p;
             return *this;
+        }
+
+        Mapping &table(std::string name) { table_ = std::move(name); return *this; }
+        [[nodiscard]] const std::string &tableName() const noexcept { return table_; }
+
+        // Compare actual, same-type member pointers; never reinterpret offsets or object bytes.
+        template<class M>
+        [[nodiscard]] const Column *columnFor(M T::*member) const {
+            if (!member) return nullptr;
+            const Column *found = nullptr;
+            for (const auto &column : columns_) {
+                const auto ptr = std::any_cast<M T::*>(&column.member);
+                if (ptr && *ptr == member) {
+                    if (found) return nullptr; // An ambiguous registration is not a usable field.
+                    found = &column;
+                }
+            }
+            return found;
         }
 
         Mapping &missingColumns(const MissingColumns p) {
@@ -711,6 +781,7 @@ namespace sqlconduit::mapping {
 
     private:
         std::vector<Column> columns_;
+        std::string table_;
         ExtraColumns extra_ = ExtraColumns::Ignore;
         MissingColumns missing_ = MissingColumns::Ignore;
     };
@@ -1230,5 +1301,536 @@ namespace sqlconduit {
         return r;
     }
 }
+
+
+namespace sqlconduit {
+    namespace detail {
+        template<class T>
+        EntityResult<T> directEntities(common::Status status, const common::ResultSet &rows,
+                                      async::ExecutionMode mode) {
+            EntityResult<T> result;
+            result.status = std::move(status);
+            result.mode = mode;
+            if (result.ok()) result.status = mapping::fromRows<T>(rows, result.items);
+            if (!result.ok()) result.items.clear();
+            return result;
+        }
+
+        template<class T>
+        EntityOne<T> directOne(common::Status status, const common::ResultSet &rows,
+                               async::ExecutionMode mode) {
+            EntityOne<T> result;
+            result.status = std::move(status);
+            result.mode = mode;
+            if (!result.ok()) return result;
+            if (rows.rowCount() > 1) {
+                result.status = mapping::mapError("queryOne: expected at most one row");
+            } else if (!rows.empty()) {
+                T item{};
+                result.status = mapping::fromRow<T>(rows.rows().front(), item);
+                if (result.ok()) result.value = std::move(item);
+            }
+            return result;
+        }
+
+        template<class T>
+        ScalarResult<T> directScalar(common::Status status, const common::ResultSet &rows,
+                                      async::ExecutionMode mode) {
+            ScalarResult<T> result;
+            result.status = std::move(status);
+            result.mode = mode;
+            if (!result.ok()) return result;
+            if (rows.rowCount() > 1 || rows.fields().size() > 1 ||
+                (!rows.empty() && rows.rows().front().size() != 1)) {
+                result.status = mapping::mapError("queryScalar: expected at most one row and exactly one column");
+                return result;
+            }
+            if (rows.empty()) return result;
+            const auto &row = rows.rows().front();
+            if (!rows.fields().empty() && !row.has(rows.fields().front())) {
+                result.status = mapping::mapError("queryScalar: result column metadata mismatch");
+                return result;
+            }
+            result.hasRow = true;
+            const auto &value = row.data().begin()->second;
+            result.isNull = std::holds_alternative<std::nullptr_t>(value);
+            if (!result.isNull) {
+                T item{};
+                result.status = mapping::ValueConverter<T>::fromValue(value, item, mapping::FieldFlags::None);
+                if (result.ok()) result.value = std::move(item);
+            }
+            return result;
+        }
+    }
+
+    template<class Result, class Convert>
+    std::future<Result> Client::queryMappedAsync(const std::string &source, const std::string &sql,
+                                                const common::Params &params, Convert convert) const {
+        auto promise = std::make_shared<std::promise<Result>>();
+        auto future = promise->get_future();
+        // Map at completion; never block an executor worker on another future.
+        queryAsyncComplete(source, sql, params,
+            [promise, convert = std::move(convert)](async::QueryResult raw) mutable {
+                try {
+                    promise->set_value(convert(std::move(raw)));
+                } catch (...) {
+                    promise->set_exception(std::current_exception());
+                }
+            });
+        return future;
+    }
+
+    template<class T>
+    EntityResult<T> Client::query(const std::string &sql, const common::Params &params) const {
+        return query<T>({}, sql, params);
+    }
+
+    template<class T>
+    EntityResult<T> Client::query(const std::string &source, const std::string &sql,
+                                   const common::Params &params) const {
+        auto raw = query(source, sql, params);
+        return sqlconduit::detail::directEntities<T>(std::move(raw.status), raw.rows, async::ExecutionMode::Native);
+    }
+
+    template<class T>
+    EntityResult<T> Client::queryNamed(const std::string &sql, const common::NamedParams &params) const {
+        return queryNamed<T>({}, sql, params);
+    }
+
+    template<class T>
+    EntityResult<T> Client::queryNamed(const std::string &source, const std::string &sql,
+                            const common::NamedParams &params) const {
+        auto bound = common::bindNamed(sql, params);
+        if (bound.ok()) return query<T>(source, bound.sql, bound.params);
+        EntityResult<T> result;
+        result.status = std::move(bound.status);
+        result.mode = async::ExecutionMode::CompatibilityFallback;
+        return result;
+    }
+
+    template<class T>
+    std::future<EntityResult<T>> Client::queryAsync(const std::string &sql, const common::Params &params) const {
+        return queryAsync<T>({}, sql, params);
+    }
+
+    template<class T>
+    std::future<EntityResult<T>> Client::queryAsync(const std::string &source, const std::string &sql,
+                                   const common::Params &params) const {
+        return queryMappedAsync<EntityResult<T>>(source, sql, params, [](async::QueryResult raw) {
+            return sqlconduit::detail::directEntities<T>(std::move(raw.status), raw.rows, raw.mode);
+        });
+    }
+
+    template<class T>
+    std::future<EntityResult<T>> Client::queryNamedAsync(const std::string &sql, const common::NamedParams &params) const {
+        return queryNamedAsync<T>({}, sql, params);
+    }
+
+    template<class T>
+    std::future<EntityResult<T>> Client::queryNamedAsync(const std::string &source, const std::string &sql,
+                            const common::NamedParams &params) const {
+        auto bound = common::bindNamed(sql, params);
+        if (bound.ok()) return queryAsync<T>(source, bound.sql, bound.params);
+        EntityResult<T> result;
+        result.status = std::move(bound.status);
+        result.mode = async::ExecutionMode::CompatibilityFallback;
+        std::promise<EntityResult<T>> promise;
+        auto future = promise.get_future();
+        promise.set_value(std::move(result));
+        return future;
+    }
+
+    template<class T>
+    EntityOne<T> Client::queryOne(const std::string &sql, const common::Params &params) const {
+        return queryOne<T>({}, sql, params);
+    }
+
+    template<class T>
+    EntityOne<T> Client::queryOne(const std::string &source, const std::string &sql,
+                                   const common::Params &params) const {
+        auto raw = query(source, sql, params);
+        return sqlconduit::detail::directOne<T>(std::move(raw.status), raw.rows, async::ExecutionMode::Native);
+    }
+
+    template<class T>
+    EntityOne<T> Client::queryOneNamed(const std::string &sql, const common::NamedParams &params) const {
+        return queryOneNamed<T>({}, sql, params);
+    }
+
+    template<class T>
+    EntityOne<T> Client::queryOneNamed(const std::string &source, const std::string &sql,
+                            const common::NamedParams &params) const {
+        auto bound = common::bindNamed(sql, params);
+        if (bound.ok()) return queryOne<T>(source, bound.sql, bound.params);
+        EntityOne<T> result;
+        result.status = std::move(bound.status);
+        result.mode = async::ExecutionMode::CompatibilityFallback;
+        return result;
+    }
+
+    template<class T>
+    std::future<EntityOne<T>> Client::queryOneAsync(const std::string &sql, const common::Params &params) const {
+        return queryOneAsync<T>({}, sql, params);
+    }
+
+    template<class T>
+    std::future<EntityOne<T>> Client::queryOneAsync(const std::string &source, const std::string &sql,
+                                   const common::Params &params) const {
+        return queryMappedAsync<EntityOne<T>>(source, sql, params, [](async::QueryResult raw) {
+            return sqlconduit::detail::directOne<T>(std::move(raw.status), raw.rows, raw.mode);
+        });
+    }
+
+    template<class T>
+    std::future<EntityOne<T>> Client::queryOneNamedAsync(const std::string &sql, const common::NamedParams &params) const {
+        return queryOneNamedAsync<T>({}, sql, params);
+    }
+
+    template<class T>
+    std::future<EntityOne<T>> Client::queryOneNamedAsync(const std::string &source, const std::string &sql,
+                            const common::NamedParams &params) const {
+        auto bound = common::bindNamed(sql, params);
+        if (bound.ok()) return queryOneAsync<T>(source, bound.sql, bound.params);
+        EntityOne<T> result;
+        result.status = std::move(bound.status);
+        result.mode = async::ExecutionMode::CompatibilityFallback;
+        std::promise<EntityOne<T>> promise;
+        auto future = promise.get_future();
+        promise.set_value(std::move(result));
+        return future;
+    }
+
+    template<class T>
+    ScalarResult<T> Client::queryScalar(const std::string &sql, const common::Params &params) const {
+        return queryScalar<T>({}, sql, params);
+    }
+
+    template<class T>
+    ScalarResult<T> Client::queryScalar(const std::string &source, const std::string &sql,
+                                   const common::Params &params) const {
+        auto raw = query(source, sql, params);
+        return sqlconduit::detail::directScalar<T>(std::move(raw.status), raw.rows, async::ExecutionMode::Native);
+    }
+
+    template<class T>
+    ScalarResult<T> Client::queryScalarNamed(const std::string &sql, const common::NamedParams &params) const {
+        return queryScalarNamed<T>({}, sql, params);
+    }
+
+    template<class T>
+    ScalarResult<T> Client::queryScalarNamed(const std::string &source, const std::string &sql,
+                            const common::NamedParams &params) const {
+        auto bound = common::bindNamed(sql, params);
+        if (bound.ok()) return queryScalar<T>(source, bound.sql, bound.params);
+        ScalarResult<T> result;
+        result.status = std::move(bound.status);
+        result.mode = async::ExecutionMode::CompatibilityFallback;
+        return result;
+    }
+
+    template<class T>
+    std::future<ScalarResult<T>> Client::queryScalarAsync(const std::string &sql, const common::Params &params) const {
+        return queryScalarAsync<T>({}, sql, params);
+    }
+
+    template<class T>
+    std::future<ScalarResult<T>> Client::queryScalarAsync(const std::string &source, const std::string &sql,
+                                   const common::Params &params) const {
+        return queryMappedAsync<ScalarResult<T>>(source, sql, params, [](async::QueryResult raw) {
+            return sqlconduit::detail::directScalar<T>(std::move(raw.status), raw.rows, raw.mode);
+        });
+    }
+
+    template<class T>
+    std::future<ScalarResult<T>> Client::queryScalarNamedAsync(const std::string &sql, const common::NamedParams &params) const {
+        return queryScalarNamedAsync<T>({}, sql, params);
+    }
+
+    template<class T>
+    std::future<ScalarResult<T>> Client::queryScalarNamedAsync(const std::string &source, const std::string &sql,
+                            const common::NamedParams &params) const {
+        auto bound = common::bindNamed(sql, params);
+        if (bound.ok()) return queryScalarAsync<T>(source, bound.sql, bound.params);
+        ScalarResult<T> result;
+        result.status = std::move(bound.status);
+        result.mode = async::ExecutionMode::CompatibilityFallback;
+        std::promise<ScalarResult<T>> promise;
+        auto future = promise.get_future();
+        promise.set_value(std::move(result));
+        return future;
+    }
+}
+
+
+namespace sqlconduit::detail {
+    template<class T>
+    EntityResult<T> directColumns(common::Status status, const common::ResultSet &rows, async::ExecutionMode mode) {
+        EntityResult<T> result; result.status = std::move(status); result.mode = mode;
+        if (!result.ok()) return result;
+        if (rows.fields().size() > 1) {
+            result.status = mapping::mapError("queryColumn: expected exactly one column"); return result;
+        }
+        result.items.reserve(rows.rowCount());
+        for (const auto &row : rows.rows()) {
+            if (row.size() != 1 || (!rows.fields().empty() && !row.has(rows.fields()[0]))) {
+                result.status = mapping::mapError("queryColumn: expected exactly one matching column");
+                result.items.clear(); return result;
+            }
+            T value{};
+            result.status = mapping::ValueConverter<T>::fromValue(row.data().begin()->second, value, mapping::FieldFlags::None);
+            if (!result.ok()) { result.items.clear(); return result; }
+            result.items.push_back(std::move(value));
+        }
+        return result;
+    }
+}
+namespace sqlconduit {
+
+    template<class T> EntityResult<T> Client::queryColumn(const std::string &sql, const common::Params &params) const {
+        return queryColumn<T>({}, sql, params);
+    }
+    template<class T> EntityResult<T> Client::queryColumn(const std::string &source, const std::string &sql, const common::Params &params) const {
+        auto raw = query(source, sql, params);
+        return sqlconduit::detail::directColumns<T>(std::move(raw.status), raw.rows, async::ExecutionMode::Native);
+    }
+
+    template<class T> EntityResult<T> Client::queryColumnNamed(const std::string &sql, const common::NamedParams &params) const {
+        return queryColumnNamed<T>({}, sql, params);
+    }
+    template<class T> EntityResult<T> Client::queryColumnNamed(const std::string &source, const std::string &sql, const common::NamedParams &params) const {
+        auto bound = common::bindNamed(sql, params);
+        if (bound.ok()) return queryColumn<T>(source, bound.sql, bound.params);
+        EntityResult<T> result; result.status = std::move(bound.status);
+        return result;
+    }
+
+    template<class T> std::future<EntityResult<T>> Client::queryColumnAsync(const std::string &sql, const common::Params &params) const {
+        return queryColumnAsync<T>({}, sql, params);
+    }
+    template<class T> std::future<EntityResult<T>> Client::queryColumnAsync(const std::string &source, const std::string &sql, const common::Params &params) const {
+        return queryMappedAsync<EntityResult<T>>(source, sql, params, [](async::QueryResult raw) {
+            return sqlconduit::detail::directColumns<T>(std::move(raw.status), raw.rows, raw.mode);
+        });
+    }
+
+    template<class T> std::future<EntityResult<T>> Client::queryColumnNamedAsync(const std::string &sql, const common::NamedParams &params) const {
+        return queryColumnNamedAsync<T>({}, sql, params);
+    }
+    template<class T> std::future<EntityResult<T>> Client::queryColumnNamedAsync(const std::string &source, const std::string &sql, const common::NamedParams &params) const {
+        auto bound = common::bindNamed(sql, params);
+        if (bound.ok()) return queryColumnAsync<T>(source, bound.sql, bound.params);
+        EntityResult<T> result; result.status = std::move(bound.status);
+        std::promise<EntityResult<T>> promise; auto future = promise.get_future();
+        promise.set_value(std::move(result)); return future;
+    }
+
+    template<class T> EntityResult<T> core::Session::query(const std::string &sql, const common::Params &params) const {
+        auto raw = query(sql, params);
+        return sqlconduit::detail::directEntities<T>(std::move(raw.status), raw.rows, async::ExecutionMode::Native);
+    }
+    template<class T> EntityResult<T> core::Session::queryNamed(const std::string &sql, const common::NamedParams &params) const {
+        auto bound = common::bindNamed(sql, params);
+        if (bound.ok()) return query<T>(bound.sql, bound.params);
+        EntityResult<T> result; result.status = std::move(bound.status); return result;
+    }
+
+    template<class T> EntityResult<T> Client::query(const sql::BuildResult &build) const {
+        if (build.ok()) return query<T>(build.statement.sql, build.statement.params);
+        EntityResult<T> result; result.status = build.status;
+        return result;
+    }
+    template<class T> EntityResult<T> Client::query(const sql::Statement &statement) const {
+        return query<T>(statement.sql, statement.params);
+    }
+
+    template<class T> std::future<EntityResult<T>> Client::queryAsync(const sql::BuildResult &build) const {
+        if (build.ok()) return queryAsync<T>(build.statement.sql, build.statement.params);
+        EntityResult<T> result; result.status = build.status;
+        std::promise<EntityResult<T>> promise; auto future = promise.get_future();
+        promise.set_value(std::move(result)); return future;
+    }
+    template<class T> std::future<EntityResult<T>> Client::queryAsync(const sql::Statement &statement) const {
+        return queryAsync<T>(statement.sql, statement.params);
+    }
+
+    template<class T> EntityResult<T> core::Session::query(const sql::BuildResult &build) const {
+        if (build.ok()) return query<T>(build.statement.sql, build.statement.params);
+        EntityResult<T> result; result.status = build.status;
+        return result;
+    }
+    template<class T> EntityResult<T> core::Session::query(const sql::Statement &statement) const {
+        return query<T>(statement.sql, statement.params);
+    }
+
+    template<class T> EntityOne<T> core::Session::queryOne(const std::string &sql, const common::Params &params) const {
+        auto raw = query(sql, params);
+        return sqlconduit::detail::directOne<T>(std::move(raw.status), raw.rows, async::ExecutionMode::Native);
+    }
+    template<class T> EntityOne<T> core::Session::queryOneNamed(const std::string &sql, const common::NamedParams &params) const {
+        auto bound = common::bindNamed(sql, params);
+        if (bound.ok()) return queryOne<T>(bound.sql, bound.params);
+        EntityOne<T> result; result.status = std::move(bound.status); return result;
+    }
+
+    template<class T> EntityOne<T> Client::queryOne(const sql::BuildResult &build) const {
+        if (build.ok()) return queryOne<T>(build.statement.sql, build.statement.params);
+        EntityOne<T> result; result.status = build.status;
+        return result;
+    }
+    template<class T> EntityOne<T> Client::queryOne(const sql::Statement &statement) const {
+        return queryOne<T>(statement.sql, statement.params);
+    }
+
+    template<class T> std::future<EntityOne<T>> Client::queryOneAsync(const sql::BuildResult &build) const {
+        if (build.ok()) return queryOneAsync<T>(build.statement.sql, build.statement.params);
+        EntityOne<T> result; result.status = build.status;
+        std::promise<EntityOne<T>> promise; auto future = promise.get_future();
+        promise.set_value(std::move(result)); return future;
+    }
+    template<class T> std::future<EntityOne<T>> Client::queryOneAsync(const sql::Statement &statement) const {
+        return queryOneAsync<T>(statement.sql, statement.params);
+    }
+
+    template<class T> EntityOne<T> core::Session::queryOne(const sql::BuildResult &build) const {
+        if (build.ok()) return queryOne<T>(build.statement.sql, build.statement.params);
+        EntityOne<T> result; result.status = build.status;
+        return result;
+    }
+    template<class T> EntityOne<T> core::Session::queryOne(const sql::Statement &statement) const {
+        return queryOne<T>(statement.sql, statement.params);
+    }
+
+    template<class T> ScalarResult<T> core::Session::queryScalar(const std::string &sql, const common::Params &params) const {
+        auto raw = query(sql, params);
+        return sqlconduit::detail::directScalar<T>(std::move(raw.status), raw.rows, async::ExecutionMode::Native);
+    }
+    template<class T> ScalarResult<T> core::Session::queryScalarNamed(const std::string &sql, const common::NamedParams &params) const {
+        auto bound = common::bindNamed(sql, params);
+        if (bound.ok()) return queryScalar<T>(bound.sql, bound.params);
+        ScalarResult<T> result; result.status = std::move(bound.status); return result;
+    }
+
+    template<class T> ScalarResult<T> Client::queryScalar(const sql::BuildResult &build) const {
+        if (build.ok()) return queryScalar<T>(build.statement.sql, build.statement.params);
+        ScalarResult<T> result; result.status = build.status;
+        return result;
+    }
+    template<class T> ScalarResult<T> Client::queryScalar(const sql::Statement &statement) const {
+        return queryScalar<T>(statement.sql, statement.params);
+    }
+
+    template<class T> std::future<ScalarResult<T>> Client::queryScalarAsync(const sql::BuildResult &build) const {
+        if (build.ok()) return queryScalarAsync<T>(build.statement.sql, build.statement.params);
+        ScalarResult<T> result; result.status = build.status;
+        std::promise<ScalarResult<T>> promise; auto future = promise.get_future();
+        promise.set_value(std::move(result)); return future;
+    }
+    template<class T> std::future<ScalarResult<T>> Client::queryScalarAsync(const sql::Statement &statement) const {
+        return queryScalarAsync<T>(statement.sql, statement.params);
+    }
+
+    template<class T> ScalarResult<T> core::Session::queryScalar(const sql::BuildResult &build) const {
+        if (build.ok()) return queryScalar<T>(build.statement.sql, build.statement.params);
+        ScalarResult<T> result; result.status = build.status;
+        return result;
+    }
+    template<class T> ScalarResult<T> core::Session::queryScalar(const sql::Statement &statement) const {
+        return queryScalar<T>(statement.sql, statement.params);
+    }
+
+    template<class T> EntityResult<T> core::Session::queryColumn(const std::string &sql, const common::Params &params) const {
+        auto raw = query(sql, params);
+        return sqlconduit::detail::directColumns<T>(std::move(raw.status), raw.rows, async::ExecutionMode::Native);
+    }
+    template<class T> EntityResult<T> core::Session::queryColumnNamed(const std::string &sql, const common::NamedParams &params) const {
+        auto bound = common::bindNamed(sql, params);
+        if (bound.ok()) return queryColumn<T>(bound.sql, bound.params);
+        EntityResult<T> result; result.status = std::move(bound.status); return result;
+    }
+
+    template<class T> EntityResult<T> Client::queryColumn(const sql::BuildResult &build) const {
+        if (build.ok()) return queryColumn<T>(build.statement.sql, build.statement.params);
+        EntityResult<T> result; result.status = build.status;
+        return result;
+    }
+    template<class T> EntityResult<T> Client::queryColumn(const sql::Statement &statement) const {
+        return queryColumn<T>(statement.sql, statement.params);
+    }
+
+    template<class T> std::future<EntityResult<T>> Client::queryColumnAsync(const sql::BuildResult &build) const {
+        if (build.ok()) return queryColumnAsync<T>(build.statement.sql, build.statement.params);
+        EntityResult<T> result; result.status = build.status;
+        std::promise<EntityResult<T>> promise; auto future = promise.get_future();
+        promise.set_value(std::move(result)); return future;
+    }
+    template<class T> std::future<EntityResult<T>> Client::queryColumnAsync(const sql::Statement &statement) const {
+        return queryColumnAsync<T>(statement.sql, statement.params);
+    }
+
+    template<class T> EntityResult<T> core::Session::queryColumn(const sql::BuildResult &build) const {
+        if (build.ok()) return queryColumn<T>(build.statement.sql, build.statement.params);
+        EntityResult<T> result; result.status = build.status;
+        return result;
+    }
+    template<class T> EntityResult<T> core::Session::queryColumn(const sql::Statement &statement) const {
+        return queryColumn<T>(statement.sql, statement.params);
+    }
+}
+
+// Define at namespace scope. Fields are a chain of SQLCONDUIT_FIELD / NAMED_FIELD entries.
+// Explicit RowMapper specializations remain available for custom policies/converters.
+#define SQLCONDUIT_FIELD(member) .field(&SQLConduitMappedType::member, #member)
+#define SQLCONDUIT_NAMED_FIELD(member, column) .field(&SQLConduitMappedType::member, column)
+#define SQLCONDUIT_MAP(Type, fields) \
+    template<> struct sqlconduit::mapping::RowMapper<Type> { \
+        using SQLConduitMappedType = Type; \
+        static sqlconduit::mapping::Mapping<Type> describe() { \
+            return sqlconduit::mapping::Mapping<Type>() fields \
+                .missingColumns(sqlconduit::mapping::MissingColumns::Error); \
+        } \
+    };
+
+// Convenience registration for 1-32 public members with matching column names.
+// Define at global namespace scope, once per entity, instead of SQLCONDUIT_MAP.
+#define SQLCONDUIT_DETAIL_EXPAND_ENTITY(x) x
+#define SQLCONDUIT_DETAIL_ENTITY_PICK(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20, _21, _22, _23, _24, _25, _26, _27, _28, _29, _30, _31, _32, NAME, ...) NAME
+#define SQLCONDUIT_DETAIL_ENTITY_1(a1) SQLCONDUIT_FIELD(a1)
+#define SQLCONDUIT_DETAIL_ENTITY_2(a1, a2) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2)
+#define SQLCONDUIT_DETAIL_ENTITY_3(a1, a2, a3) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3)
+#define SQLCONDUIT_DETAIL_ENTITY_4(a1, a2, a3, a4) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4)
+#define SQLCONDUIT_DETAIL_ENTITY_5(a1, a2, a3, a4, a5) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5)
+#define SQLCONDUIT_DETAIL_ENTITY_6(a1, a2, a3, a4, a5, a6) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6)
+#define SQLCONDUIT_DETAIL_ENTITY_7(a1, a2, a3, a4, a5, a6, a7) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7)
+#define SQLCONDUIT_DETAIL_ENTITY_8(a1, a2, a3, a4, a5, a6, a7, a8) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8)
+#define SQLCONDUIT_DETAIL_ENTITY_9(a1, a2, a3, a4, a5, a6, a7, a8, a9) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9)
+#define SQLCONDUIT_DETAIL_ENTITY_10(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10)
+#define SQLCONDUIT_DETAIL_ENTITY_11(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11)
+#define SQLCONDUIT_DETAIL_ENTITY_12(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12)
+#define SQLCONDUIT_DETAIL_ENTITY_13(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13)
+#define SQLCONDUIT_DETAIL_ENTITY_14(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14)
+#define SQLCONDUIT_DETAIL_ENTITY_15(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15)
+#define SQLCONDUIT_DETAIL_ENTITY_16(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15) SQLCONDUIT_FIELD(a16)
+#define SQLCONDUIT_DETAIL_ENTITY_17(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15) SQLCONDUIT_FIELD(a16) SQLCONDUIT_FIELD(a17)
+#define SQLCONDUIT_DETAIL_ENTITY_18(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15) SQLCONDUIT_FIELD(a16) SQLCONDUIT_FIELD(a17) SQLCONDUIT_FIELD(a18)
+#define SQLCONDUIT_DETAIL_ENTITY_19(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15) SQLCONDUIT_FIELD(a16) SQLCONDUIT_FIELD(a17) SQLCONDUIT_FIELD(a18) SQLCONDUIT_FIELD(a19)
+#define SQLCONDUIT_DETAIL_ENTITY_20(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15) SQLCONDUIT_FIELD(a16) SQLCONDUIT_FIELD(a17) SQLCONDUIT_FIELD(a18) SQLCONDUIT_FIELD(a19) SQLCONDUIT_FIELD(a20)
+#define SQLCONDUIT_DETAIL_ENTITY_21(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15) SQLCONDUIT_FIELD(a16) SQLCONDUIT_FIELD(a17) SQLCONDUIT_FIELD(a18) SQLCONDUIT_FIELD(a19) SQLCONDUIT_FIELD(a20) SQLCONDUIT_FIELD(a21)
+#define SQLCONDUIT_DETAIL_ENTITY_22(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15) SQLCONDUIT_FIELD(a16) SQLCONDUIT_FIELD(a17) SQLCONDUIT_FIELD(a18) SQLCONDUIT_FIELD(a19) SQLCONDUIT_FIELD(a20) SQLCONDUIT_FIELD(a21) SQLCONDUIT_FIELD(a22)
+#define SQLCONDUIT_DETAIL_ENTITY_23(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15) SQLCONDUIT_FIELD(a16) SQLCONDUIT_FIELD(a17) SQLCONDUIT_FIELD(a18) SQLCONDUIT_FIELD(a19) SQLCONDUIT_FIELD(a20) SQLCONDUIT_FIELD(a21) SQLCONDUIT_FIELD(a22) SQLCONDUIT_FIELD(a23)
+#define SQLCONDUIT_DETAIL_ENTITY_24(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23, a24) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15) SQLCONDUIT_FIELD(a16) SQLCONDUIT_FIELD(a17) SQLCONDUIT_FIELD(a18) SQLCONDUIT_FIELD(a19) SQLCONDUIT_FIELD(a20) SQLCONDUIT_FIELD(a21) SQLCONDUIT_FIELD(a22) SQLCONDUIT_FIELD(a23) SQLCONDUIT_FIELD(a24)
+#define SQLCONDUIT_DETAIL_ENTITY_25(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23, a24, a25) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15) SQLCONDUIT_FIELD(a16) SQLCONDUIT_FIELD(a17) SQLCONDUIT_FIELD(a18) SQLCONDUIT_FIELD(a19) SQLCONDUIT_FIELD(a20) SQLCONDUIT_FIELD(a21) SQLCONDUIT_FIELD(a22) SQLCONDUIT_FIELD(a23) SQLCONDUIT_FIELD(a24) SQLCONDUIT_FIELD(a25)
+#define SQLCONDUIT_DETAIL_ENTITY_26(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23, a24, a25, a26) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15) SQLCONDUIT_FIELD(a16) SQLCONDUIT_FIELD(a17) SQLCONDUIT_FIELD(a18) SQLCONDUIT_FIELD(a19) SQLCONDUIT_FIELD(a20) SQLCONDUIT_FIELD(a21) SQLCONDUIT_FIELD(a22) SQLCONDUIT_FIELD(a23) SQLCONDUIT_FIELD(a24) SQLCONDUIT_FIELD(a25) SQLCONDUIT_FIELD(a26)
+#define SQLCONDUIT_DETAIL_ENTITY_27(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23, a24, a25, a26, a27) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15) SQLCONDUIT_FIELD(a16) SQLCONDUIT_FIELD(a17) SQLCONDUIT_FIELD(a18) SQLCONDUIT_FIELD(a19) SQLCONDUIT_FIELD(a20) SQLCONDUIT_FIELD(a21) SQLCONDUIT_FIELD(a22) SQLCONDUIT_FIELD(a23) SQLCONDUIT_FIELD(a24) SQLCONDUIT_FIELD(a25) SQLCONDUIT_FIELD(a26) SQLCONDUIT_FIELD(a27)
+#define SQLCONDUIT_DETAIL_ENTITY_28(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23, a24, a25, a26, a27, a28) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15) SQLCONDUIT_FIELD(a16) SQLCONDUIT_FIELD(a17) SQLCONDUIT_FIELD(a18) SQLCONDUIT_FIELD(a19) SQLCONDUIT_FIELD(a20) SQLCONDUIT_FIELD(a21) SQLCONDUIT_FIELD(a22) SQLCONDUIT_FIELD(a23) SQLCONDUIT_FIELD(a24) SQLCONDUIT_FIELD(a25) SQLCONDUIT_FIELD(a26) SQLCONDUIT_FIELD(a27) SQLCONDUIT_FIELD(a28)
+#define SQLCONDUIT_DETAIL_ENTITY_29(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23, a24, a25, a26, a27, a28, a29) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15) SQLCONDUIT_FIELD(a16) SQLCONDUIT_FIELD(a17) SQLCONDUIT_FIELD(a18) SQLCONDUIT_FIELD(a19) SQLCONDUIT_FIELD(a20) SQLCONDUIT_FIELD(a21) SQLCONDUIT_FIELD(a22) SQLCONDUIT_FIELD(a23) SQLCONDUIT_FIELD(a24) SQLCONDUIT_FIELD(a25) SQLCONDUIT_FIELD(a26) SQLCONDUIT_FIELD(a27) SQLCONDUIT_FIELD(a28) SQLCONDUIT_FIELD(a29)
+#define SQLCONDUIT_DETAIL_ENTITY_30(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23, a24, a25, a26, a27, a28, a29, a30) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15) SQLCONDUIT_FIELD(a16) SQLCONDUIT_FIELD(a17) SQLCONDUIT_FIELD(a18) SQLCONDUIT_FIELD(a19) SQLCONDUIT_FIELD(a20) SQLCONDUIT_FIELD(a21) SQLCONDUIT_FIELD(a22) SQLCONDUIT_FIELD(a23) SQLCONDUIT_FIELD(a24) SQLCONDUIT_FIELD(a25) SQLCONDUIT_FIELD(a26) SQLCONDUIT_FIELD(a27) SQLCONDUIT_FIELD(a28) SQLCONDUIT_FIELD(a29) SQLCONDUIT_FIELD(a30)
+#define SQLCONDUIT_DETAIL_ENTITY_31(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23, a24, a25, a26, a27, a28, a29, a30, a31) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15) SQLCONDUIT_FIELD(a16) SQLCONDUIT_FIELD(a17) SQLCONDUIT_FIELD(a18) SQLCONDUIT_FIELD(a19) SQLCONDUIT_FIELD(a20) SQLCONDUIT_FIELD(a21) SQLCONDUIT_FIELD(a22) SQLCONDUIT_FIELD(a23) SQLCONDUIT_FIELD(a24) SQLCONDUIT_FIELD(a25) SQLCONDUIT_FIELD(a26) SQLCONDUIT_FIELD(a27) SQLCONDUIT_FIELD(a28) SQLCONDUIT_FIELD(a29) SQLCONDUIT_FIELD(a30) SQLCONDUIT_FIELD(a31)
+#define SQLCONDUIT_DETAIL_ENTITY_32(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23, a24, a25, a26, a27, a28, a29, a30, a31, a32) SQLCONDUIT_FIELD(a1) SQLCONDUIT_FIELD(a2) SQLCONDUIT_FIELD(a3) SQLCONDUIT_FIELD(a4) SQLCONDUIT_FIELD(a5) SQLCONDUIT_FIELD(a6) SQLCONDUIT_FIELD(a7) SQLCONDUIT_FIELD(a8) SQLCONDUIT_FIELD(a9) SQLCONDUIT_FIELD(a10) SQLCONDUIT_FIELD(a11) SQLCONDUIT_FIELD(a12) SQLCONDUIT_FIELD(a13) SQLCONDUIT_FIELD(a14) SQLCONDUIT_FIELD(a15) SQLCONDUIT_FIELD(a16) SQLCONDUIT_FIELD(a17) SQLCONDUIT_FIELD(a18) SQLCONDUIT_FIELD(a19) SQLCONDUIT_FIELD(a20) SQLCONDUIT_FIELD(a21) SQLCONDUIT_FIELD(a22) SQLCONDUIT_FIELD(a23) SQLCONDUIT_FIELD(a24) SQLCONDUIT_FIELD(a25) SQLCONDUIT_FIELD(a26) SQLCONDUIT_FIELD(a27) SQLCONDUIT_FIELD(a28) SQLCONDUIT_FIELD(a29) SQLCONDUIT_FIELD(a30) SQLCONDUIT_FIELD(a31) SQLCONDUIT_FIELD(a32)
+#define SQLCONDUIT_DETAIL_ENTITY_FIELDS(...) \
+    SQLCONDUIT_DETAIL_EXPAND_ENTITY(SQLCONDUIT_DETAIL_EXPAND_ENTITY(SQLCONDUIT_DETAIL_ENTITY_PICK(__VA_ARGS__, SQLCONDUIT_DETAIL_ENTITY_32, SQLCONDUIT_DETAIL_ENTITY_31, SQLCONDUIT_DETAIL_ENTITY_30, SQLCONDUIT_DETAIL_ENTITY_29, SQLCONDUIT_DETAIL_ENTITY_28, SQLCONDUIT_DETAIL_ENTITY_27, SQLCONDUIT_DETAIL_ENTITY_26, SQLCONDUIT_DETAIL_ENTITY_25, SQLCONDUIT_DETAIL_ENTITY_24, SQLCONDUIT_DETAIL_ENTITY_23, SQLCONDUIT_DETAIL_ENTITY_22, SQLCONDUIT_DETAIL_ENTITY_21, SQLCONDUIT_DETAIL_ENTITY_20, SQLCONDUIT_DETAIL_ENTITY_19, SQLCONDUIT_DETAIL_ENTITY_18, SQLCONDUIT_DETAIL_ENTITY_17, SQLCONDUIT_DETAIL_ENTITY_16, SQLCONDUIT_DETAIL_ENTITY_15, SQLCONDUIT_DETAIL_ENTITY_14, SQLCONDUIT_DETAIL_ENTITY_13, SQLCONDUIT_DETAIL_ENTITY_12, SQLCONDUIT_DETAIL_ENTITY_11, SQLCONDUIT_DETAIL_ENTITY_10, SQLCONDUIT_DETAIL_ENTITY_9, SQLCONDUIT_DETAIL_ENTITY_8, SQLCONDUIT_DETAIL_ENTITY_7, SQLCONDUIT_DETAIL_ENTITY_6, SQLCONDUIT_DETAIL_ENTITY_5, SQLCONDUIT_DETAIL_ENTITY_4, SQLCONDUIT_DETAIL_ENTITY_3, SQLCONDUIT_DETAIL_ENTITY_2, SQLCONDUIT_DETAIL_ENTITY_1, unused))(__VA_ARGS__))
+#define SQLCONDUIT_ENTITY(Type, tableName, ...) \
+    SQLCONDUIT_MAP(Type, .table(tableName) SQLCONDUIT_DETAIL_ENTITY_FIELDS(__VA_ARGS__))
+#define SQLCONDUIT_TABLE(name) .table(name)
+#define SQLCONDUIT_FLAGGED_FIELD(member, column, flags) .field(&SQLConduitMappedType::member, column, flags)
 
 #endif

@@ -16,13 +16,18 @@ namespace sqlconduit::async {
     struct QueryResult {
         common::Status status;
         common::ResultSet rows;
-        ExecutionMode mode = ExecutionMode::Native;
+        ExecutionMode mode{ExecutionMode::Native};
+        [[nodiscard]] bool ok() const { return status.ok(); }
+        common::ResultSet &rowsOrThrow() & { common::throwIfError(status); return rows; }
+        const common::ResultSet &rowsOrThrow() const & { common::throwIfError(status); return rows; }
+        common::ResultSet rowsOrThrow() && { common::throwIfError(status); return std::move(rows); }
     };
 
     struct MultiQueryResult {
         common::Status status;
         std::vector<common::ResultSet> sets;
-        ExecutionMode mode = ExecutionMode::Native;
+        ExecutionMode mode{ExecutionMode::Native};
+        [[nodiscard]] bool ok() const { return status.ok(); }
 
         [[nodiscard]] std::size_t rowCount() const {
             std::size_t n = 0;
@@ -34,31 +39,36 @@ namespace sqlconduit::async {
     struct ExecResult {
         common::Status status;
         std::int64_t affected = 0;
-        ExecutionMode mode = ExecutionMode::Native;
+        ExecutionMode mode{ExecutionMode::Native};
+        [[nodiscard]] bool ok() const { return status.ok(); }
     };
 
     struct ExecKeysResult {
         common::Status status;
         std::int64_t affected = 0;
         common::GeneratedKeys keys;
-        ExecutionMode mode = ExecutionMode::Native;
+        ExecutionMode mode{ExecutionMode::Native};
+        [[nodiscard]] bool ok() const { return status.ok(); }
     };
 
     struct EachResult {
         common::Status status;
         std::uint64_t rows = 0;
-        ExecutionMode mode = ExecutionMode::Native;
+        ExecutionMode mode{ExecutionMode::Native};
+        [[nodiscard]] bool ok() const { return status.ok(); }
     };
 
     struct BatchResult {
         common::Status status;
         common::BatchResult batch;
-        ExecutionMode mode = ExecutionMode::Native;
+        ExecutionMode mode{ExecutionMode::Native};
+        [[nodiscard]] bool ok() const { return status.ok(); }
     };
 
     struct OpResult {
         common::Status status;
-        ExecutionMode mode = ExecutionMode::Native;
+        ExecutionMode mode{ExecutionMode::Native};
+        [[nodiscard]] bool ok() const { return status.ok(); }
     };
 
     struct ExecutorStats {

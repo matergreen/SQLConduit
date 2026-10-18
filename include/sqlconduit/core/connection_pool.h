@@ -2,6 +2,7 @@
 #define SQLCONDUIT_CORE_CONNECTION_POOL_H
 
 #include "sqlconduit/common/connection_pool_stats.h"
+#include "sqlconduit/common/context.h"
 #include "sqlconduit/core/idatabase_connection.h"
 #include "sqlconduit/config/datasource_config.h"
 #include "sqlconduit/driver/idriver.h"
@@ -22,6 +23,7 @@ namespace sqlconduit::core {
         std::function<bool(std::function<void()>)> post;
         std::function<bool(std::function<void()>)> deliver;
         std::function<void(std::function<void()>, std::chrono::milliseconds)> postAfter;
+        std::shared_ptr<common::detail::OperationState> operation;
 
         [[nodiscard]] bool usable() const {
             return static_cast<bool>(post) && static_cast<bool>(deliver) &&
@@ -148,6 +150,7 @@ namespace sqlconduit::core {
                 std::chrono::steady_clock::time_point deadline;
                 std::function<void(std::unique_ptr<Handle>, common::Status)> complete;
                 AsyncIo io;
+                std::shared_ptr<void> cancellationLease;
             };
 
             std::mutex mtx;
@@ -192,6 +195,7 @@ namespace sqlconduit::core {
                                                               std::string &error) const;
 
         void expireWaiters() const;
+        void wakeAsyncWaiters() const;
 
         void postCreateTask(const AsyncIo &io,
                             std::function<void(std::unique_ptr<Handle>, common::Status)> complete,

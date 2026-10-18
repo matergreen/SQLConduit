@@ -55,6 +55,51 @@ namespace sqlconduit::config {
         return true;
     }
 
+    bool ConfigLoader::previewReload(const GlobalConfig &current, const GlobalConfig &candidate,
+                                      std::string &report, std::string &error) {
+        using json = nlohmann::json;
+        report.clear();
+        if (!validateTopology(current, error) || !validateTopology(candidate, error)) return false;
+        auto comparable = [](const GlobalConfig &cfg) {
+            auto value = json::parse(explain(cfg));
+            // Secret values participate in equality, but are never serialized into the report.
+            json sources = json::object(), groups = json::object();
+            for (std::size_t i = 0; i < cfg.datasources.size(); ++i) {
+                const auto &d = cfg.datasources[i];
+                auto entry = value["datasources"][i];
+                entry["password"] = d.password;
+                entry["dsn"] = d.dsn;
+                entry["tls"]["key"] = d.tls_key;
+                entry["oracle"]["wallet_location"] = d.oracle.wallet_location;
+                entry["extra"] = d.extra;
+                sources[d.name] = std::move(entry);
+            }
+            for (const auto &g : value["groups"]) groups[g["name"].get<std::string>()] = g;
+            value["datasources"] = std::move(sources);
+            value["groups"] = std::move(groups);
+            return value;
+        };
+        const auto before = comparable(current), after = comparable(candidate);
+        json changes = json::array(), rebuilt = json::array(), retired = json::array();
+        json removed = json::array(), added = json::array();
+        for (const auto &op : json::diff(before, after))
+            changes.push_back({{"op", op["op"]}, {"path", op["path"]}});
+        std::set<std::string> oldNames, newNames;
+        for (const auto &d : current.datasources) { retired.push_back(d.name); oldNames.insert(d.name); }
+        for (const auto &g : current.groups) oldNames.insert(g.name);
+        for (const auto &d : candidate.datasources) { rebuilt.push_back(d.name); newNames.insert(d.name); }
+        for (const auto &g : candidate.groups) newNames.insert(g.name);
+        for (const auto &name : oldNames) if (!newNames.count(name)) removed.push_back(name);
+        for (const auto &name : newNames) if (!oldNames.count(name)) added.push_back(name);
+        report = json{{"ok", true}, {"applied", false}, {"offline", true},
+            {"changed", !changes.empty()}, {"changes", changes}, {"addedSources", added},
+            {"removedSources", removed}, {"rebuiltPools", rebuilt}, {"retiredPools", retired},
+            {"allPoolsRebuilt", true}, {"requiresLiveValidation", true},
+            {"inFlightPolicy", "Old pools drain within the grace period supplied to Client::reload; do not assume unlimited completion or replay"},
+            {"failurePolicy", "Candidate topology is built before replacement; offline validation cannot prove driver availability or connectivity"}}.dump(2);
+        return true;
+    }
+
     std::string ConfigLoader::explain(const GlobalConfig &c) {
         using json = nlohmann::json;
         // Serialize typed values rather than raw input so implicit defaults and

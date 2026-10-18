@@ -1,5 +1,6 @@
 #include "sqlconduit/core/connection_pool.h"
 #include "sqlconduit/common/logger.h"
+#include "../common/operation_state.h"
 
 #include <algorithm>
 #include <memory>
@@ -193,8 +194,20 @@ namespace sqlconduit::core {
         if (timeout < std::chrono::milliseconds(0)) timeout = borrowTimeout_;
         if (timeout < std::chrono::milliseconds(0)) timeout = std::chrono::milliseconds(0);
 
+        const auto operation = common::detail::currentOperation();
+        if (operation) timeout = operation->remaining(timeout);
+        auto cancellation = operation ? operation->subscribe([weak = std::weak_ptr<State>(state_)] {
+            if (auto state = weak.lock()) {
+                state->cv.notify_all();
+            }
+        }) : nullptr;
+
         code = common::ErrorCode::Ok;
         error.clear();
+        if (operation) {
+            const auto stop = operation->status();
+            if (!stop.ok()) { code = stop.code; error = stop.message; return nullptr; }
+        }
 
         const auto borrowStarted = std::chrono::steady_clock::now();
         const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -246,6 +259,10 @@ namespace sqlconduit::core {
         }
 
         for (;;) {
+            if (operation) {
+                const auto stop = operation->status();
+                if (!stop.ok()) { code = stop.code; error = stop.message; recordWait(); return nullptr; }
+            }
             if (state_->closed) {
                 code = common::ErrorCode::PoolClosed;
                 error = "pool '" + name() + "' is closed";
@@ -340,9 +357,15 @@ namespace sqlconduit::core {
             }
             ++state_->waiting;
             if (metrics) state_->maxWaiting = std::max(state_->maxWaiting, state_->waiting);
-            const auto waitResult = state_->cv.wait_until(lk, deadline);
+            const auto wake = operation ? std::min(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(10)) : deadline;
+            const auto waitResult = state_->cv.wait_until(lk, wake);
             --state_->waiting;
             if (waitResult == std::cv_status::timeout) {
+                if (operation) {
+                    const auto stop = operation->status();
+                    if (!stop.ok()) { code = stop.code; error = stop.message; recordWait(); return nullptr; }
+                }
+                if (operation && std::chrono::steady_clock::now() < deadline) continue;
                 if (metrics) ++state_->borrowTimeouts;
                 code = common::ErrorCode::PoolExhausted;
                 error = "pool '" + name() + "' exhausted: waited "
@@ -364,7 +387,8 @@ namespace sqlconduit::core {
             const auto now = std::chrono::steady_clock::now();
             for (auto it = state_->asyncWaiters.begin();
                  it != state_->asyncWaiters.end();) {
-                if (it->deadline <= now) {
+                const auto stop = it->io.operation ? it->io.operation->status() : common::Status{};
+                if (it->deadline <= now || !stop.ok()) {
                     if (state_->metricsEnabled) ++state_->borrowTimeouts;
                     const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
                         now - it->enqueuedAt);
@@ -372,7 +396,7 @@ namespace sqlconduit::core {
                     it = state_->asyncWaiters.erase(it);
                     expired.emplace_back(
                         std::move(waiter),
-                        common::Status::error(
+                        !stop.ok() ? stop : common::Status::error(
                             common::ErrorCode::PoolExhausted,
                             poolExhaustedMessage(name(), maxConn_, state_->total,
                                                  state_->borrowed, waited)));
@@ -411,6 +435,18 @@ namespace sqlconduit::core {
         if (effective < std::chrono::milliseconds(0)) effective = std::chrono::milliseconds(0);
 
         expireWaiters();
+
+        auto cancellation = io.operation ? io.operation->subscribe([weak = weak_from_this(), deliver = io.deliver] {
+            // Deadline callbacks must not block on a pool mutex or SDK close/ping.
+            (void) deliver([weak] { if (auto pool = weak.lock()) pool->expireWaiters(); });
+        }) : nullptr;
+        if (io.operation) {
+            if (auto stop = io.operation->status(); !stop.ok()) {
+                deliverBorrowResult(io, std::move(complete), nullptr, std::move(stop));
+                return;
+            }
+            effective = io.operation->remaining(effective);
+        }
 
         const auto now = std::chrono::steady_clock::now();
         const auto deadline = now + effective;
@@ -554,13 +590,49 @@ namespace sqlconduit::core {
             return;
         }
         state_->asyncWaiters.push_back(
-            State::AsyncWaiter{now, deadline, std::move(complete), io});
+            State::AsyncWaiter{now, deadline, std::move(complete), io, std::move(cancellation)});
         lk.unlock();
+        // A cancellation can race registration and insertion into the waiter list.
+        if (io.operation && !io.operation->status().ok()) expireWaiters();
 
         // Keep the deadline active even if no connection is returned and no heartbeat runs.
         io.postAfter([weak = weak_from_this()] {
             if (const auto self = weak.lock()) self->expireWaiters();
         }, effective);
+    }
+
+    void ConnectionPool::wakeAsyncWaiters() const {
+        expireWaiters();
+        using Delivery = std::pair<State::AsyncWaiter, std::unique_ptr<Handle>>;
+        std::vector<Delivery> deliveries;
+        std::vector<State::AsyncWaiter> creates;
+        {
+            std::lock_guard<std::mutex> lock(state_->mtx);
+            if (state_->closed) return;
+            while (!state_->asyncWaiters.empty()) {
+                if (!state_->idle.empty()) {
+                    auto item = std::move(state_->idle.front());
+                    state_->idle.pop();
+                    auto waiter = std::move(state_->asyncWaiters.front());
+                    state_->asyncWaiters.pop_front();
+                    ++state_->borrowed;
+                    if (state_->metricsEnabled) {
+                        ++state_->borrowSuccesses;
+                        state_->maxBorrowed = std::max(state_->maxBorrowed, state_->borrowed);
+                    }
+                    deliveries.emplace_back(std::move(waiter), std::unique_ptr<Handle>(new Handle(
+                        state_, std::move(item.conn), item.createdAt, std::chrono::steady_clock::now())));
+                } else if (state_->total < maxConn_) {
+                    ++state_->total;
+                    creates.push_back(std::move(state_->asyncWaiters.front()));
+                    state_->asyncWaiters.pop_front();
+                } else break;
+            }
+        }
+        for (auto &delivery : deliveries)
+            deliverBorrowResult(delivery.first.io, std::move(delivery.first.complete),
+                                std::move(delivery.second), common::Status::OK());
+        for (auto &waiter : creates) postCreateTask(waiter.io, std::move(waiter.complete), true);
     }
 
     void ConnectionPool::postCreateTask(
@@ -711,6 +783,10 @@ namespace sqlconduit::core {
             }
             if (!fresh.empty()) state_->cv.notify_all();
         }
+        // A heartbeat temporarily removes idle connections without borrowing them.
+        // Requests arriving during that interval must be resumed after restoration/refill.
+        state_->cv.notify_all();
+        wakeAsyncWaiters();
     }
 
     void ConnectionPool::shutdown(const std::chrono::milliseconds grace) const {

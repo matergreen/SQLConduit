@@ -2,6 +2,7 @@
 
 #include "sqlconduit/core/interceptor.h"
 #include "sqlconduit/core/runtime_services.h"
+#include "../common/operation_state.h"
 
 #include <algorithm>
 #include <atomic>
@@ -21,6 +22,12 @@ namespace sqlconduit::async::detail {
             std::atomic<bool> timeoutDelivered{false};
             std::mutex handleMutex;
             std::shared_ptr<std::unique_ptr<core::ConnectionPool::Handle> > handle;
+            std::recursive_mutex stopMutex;
+            std::shared_ptr<void> stopLease;
+            void releaseStop() {
+                std::lock_guard<std::recursive_mutex> lock(stopMutex);
+                stopLease.reset();
+            }
         };
     }
 
@@ -38,6 +45,7 @@ namespace sqlconduit::async::detail {
                             const std::chrono::milliseconds borrowTimeout,
                             core::AsyncIo io, QueryCompletion completion) {
         if (!source || !io.usable() || !completion) return false;
+        io.operation = context.operation;
         if (source->primary_) {
             return queryGroup(source, std::move(sql), std::move(params),
                               std::move(context), borrowTimeout,
@@ -91,6 +99,13 @@ namespace sqlconduit::async::detail {
         state->run = [weak](const int attempt, const bool applyPreGate) {
             const auto state = weak.lock();
             if (!state) return;
+            if (state->context.operation) {
+                if (auto stop = state->context.operation->status(); !stop.ok()) {
+                    QueryResult result; result.status = std::move(stop);
+                    result.mode = ExecutionMode::CompatibilityFallback;
+                    state->completion(std::move(result)); return;
+                }
+            }
             auto remaining = state->timeout;
             if (state->timeout > std::chrono::milliseconds(0)) {
                 const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -229,6 +244,13 @@ namespace sqlconduit::async::detail {
                     std::unique_ptr<core::ConnectionPool::Handle> handle,
                     common::Status status) mutable {
                     const common::ContextScope scope(context);
+                    if (context.operation) {
+                        if (auto stop = context.operation->status(); !stop.ok()) {
+                            QueryResult result; result.status = std::move(stop);
+                            result.mode = ExecutionMode::CompatibilityFallback;
+                            completion(std::move(result)); return;
+                        }
+                    }
                     source->services_->phase(common::ExecutionPhase::PoolWait, context,
                         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - poolWaitStarted), status.code);
                     if (!status.ok() || !handle) {
@@ -275,6 +297,7 @@ namespace sqlconduit::async::detail {
                         control->handle = std::make_shared<
                             std::unique_ptr<core::ConnectionPool::Handle> >(std::move(handle));
                         const auto nativeContext = routedContext;
+                        if (context.operation) control->stopLease = context.operation->bind((*control->handle)->get(), false, true);
                         const bool started = (*control->handle)->get()->queryAsync(
                             sql, params,
                             [source, control, sql, params, cacheKey,
@@ -285,8 +308,12 @@ namespace sqlconduit::async::detail {
                                 control->driverCompleted.store(true, std::memory_order_release);
                                 if (control->resolved.exchange(true, std::memory_order_acq_rel)) {
                                     if (control->timeoutDelivered.load(std::memory_order_acquire)) {
-                                        std::lock_guard<std::mutex> lock(control->handleMutex);
-                                        control->handle->reset();
+                                        auto release = [control] {
+                                            control->releaseStop();
+                                            std::lock_guard<std::mutex> lock(control->handleMutex);
+                                            control->handle->reset();
+                                        };
+                                        if (!io.deliver(release)) release();
                                     }
                                     return;
                                 }
@@ -296,6 +323,13 @@ namespace sqlconduit::async::detail {
                                             rows = std::move(rows), operationStarted,
                                             runInterceptors]() mutable {
                                     const common::ContextScope scope(context);
+                                    control->releaseStop();
+                                    if (context.operation) {
+                                        if (auto stop = context.operation->status(); !stop.ok()) {
+                                            nativeStatus = std::move(stop);
+                                            nativeStatus.connectionBroken = true;
+                                        }
+                                    }
                                     if (nativeStatus.connectionBroken) {
                                         std::lock_guard<std::mutex> lock(control->handleMutex);
                                         if (*control->handle) (*control->handle)->invalidate();
@@ -405,6 +439,7 @@ namespace sqlconduit::async::detail {
                                                     true, std::memory_order_release);
                                                 if (control->driverCompleted.load(
                                                         std::memory_order_acquire)) {
+                                                    control->releaseStop();
                                                     std::lock_guard<std::mutex> lock(
                                                         control->handleMutex);
                                                     control->handle->reset();
@@ -433,6 +468,7 @@ namespace sqlconduit::async::detail {
                             }
                             return;
                         }
+                        control->releaseStop();
                         handle = std::move(*control->handle);
                     }
 
@@ -441,6 +477,12 @@ namespace sqlconduit::async::detail {
                         handle->get()->asyncCapability() == core::AsyncCapability::Native
                             ? common::FallbackReason::DriverDeclinedStatement
                             : common::FallbackReason::DriverUnsupported);
+                    if (context.operation && !context.operation->fallbackAllowed()) {
+                        QueryResult result;
+                        result.status = common::Status::error(common::ErrorCode::NotSupported, "operation requires native async execution");
+                        result.mode = ExecutionMode::CompatibilityFallback;
+                        completion(std::move(result)); return;
+                    }
                     auto session = source->makeSession(std::move(handle));
                     QueryResult result;
                     result.mode = ExecutionMode::CompatibilityFallback;
@@ -515,6 +557,7 @@ namespace sqlconduit::async::detail {
                               const std::chrono::milliseconds borrowTimeout,
                               core::AsyncIo io, ExecuteCompletion completion) {
         if (!source || !io.usable() || !completion) return false;
+        io.operation = context.operation;
         if (source->primary_) {
             return executeGroup(source, std::move(sql), std::move(params),
                                 std::move(context), borrowTimeout,
@@ -574,7 +617,15 @@ namespace sqlconduit::async::detail {
         state->run = [weak](const int attempt, const bool applyPreGate) {
             const auto state = weak.lock();
             if (!state) return;
+            if (state->context.operation) {
+                if (auto stop = state->context.operation->status(); !stop.ok()) {
+                    ExecResult result; result.status = std::move(stop);
+                    result.mode = ExecutionMode::CompatibilityFallback;
+                    state->completion(std::move(result)); return;
+                }
+            }
             const bool started = AsyncEngine::executeOne(
+                // The absolute operation budget survives retries and routing.
                 state->source, state->sql, state->params, state->context,
                 state->timeout, state->io,
                 applyPreGate && state->applyPreGate, state->runInterceptors,
@@ -651,6 +702,13 @@ namespace sqlconduit::async::detail {
                     std::unique_ptr<core::ConnectionPool::Handle> handle,
                     common::Status status) mutable {
                     const common::ContextScope scope(context);
+                    if (context.operation) {
+                        if (auto stop = context.operation->status(); !stop.ok()) {
+                            ExecResult result; result.status = std::move(stop);
+                            result.mode = ExecutionMode::CompatibilityFallback;
+                            completion(std::move(result)); return;
+                        }
+                    }
                     source->services_->phase(common::ExecutionPhase::PoolWait, context,
                         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - poolWaitStarted), status.code);
                     if (!status.ok() || !handle) {
@@ -695,19 +753,28 @@ namespace sqlconduit::async::detail {
                         }
                         auto boxed = std::make_shared<
                             std::unique_ptr<core::ConnectionPool::Handle> >(std::move(handle));
+                        const auto stopLease = std::make_shared<std::shared_ptr<void>>();
+                        if (context.operation) *stopLease = context.operation->bind((*boxed)->get(), true, true);
                         const auto startedAt = std::chrono::steady_clock::now();
                         const bool started = (*boxed)->get()->executeAsync(
                             sql, params,
-                            [source, boxed, sql, params,
+                            [source, boxed, stopLease, sql, params,
                              context = std::move(routedContext), io, completion,
                              startedAt, runInterceptors](common::Status nativeStatus,
                                         const std::int64_t affected) mutable {
-                                auto deliver = [source, boxed, sql, params, context,
+                                auto deliver = [source, boxed, stopLease, sql, params, context,
                                             completion = std::move(completion),
                                             nativeStatus = std::move(nativeStatus),
                                             affected, startedAt,
                                             runInterceptors]() mutable {
                                     const common::ContextScope scope(context);
+                                    stopLease->reset();
+                                    if (context.operation) {
+                                        if (auto stop = context.operation->status(); !stop.ok()) {
+                                            if (!nativeStatus.ok()) nativeStatus = std::move(stop);
+                                            nativeStatus.connectionBroken = true;
+                                        }
+                                    }
                                     if (nativeStatus.connectionBroken) (*boxed)->invalidate();
                                     source->afterAttempt(nativeStatus);
                                     if (nativeStatus.ok()) source->markWrite();
@@ -756,6 +823,7 @@ namespace sqlconduit::async::detail {
                             source->services_->phase(common::ExecutionPhase::Native, context);
                             return;
                         }
+                        stopLease->reset();
                         handle = std::move(*boxed);
                     }
 
@@ -764,6 +832,12 @@ namespace sqlconduit::async::detail {
                         handle->get()->asyncCapability() == core::AsyncCapability::Native
                             ? common::FallbackReason::DriverDeclinedStatement
                             : common::FallbackReason::DriverUnsupported);
+                    if (context.operation && !context.operation->fallbackAllowed()) {
+                        ExecResult result;
+                        result.status = common::Status::error(common::ErrorCode::NotSupported, "operation requires native async execution");
+                        result.mode = ExecutionMode::CompatibilityFallback;
+                        completion(std::move(result)); return;
+                    }
                     auto session = source->makeSession(std::move(handle));
                     ExecResult result;
                     result.mode = ExecutionMode::CompatibilityFallback;

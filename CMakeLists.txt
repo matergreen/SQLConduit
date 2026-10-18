@@ -100,6 +100,8 @@ endif()
 
 set(SQLCONDUIT_CORE_SOURCES
     src/common/types.cpp
+    src/common/named_params.cpp
+    src/common/operation_options.cpp
     src/common/pg_types.cpp
     src/common/oracle_types.cpp
     src/common/context.cpp

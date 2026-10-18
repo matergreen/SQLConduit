@@ -5,10 +5,13 @@ set(SQLCONDUIT_FROZEN_PUBLIC_HEADERS
     sqlconduit/api.h
     sqlconduit/async/async_types.h
     sqlconduit/client.h
+    sqlconduit/typed_sql_builder.h
     sqlconduit/common/connection_pool_stats.h
     sqlconduit/common/context.h
     sqlconduit/common/diagnostics.h
     sqlconduit/common/logger.h
+    sqlconduit/common/named_params.h
+    sqlconduit/common/operation_options.h
     sqlconduit/common/observer.h
     sqlconduit/common/oracle_types.h
     sqlconduit/common/pg_types.h

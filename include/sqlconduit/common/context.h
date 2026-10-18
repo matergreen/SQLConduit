@@ -3,10 +3,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace sqlconduit::common {
+    namespace detail { class OperationState; }
     enum class Idempotency {
         Unspecified = 0,
         Idempotent = 1,
@@ -22,11 +24,12 @@ namespace sqlconduit::common {
         bool wroteInThisRequest = false;
         Idempotency idempotency = Idempotency::Unspecified;
         std::uint8_t traceFlags = 1;
+        std::shared_ptr<detail::OperationState> operation;
 
         [[nodiscard]] bool empty() const {
             return traceId.empty() && spanId.empty() && tenantId.empty()
                    && targetDataSource.empty() && !shadow && !wroteInThisRequest
-                   && idempotency == Idempotency::Unspecified;
+                   && idempotency == Idempotency::Unspecified && !operation;
         }
     };
 

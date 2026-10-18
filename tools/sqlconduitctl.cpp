@@ -39,8 +39,57 @@ namespace {
     }
 
     int run(int argc, char **argv) {
+        if (argc >= 3 && std::string(argv[1]) == "init") {
+            const std::string type = argv[2];
+            const std::string format = argc == 5 && std::string(argv[3]) == "--format" ? argv[4] : "yaml";
+            if ((argc != 3 && argc != 5) || (argc == 5 && std::string(argv[3]) != "--format") ||
+                (format != "json" && format != "yaml") ||
+                (type != "mysql" && type != "postgres" && type != "odbc" && type != "oracle")) {
+                std::cout << json{{"ok", false}, {"error", "invalid_init_options"}}.dump() << '\n';
+                return 2;
+            }
+            const int port = type == "mysql" ? 3306 : type == "postgres" ? 5432 : type == "oracle" ? 1521 : 1433;
+            const std::string dsn = "Driver={ODBC Driver 18 for SQL Server};Server=localhost,1433;Database=app;Encrypt=yes;TrustServerCertificate=no;";
+            json source{{"name", "primary"}, {"type", type}, {"host", "localhost"},
+                {"port", port}, {"user", "app"}, {"database", "app"},
+                {"password_env", "SQLCONDUIT_DB_PASSWORD"}};
+            if (type == "odbc") source["dsn"] = dsn;
+            if (type == "oracle") source["oracle"] = {{"service_name", "FREEPDB1"}};
+            if (format == "json") {
+                std::cout << json{{"default_datasource", "primary"}, {"pool", {{"min", 0}, {"max", 8}}},
+                    {"datasources", json::array({source})}}.dump(2) << '\n';
+            } else {
+                // Only fixed, known values are emitted; no credential input is accepted.
+                std::cout << "# Set SQLCONDUIT_DB_PASSWORD before validation or startup.\n"
+                    "# Configure TLS and production endpoints before deployment.\n"
+                    "default_datasource: primary\npool:\n  min: 0\n  max: 8\ndatasources:\n"
+                    "  - name: primary\n    type: " << type << "\n    host: localhost\n    port: " << port <<
+                    "\n    user: app\n    database: app\n    password_env: SQLCONDUIT_DB_PASSWORD\n";
+                if (type == "odbc") std::cout << "    dsn: '" << dsn << "'\n";
+                if (type == "oracle") std::cout << "    oracle:\n      service_name: FREEPDB1\n";
+            }
+            return 0;
+        }
+        if (argc >= 2 && std::string(argv[1]) == "reload") {
+            if (argc != 5 || std::string(argv[4]) != "--dry-run") {
+                std::cout << json{{"ok", false}, {"error", "reload_requires_two_configs_and_dry_run"}}.dump() << '\n';
+                return 2;
+            }
+            sqlconduit::config::GlobalConfig current, candidate;
+            std::string error, report;
+            if (!sqlconduit::config::ConfigLoader::loadFromFile(argv[2], current, error) ||
+                !sqlconduit::config::ConfigLoader::loadFromFile(argv[3], candidate, error) ||
+                !sqlconduit::config::ConfigLoader::previewReload(current, candidate, report, error)) {
+                std::cout << json{{"ok", false}, {"applied", false}, {"error", "invalid_reload_config"}}.dump() << '\n';
+                return 1;
+            }
+            std::cout << report << '\n';
+            return 0;
+        }
         if (argc == 2 && std::string(argv[1]) == "--help") {
             std::cout << "Usage: sqlconduitctl validate|explain|doctor CONFIG [--connect]\n"
+                         "       sqlconduitctl init mysql|postgres|odbc|oracle [--format yaml|json]\n"
+                         "       sqlconduitctl reload CURRENT CANDIDATE --dry-run\n"
                          "doctor is offline unless --connect is supplied. Output is JSON.\n";
             return 0;
         }

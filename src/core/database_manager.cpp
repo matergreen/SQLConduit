@@ -1,4 +1,5 @@
 #include "sqlconduit/core/database_manager.h"
+#include "sqlconduit/sql_builder.h"
 
 #include <algorithm>
 
@@ -11,6 +12,7 @@
 #include "sqlconduit/core/runtime_services.h"
 #include "sqlconduit/core/stats_reporter.h"
 #include "sqlconduit/core/interceptor.h"
+#include "../common/operation_state.h"
 
 #include <chrono>
 #include <atomic>
@@ -30,6 +32,19 @@
 namespace sqlconduit::core {
     namespace {
         thread_local int gTxDepth = 0;
+
+        void waitRetry(std::chrono::milliseconds delay) {
+            const auto operation = common::detail::currentOperation();
+            if (!operation) { std::this_thread::sleep_for(delay); return; }
+            std::mutex mutex;
+            std::condition_variable cv;
+            auto lease = operation->subscribe([&] {
+                std::lock_guard<std::mutex> lock(mutex); cv.notify_all();
+            });
+            std::unique_lock<std::mutex> lock(mutex);
+            cv.wait_until(lock, std::min(operation->deadline(), std::chrono::steady_clock::now() + delay),
+                          [&] { return !operation->status().ok(); });
+        }
     }
 
     int currentTransactionDepth() noexcept {
@@ -102,6 +117,7 @@ namespace sqlconduit::core {
                                const common::OperationType type,
                                std::uint64_t &rows, Fn &&fn) {
             const auto start = std::chrono::steady_clock::now();
+            if (auto stop = common::detail::operationStatus(); !stop.ok()) return stop;
             common::Status status = fn();
             common::OperationEvent event;
             event.dataSource = dataSource;
@@ -160,7 +176,24 @@ namespace sqlconduit::core {
                                       common::ResultSet *result,
                                       std::uint64_t &rows, Fn &&fn) {
             const auto start = std::chrono::steady_clock::now();
+            const auto operation = common::detail::currentOperation();
+            if (operation) {
+                if (auto stop = operation->status(); !stop.ok()) return stop;
+            }
+            const bool write = type == common::OperationType::Execute || type == common::OperationType::Batch;
+            auto cancellation = operation ? operation->bind(connection, write, false) : nullptr;
+            if (operation) {
+                if (auto stop = operation->status(); !stop.ok()) return stop;
+            }
             common::Status status = fn();
+            cancellation.reset();
+            if (operation) {
+                if (auto stop = operation->status(); !stop.ok()) {
+                    // A known successful write must not be changed to a claimed rollback.
+                    if (!(write && status.ok())) status = std::move(stop);
+                    status.connectionBroken = true; // Never reuse a connection targeted by cancellation.
+                }
+            }
             common::OperationEvent event;
             event.dataSource = dataSource;
             event.type = type;
@@ -446,6 +479,44 @@ namespace sqlconduit::core {
             });
         if (status.connectionBroken) h_->invalidate();
         return status;
+    }
+
+
+    common::ExecuteResult Session::execute(const std::string &sql, const common::Params &params) const {
+        common::ExecuteResult result; result.status = execute(sql, params, result.affected); return result;
+    }
+    common::QueryResult Session::query(const std::string &sql, const common::Params &params) const {
+        common::QueryResult result; result.status = query(sql, params, result.rows);
+        if (!result.ok()) result.rows.clear();
+        return result;
+    }
+    common::QueryResult Session::queryNamed(const std::string &sql, const common::NamedParams &params) const {
+        auto bound = common::bindNamed(sql, params);
+        if (!bound.ok()) return {std::move(bound.status), {}};
+        return query(bound.sql, bound.params);
+    }
+    common::ExecuteResult Session::executeNamed(const std::string &sql, const common::NamedParams &params) const {
+        common::ExecuteResult result; auto bound = common::bindNamed(sql, params);
+        result.status = bound.ok() ? execute(bound.sql, bound.params, result.affected) : std::move(bound.status);
+        return result;
+    }
+
+    common::QueryResult Session::query(const sql::BuildResult &build) const {
+        if (!build.ok()) { common::QueryResult result; result.status = build.status; return result; }
+        return query(build.statement);
+    }
+
+    common::ExecuteResult Session::execute(const sql::BuildResult &build) const {
+        if (!build.ok()) { common::ExecuteResult result; result.status = build.status; return result; }
+        return execute(build.statement);
+    }
+
+    common::QueryResult Session::query(const sql::Statement &build) const {
+        return query(build.sql, build.params);
+    }
+
+    common::ExecuteResult Session::execute(const sql::Statement &build) const {
+        common::ExecuteResult result; result.status = execute(build.sql, build.params, result.affected); return result;
     }
 
     common::Status Session::query(const std::string &sql, common::ResultSet &out) const {
@@ -1048,6 +1119,7 @@ namespace sqlconduit::core {
 
     common::Status DataSource::preGate(const std::string &sql,
                                        const common::OperationType type) const {
+        if (auto stop = common::detail::operationStatus(); !stop.ok()) return stop;
         if (const auto s = services_->sqlAuditor.check(sql, type, readOnly_); !s.ok()) {
             services_->phase(common::ExecutionPhase::Rejected, common::ContextScope::current(), {}, s.code);
             return s;
@@ -1158,6 +1230,7 @@ namespace sqlconduit::core {
     }
 
     common::Status DataSource::beforeAttempt() const {
+        if (auto stop = common::detail::operationStatus(); !stop.ok()) return stop;
         if (circuitBreaker_.failure_threshold <= 0) return common::Status::OK();
         const auto now = std::chrono::steady_clock::now();
         const auto openUntil = circuitOpenUntil_.load(std::memory_order_acquire);
@@ -1178,6 +1251,11 @@ namespace sqlconduit::core {
     }
 
     void DataSource::afterAttempt(const common::Status &status) const {
+        if ((status.code == common::ErrorCode::Cancelled || status.code == common::ErrorCode::QueryTimeout) &&
+            !common::detail::operationStatus().ok()) {
+            halfOpenInFlight_.store(false, std::memory_order_release);
+            return; // An application budget is not evidence of database unhealthiness.
+        }
         if (!status.ok()) lastError_.store(status.code, std::memory_order_relaxed);
         if (circuitBreaker_.failure_threshold <= 0) return;
         if (status.ok()) {
@@ -1311,7 +1389,7 @@ namespace sqlconduit::core {
                 return status;
             }
             if (!status.retryable || attempt == attempts) return status;
-            std::this_thread::sleep_for(retryDelay(attempt));
+            waitRetry(retryDelay(attempt));
         }
         return status;
     }
@@ -1370,7 +1448,7 @@ namespace sqlconduit::core {
                 return status;
             }
             if (!status.retryable || attempt == attempts) return status;
-            std::this_thread::sleep_for(retryDelay(attempt));
+            waitRetry(retryDelay(attempt));
         }
         return status;
     }
@@ -1400,7 +1478,7 @@ namespace sqlconduit::core {
             afterAttempt(status);
             if (status.ok()) return status;
             if (!status.retryable || attempt == attempts) return status;
-            std::this_thread::sleep_for(retryDelay(attempt));
+            waitRetry(retryDelay(attempt));
         }
         return status;
     }
@@ -1468,7 +1546,7 @@ namespace sqlconduit::core {
                 return status;
             }
             if (!status.retryable || attempt == attempts) return status;
-            std::this_thread::sleep_for(retryDelay(attempt));
+            waitRetry(retryDelay(attempt));
         }
         return status;
     }
@@ -1523,7 +1601,7 @@ namespace sqlconduit::core {
                 return status;
             }
             if (!status.retryable || attempt == attempts) return status;
-            std::this_thread::sleep_for(retryDelay(attempt));
+            waitRetry(retryDelay(attempt));
         }
         return status;
     }
@@ -1572,7 +1650,7 @@ namespace sqlconduit::core {
                 return status;
             }
             if (!status.retryable || attempt == attempts) return status;
-            std::this_thread::sleep_for(retryDelay(attempt));
+            waitRetry(retryDelay(attempt));
         }
         return status;
     }
@@ -1624,7 +1702,7 @@ namespace sqlconduit::core {
                 return status;
             }
             if (!status.retryable || attempt == attempts) return status;
-            std::this_thread::sleep_for(retryDelay(attempt));
+            waitRetry(retryDelay(attempt));
         }
         return status;
     }
@@ -1884,7 +1962,7 @@ namespace sqlconduit::core {
             afterAttempt(status);
             if (status.ok()) return status;
             if (!status.retryable || attempt == attempts) return status;
-            std::this_thread::sleep_for(retryDelay(attempt));
+            waitRetry(retryDelay(attempt));
         }
         return status;
     }

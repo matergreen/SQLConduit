@@ -1,5 +1,8 @@
 # SQLConduit Detailed Guide
 
+For unreleased 1.2 direct entity/scalar results, named bindings, async mapping and configuration
+starters/previews, see [Direct query results](query_api.md).
+
 > 中文版：[guide.md](guide.md) · Quick start: [README.md](../README.md)
 
 A database connection middleware written in C++17, supporting:
@@ -1974,7 +1977,7 @@ should branch on `ErrorCode` and treat message text as a human diagnostic rather
 | Field | Meaning |
 | --- | --- |
 | `default_datasource` | Default data source name |
-| `heartbeat_interval_ms` | Heartbeat interval |
+| `heartbeat_interval_ms` | Heartbeat interval; `0` disables periodic heartbeat in 1.2 development |
 | `pool.enabled` | Whether to enable the connection pool (default `true`); when off, no reuse, no warm-up, not bound by min/max |
 | `pool.min` / `pool.max` | Per-source pool min/max connections |
 | `pool.borrow_timeout_ms` | Max wait when borrowing a connection; timeout returns `PoolExhausted` (0 = no wait) |

@@ -7,6 +7,7 @@
 #include <iosfwd>
 #include <map>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <variant>
@@ -366,6 +367,8 @@ namespace sqlconduit::common {
         std::int64_t nativeCode = 0;
         bool retryable = false;
         bool connectionBroken = false;
+        // Cancellation/timeout after a write began is not proof of rollback.
+        bool outcomeUnknown = false;
 
         [[nodiscard]] bool ok() const { return code == ErrorCode::Ok; }
 
@@ -380,6 +383,33 @@ namespace sqlconduit::common {
 
         static Status databaseError(ErrorCode fallback, std::string msg,
                                     std::string state, std::int64_t vendorCode = 0);
+    };
+
+    class StatusError : public std::runtime_error {
+    public:
+        explicit StatusError(Status status)
+            : std::runtime_error(status.message.empty() ? errorCodeToString(status.code) : status.message),
+              status_(std::move(status)) {}
+        [[nodiscard]] const Status &status() const noexcept { return status_; }
+    private:
+        Status status_;
+    };
+
+    inline void throwIfError(const Status &status) { if (!status.ok()) throw StatusError(status); }
+
+    struct QueryResult {
+        Status status;
+        ResultSet rows;
+        [[nodiscard]] bool ok() const { return status.ok(); }
+        ResultSet &rowsOrThrow() & { throwIfError(status); return rows; }
+        const ResultSet &rowsOrThrow() const & { throwIfError(status); return rows; }
+        ResultSet rowsOrThrow() && { throwIfError(status); return std::move(rows); }
+    };
+
+    struct ExecuteResult {
+        Status status;
+        std::int64_t affected = 0;
+        [[nodiscard]] bool ok() const { return status.ok(); }
     };
 
     std::string valueToString(const Value &v);

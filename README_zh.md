@@ -399,6 +399,9 @@ target_link_libraries(your_target PRIVATE sqlconduit::postgres)
 
 ## 详细文档
 
+1.2 开发分支的直接返回结果、Session/Builder 简写、命名参数、单次超时/取消与配置工具
+见[简化查询 API](docs/query_api_zh.md)。
+
 **1.1.0** 的配置工具、诊断 API 与可选 OpenTelemetry 用法见
 [1.1 诊断说明](docs/diagnostics_zh.md)，包管理方式见 [Package managers](docs/package_managers.md)。
 稳定版本仍以 Releases 为准。

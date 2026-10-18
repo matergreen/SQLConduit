@@ -430,6 +430,9 @@ an SPDX JSON SBOM, and build provenance verifiable with `gh attestation verify`.
 
 ## Detailed documentation
 
+Development-only 1.2 query/Session/Builder shortcuts, named bindings and per-call cancellation:
+[Direct query results](docs/query_api.md).
+
 **1.1.0** adds configuration tools, diagnostic APIs and optional
 OpenTelemetry usage are described in [Diagnostics](docs/diagnostics.md); package-manager consumption
 is covered in [Package managers](docs/package_managers.md). Stable downloads remain under Releases.

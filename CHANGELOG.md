@@ -6,6 +6,35 @@ description.
 
 ## [Unreleased]
 
+### 1.2.0 developer convenience
+
+- Added `SQLCONDUIT_ENTITY(Type, table, fields...)` registration and installed
+  `typed_sql_builder.h`: member-pointer SELECT/INSERT/UPDATE/DELETE, mapped projections,
+  sorting, strict value binding and conditional predicates. Typed and string Builders share
+  SQL rendering, dialect handling and full-table write guards. Explicit table/column/field-flag
+  mappings remain supported; no reflection, naming guesses or object-offset tricks are used.
+- Added reusable `withOptions` Client/Session views with fresh per-call deadlines, cancellation,
+  routing/idempotency context and optional native-only async execution. Budgets cover executor
+  queues, pool waits and retries. Early cancelled/timed-out writes report `outcomeUnknown` once
+  execution has started; cancellation does not promise rollback or safe replay.
+- Kept ODBC's active statement pinned through `SQLCancelHandle` and error diagnostics so
+  concurrent statement teardown cannot free the cancellation target.
+- Added direct Builder/Statement execution, Session raw/typed/named convenience methods,
+  strict `queryColumn<T>` lists (including nullable values), and namespace-scope mapping macros.
+  Result types share `ok()` checks; opt-in `itemsOrThrow`, `rowsOrThrow` and `valueOrThrow`
+  accessors preserve structured errors instead of silently substituting default values.
+- Added value-returning raw queries and typed `Client::query<T>`, `queryOne<T>` and
+  `queryScalar<T>` helpers, including completion-based async variants. Existing RowMapper and
+  strict ValueConverter rules are reused; empty results, SQL NULL and conversion failures remain distinct.
+- Added owned `NamedParams`, portable `bindNamed`, named raw/typed query helpers and named
+  execute helpers (sync and async). Values remain bound parameters; missing, duplicate, unused
+  and mixed placeholders fail before database execution. Added installed `common/named_params.h`.
+- Added `sqlconduitctl init` JSON/YAML starter configurations for all four built-in drivers and
+  offline `reload CURRENT CANDIDATE --dry-run` with secret-aware, value-free change reports.
+  Reload previews accurately report full pool replacement, not incremental application.
+- Fixed async pool borrowers missing heartbeat-restored/refilled connections. A heartbeat
+  interval of zero now disables the heartbeat instead of starting a busy loop.
+
 ## [1.1.0]
 
 ### Production diagnostics (1.1.0)

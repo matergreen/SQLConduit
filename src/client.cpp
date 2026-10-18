@@ -1,7 +1,9 @@
 #include "sqlconduit/client.h"
+#include "sqlconduit/sql_builder.h"
 
 #include "sqlconduit/async/executor.h"
 #include "async/async_engine.h"
+#include "common/operation_state.h"
 #include "sqlconduit/common/context.h"
 #include "sqlconduit/config/config_loader.h"
 #include "sqlconduit/version.h"
@@ -92,16 +94,21 @@ namespace sqlconduit {
 
         template<typename Result, typename Fn>
         std::future<Result> submitAsync(const std::string &requested, Fn fn,
-                                        const bool lateTimeoutIsError) const {
+                                        const bool lateTimeoutIsError,
+                                        std::function<void(Result)> completion = {}) const {
             auto promise = std::make_shared<std::promise<Result> >();
             auto future = promise->get_future();
+            auto finish = common::detail::controlledCompletion<Result>([promise, completion](Result result) mutable {
+                if (completion) completion(std::move(result));
+                else promise->set_value(std::move(result));
+            });
 
             std::shared_ptr<core::DataSource> source;
             if (auto status = resolve(requested, source); !status.ok()) {
                 Result result;
                 result.status = std::move(status);
                 result.mode = async::ExecutionMode::CompatibilityFallback;
-                promise->set_value(std::move(result));
+                finish(std::move(result));
                 return future;
             }
 
@@ -116,14 +123,20 @@ namespace sqlconduit {
                     common::ErrorCode::ConfigError,
                     "async execution is disabled for this client");
                 result.mode = async::ExecutionMode::CompatibilityFallback;
-                promise->set_value(std::move(result));
+                finish(std::move(result));
                 return future;
             }
 
             const auto& context = common::ContextScope::current();
+            if (context.operation && !context.operation->fallbackAllowed()) {
+                Result result;
+                result.status = common::Status::error(common::ErrorCode::NotSupported, "operation requires native async execution");
+                result.mode = async::ExecutionMode::CompatibilityFallback;
+                finish(std::move(result)); return future;
+            }
             const auto timeoutMs = asyncTimeoutMs.load(std::memory_order_acquire);
             const auto enqueuedAt = std::chrono::steady_clock::now();
-            auto task = [promise, executor, source = std::move(source), context,
+            auto task = [finish, executor, source = std::move(source), context,
                         runtime = services, enqueuedAt,
                         timeoutMs, lateTimeoutIsError, fn = std::move(fn)]() mutable {
                 Result result;
@@ -156,7 +169,7 @@ namespace sqlconduit {
                     result.status.retryable = true;
                     executor->recordTimedOutOperation();
                 }
-                promise->set_value(std::move(result));
+                finish(std::move(result));
             };
 
             if (!executor->tryPost(std::move(task))) {
@@ -167,21 +180,26 @@ namespace sqlconduit {
                     "client async executor queue is full or stopped");
                 result.status.retryable = true;
                 result.mode = async::ExecutionMode::CompatibilityFallback;
-                promise->set_value(std::move(result));
+                finish(std::move(result));
             }
             return future;
         }
 
         std::future<async::QueryResult> submitQueryAsync(
-            const std::string &requested, std::string sql, common::Params params) const {
+            const std::string &requested, std::string sql, common::Params params,
+            std::function<void(async::QueryResult)> completion = {}) const {
+            auto promise = std::make_shared<std::promise<async::QueryResult>>();
+            auto future = promise->get_future();
+            auto finish = common::detail::controlledCompletion<async::QueryResult>([promise, completion](async::QueryResult result) mutable {
+                if (completion) completion(std::move(result));
+                else promise->set_value(std::move(result));
+            });
             std::shared_ptr<core::DataSource> source;
             if (auto status = resolve(requested, source); !status.ok()) {
-                std::promise<async::QueryResult> promise;
-                auto future = promise.get_future();
                 async::QueryResult result;
                 result.status = std::move(status);
                 result.mode = async::ExecutionMode::CompatibilityFallback;
-                promise.set_value(std::move(result));
+                finish(std::move(result));
                 return future;
             }
 
@@ -191,19 +209,15 @@ namespace sqlconduit {
                 executor = asyncExecutor;
             }
             if (!executor) {
-                std::promise<async::QueryResult> promise;
-                auto future = promise.get_future();
                 async::QueryResult result;
                 result.status = common::Status::error(
                     common::ErrorCode::ConfigError,
                     "async execution is disabled for this client");
                 result.mode = async::ExecutionMode::CompatibilityFallback;
-                promise.set_value(std::move(result));
+                finish(std::move(result));
                 return future;
             }
 
-            auto promise = std::make_shared<std::promise<async::QueryResult> >();
-            auto future = promise->get_future();
             core::AsyncIo io;
             io.post = [executor](std::function<void()> task) {
                 return executor->tryPost(std::move(task));
@@ -223,7 +237,7 @@ namespace sqlconduit {
                 timeoutMs > 0 ? std::chrono::milliseconds(timeoutMs)
                               : std::chrono::milliseconds(-1),
                 io,
-                [promise, executor, timeoutMs, started](async::QueryResult result) mutable {
+                [finish, executor, timeoutMs, started](async::QueryResult result) mutable {
                     if (result.mode == async::ExecutionMode::Native)
                         executor->recordNativeOperation();
                     else
@@ -237,7 +251,7 @@ namespace sqlconduit {
                         result.status.retryable = true;
                         executor->recordTimedOutOperation();
                     }
-                    promise->set_value(std::move(result));
+                    finish(std::move(result));
                 });
             if (accepted) return future;
 
@@ -248,19 +262,22 @@ namespace sqlconduit {
                     result.status = params.empty()
                                         ? dataSource.query(sql, result.rows)
                                         : dataSource.query(sql, params, result.rows);
-                }, true);
+                }, true, std::move(completion));
         }
 
         std::future<async::ExecResult> submitExecuteAsync(
             const std::string &requested, std::string sql, common::Params params) const {
+            auto promise = std::make_shared<std::promise<async::ExecResult>>();
+            auto future = promise->get_future();
+            auto finish = common::detail::controlledCompletion<async::ExecResult>([promise](async::ExecResult result) {
+                promise->set_value(std::move(result));
+            });
             std::shared_ptr<core::DataSource> source;
             if (auto status = resolve(requested, source); !status.ok()) {
-                std::promise<async::ExecResult> promise;
-                auto future = promise.get_future();
                 async::ExecResult result;
                 result.status = std::move(status);
                 result.mode = async::ExecutionMode::CompatibilityFallback;
-                promise.set_value(std::move(result));
+                finish(std::move(result));
                 return future;
             }
             std::shared_ptr<async::IExecutor> executor;
@@ -269,19 +286,15 @@ namespace sqlconduit {
                 executor = asyncExecutor;
             }
             if (!executor) {
-                std::promise<async::ExecResult> promise;
-                auto future = promise.get_future();
                 async::ExecResult result;
                 result.status = common::Status::error(
                     common::ErrorCode::ConfigError,
                     "async execution is disabled for this client");
                 result.mode = async::ExecutionMode::CompatibilityFallback;
-                promise.set_value(std::move(result));
+                finish(std::move(result));
                 return future;
             }
 
-            auto promise = std::make_shared<std::promise<async::ExecResult> >();
-            auto future = promise->get_future();
             core::AsyncIo io;
             io.post = [executor](std::function<void()> task) {
                 return executor->tryPost(std::move(task));
@@ -300,12 +313,12 @@ namespace sqlconduit {
                 timeoutMs > 0 ? std::chrono::milliseconds(timeoutMs)
                               : std::chrono::milliseconds(-1),
                 io,
-                [promise, executor](async::ExecResult result) mutable {
+                [finish, executor](async::ExecResult result) mutable {
                     if (result.mode == async::ExecutionMode::Native)
                         executor->recordNativeOperation();
                     else
                         executor->recordFallbackOperation();
-                    promise->set_value(std::move(result));
+                    finish(std::move(result));
                 });
             if (accepted) return future;
 
@@ -566,6 +579,125 @@ namespace sqlconduit {
         return impl_ && impl_->state.load(std::memory_order_acquire) == Impl::State::Running;
     }
 
+    common::ExecuteResult Client::execute(const std::string &sql, const common::Params &params) const {
+        return execute({}, sql, params);
+    }
+    common::ExecuteResult Client::execute(const std::string &source, const std::string &sql, const common::Params &params) const {
+        common::ExecuteResult result; result.status = execute(source, sql, params, result.affected); return result;
+    }
+    common::QueryResult Client::query(const std::string &sql, const common::Params &params) const {
+        return query({}, sql, params);
+    }
+
+    common::QueryResult Client::query(const std::string &source, const std::string &sql,
+                                      const common::Params &params) const {
+        common::QueryResult result;
+        result.status = query(source, sql, params, result.rows);
+        if (!result.ok()) result.rows.clear();
+        return result;
+    }
+
+    common::QueryResult Client::queryNamed(const std::string &sql, const common::NamedParams &params) const {
+        return queryNamed({}, sql, params);
+    }
+
+    common::QueryResult Client::queryNamed(const std::string &source, const std::string &sql,
+                                           const common::NamedParams &params) const {
+        auto bound = common::bindNamed(sql, params);
+        if (!bound.ok()) return {std::move(bound.status), {}};
+        return query(source, bound.sql, bound.params);
+    }
+
+    common::ExecuteResult Client::executeNamed(const std::string &sql, const common::NamedParams &params) const {
+        return executeNamed({}, sql, params);
+    }
+
+    common::ExecuteResult Client::executeNamed(const std::string &source, const std::string &sql,
+                                               const common::NamedParams &params) const {
+        common::ExecuteResult result;
+        auto bound = common::bindNamed(sql, params);
+        result.status = bound.ok() ? execute(source, bound.sql, bound.params, result.affected)
+                                   : std::move(bound.status);
+        return result;
+    }
+
+    std::future<async::QueryResult> Client::queryNamedAsync(
+        const std::string &sql, const common::NamedParams &params) const {
+        return queryNamedAsync({}, sql, params);
+    }
+
+    std::future<async::QueryResult> Client::queryNamedAsync(
+        const std::string &source, const std::string &sql, const common::NamedParams &params) const {
+        auto bound = common::bindNamed(sql, params);
+        if (bound.ok()) return queryAsync(source, bound.sql, bound.params);
+        std::promise<async::QueryResult> promise;
+        auto future = promise.get_future();
+        async::QueryResult result;
+        result.status = std::move(bound.status);
+        result.mode = async::ExecutionMode::CompatibilityFallback;
+        promise.set_value(std::move(result));
+        return future;
+    }
+
+    std::future<async::ExecResult> Client::executeNamedAsync(
+        const std::string &sql, const common::NamedParams &params) const {
+        return executeNamedAsync({}, sql, params);
+    }
+
+    std::future<async::ExecResult> Client::executeNamedAsync(
+        const std::string &source, const std::string &sql, const common::NamedParams &params) const {
+        auto bound = common::bindNamed(sql, params);
+        if (bound.ok()) return executeAsync(source, bound.sql, bound.params);
+        std::promise<async::ExecResult> promise;
+        auto future = promise.get_future();
+        async::ExecResult result;
+        result.status = std::move(bound.status);
+        result.mode = async::ExecutionMode::CompatibilityFallback;
+        promise.set_value(std::move(result));
+        return future;
+    }
+
+
+    common::QueryResult Client::query(const sql::BuildResult &build) const {
+        if (!build.ok()) { common::QueryResult result; result.status = build.status; return result; }
+        return query(build.statement);
+    }
+
+    std::future<async::QueryResult> Client::queryAsync(const sql::BuildResult &build) const {
+        if (build.ok()) return queryAsync(build.statement);
+        async::QueryResult result; result.status = build.status; result.mode = async::ExecutionMode::CompatibilityFallback;
+        std::promise<async::QueryResult> promise; auto future = promise.get_future();
+        promise.set_value(std::move(result)); return future;
+    }
+
+    common::ExecuteResult Client::execute(const sql::BuildResult &build) const {
+        if (!build.ok()) { common::ExecuteResult result; result.status = build.status; return result; }
+        return execute(build.statement);
+    }
+
+    std::future<async::ExecResult> Client::executeAsync(const sql::BuildResult &build) const {
+        if (build.ok()) return executeAsync(build.statement);
+        async::ExecResult result; result.status = build.status; result.mode = async::ExecutionMode::CompatibilityFallback;
+        std::promise<async::ExecResult> promise; auto future = promise.get_future();
+        promise.set_value(std::move(result)); return future;
+    }
+
+    common::QueryResult Client::query(const sql::Statement &build) const {
+        return query(build.sql, build.params);
+    }
+
+    std::future<async::QueryResult> Client::queryAsync(const sql::Statement &build) const {
+        return queryAsync(build.sql, build.params);
+    }
+
+    common::ExecuteResult Client::execute(const sql::Statement &build) const {
+        common::ExecuteResult result; result.status = execute(build.sql, build.params, result.affected); return result;
+    }
+
+    std::future<async::ExecResult> Client::executeAsync(const sql::Statement &build) const {
+        return executeAsync(build.sql, build.params);
+    }
+
     common::Status Client::query(const std::string &sql, common::ResultSet &out) const {
         return query({}, sql, {}, out);
     }
@@ -737,6 +869,19 @@ namespace sqlconduit {
         std::shared_ptr<core::DataSource> dataSource;
         if (const auto st = impl_->resolve(source, dataSource); !st.ok()) return st;
         return dataSource->withSession(fn);
+    }
+
+    void Client::queryAsyncComplete(const std::string &source, const std::string &sql,
+                                     const common::Params &params,
+                                     std::function<void(async::QueryResult)> completion) const {
+        if (!impl_) {
+            async::QueryResult result;
+            result.status = clientClosed();
+            result.mode = async::ExecutionMode::CompatibilityFallback;
+            completion(std::move(result));
+            return;
+        }
+        (void) impl_->submitQueryAsync(source, sql, params, std::move(completion));
     }
 
     std::future<async::QueryResult> Client::queryAsync(const std::string &sql) const {

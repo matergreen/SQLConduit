@@ -2,6 +2,8 @@
 
 > English version: [guide_en.md](guide_en.md) · 快速入门：[README_zh.md](../README_zh.md)
 
+1.2 开发分支新增的直接返回实体/标量、命名参数、异步映射与配置工具见[简化查询 API](query_api_zh.md)。
+
 一个使用 C++17 开发的数据库连接中间件，支持：
 
 - **多数据源**：一份 JSON 配置描述任意多个数据源，按名字分发。
@@ -1939,7 +1941,7 @@ g++ main.cpp $(pkg-config --cflags sqlconduit-postgres) \
 | 字段 | 含义 |
 | --- | --- |
 | `default_datasource` | 默认数据源名称 |
-| `heartbeat_interval_ms` | 心跳间隔 |
+| `heartbeat_interval_ms` | 心跳间隔；1.2 开发分支中 `0` 表示禁用周期心跳 |
 | `pool.enabled` | 是否启用连接池（默认 `true`）；关闭后不复用连接、不预热、不受 min/max 约束 |
 | `pool.min` / `pool.max` | 每数据源连接池最小/最大连接 |
 | `pool.borrow_timeout_ms` | 借出连接的最长等待时间，超时返回 `PoolExhausted`（0 = 不等待） |

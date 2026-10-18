@@ -47,6 +47,13 @@ observable.
 
 ### Configuration, SQL, and mapping
 
+Development-only 1.2 additions: direct raw/entity/scalar/column results, Session conveniences,
+Builder execution, member-pointer CRUD Builders and one-line entity registration,
+mapping shorthand, completion-based typed async mapping, named parameters,
+per-call deadlines/cancellation, configuration starters and offline reload previews.
+These have local unit/contract/sanitizer coverage, not a new live-driver qualification claim.
+See [Direct query results](query_api.md); released 1.1.0 packages do not include these additions.
+
 | Area | Status | Current coverage / boundary |
 | --- | --- | --- |
 | JSON and YAML configuration | **Implemented / validated** | One versioned JSON Schema, strict unknown/type/range checks, cross-reference checks, environment-backed passwords |

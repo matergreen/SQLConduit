@@ -1,5 +1,7 @@
 #include "sqlconduit/client.h"
+#include "sqlconduit/mapping.h"
 #include "sqlconduit/sql_builder.h"
+#include "sqlconduit/typed_sql_builder.h"
 #include "sqlconduit/version.h"
 #ifdef SQLCONDUIT_CONSUMER_OPENTELEMETRY
 #include "sqlconduit/exporters/opentelemetry.h"
@@ -18,6 +20,9 @@
 #include <cstdio>
 #include <string_view>
 
+struct ConsumerEntity { int id = 0; std::string name; };
+SQLCONDUIT_ENTITY(ConsumerEntity, "consumer_probe", id, name)
+
 int main() {
     static_assert(SQLCONDUIT_VERSION_MAJOR == 1);
     static_assert(SQLCONDUIT_VERSION_MINOR == 1);
@@ -33,6 +38,27 @@ int main() {
     }
 
     sqlconduit::Client client;
+    const auto typed = sqlconduit::sql::select<ConsumerEntity>().eq(&ConsumerEntity::id, 1).build();
+    if (!typed.ok() || typed.statement.params.size() != 1 ||
+        client.query<ConsumerEntity>(typed).status.code != sqlconduit::common::ErrorCode::NotInitialized) {
+        std::printf("consumer smoke FAILED: typed Builder/entity registration package contract mismatch\n");
+        return 1;
+    }
+    sqlconduit::common::OperationOptions options;
+    options.timeout = std::chrono::milliseconds(100);
+    if (client.withOptions(options).queryColumnNamed<int>("SELECT :value", {{"value", 1}}).status.code !=
+            sqlconduit::common::ErrorCode::NotInitialized ||
+        client.withOptions(options).execute(statement).status.code != sqlconduit::common::ErrorCode::NotInitialized) {
+        std::printf("consumer smoke FAILED: operation/builder/column package contract mismatch\n");
+        return 1;
+    }
+    if (client.queryScalar<int>("SELECT 1").status.code != sqlconduit::common::ErrorCode::NotInitialized ||
+        client.queryScalarNamedAsync<int>("SELECT :value", {{"value", 1}}).get().status.code !=
+            sqlconduit::common::ErrorCode::NotInitialized ||
+        !sqlconduit::common::bindNamed("SELECT :value", {{"value", 1}}).ok()) {
+        std::printf("consumer smoke FAILED: direct/named query package contract mismatch\n");
+        return 1;
+    }
     if (client.diagnostics().version != SQLCONDUIT_VERSION_STRING ||
         client.capabilities().status.code != sqlconduit::common::ErrorCode::NotInitialized) {
         std::printf("consumer smoke FAILED: diagnostics package contract mismatch\n");

@@ -24,6 +24,7 @@ namespace {
     class ClientTestConnection final : public core::IDatabaseConnection {
     public:
         static std::atomic<int> firstQueries;
+        static std::atomic<int> gatedFallbackQueries;
         static std::atomic<int> secondQueries;
         static std::atomic<int> queryDelayMs;
         static std::atomic<int> executeDelayMs;
@@ -56,7 +57,10 @@ namespace {
                 std::lock_guard<std::mutex> lock(fallbackQueryGateMutex);
                 gate = fallbackQueryGate;
             }
-            if (gate.valid()) gate.wait();
+            if (gate.valid()) {
+                ++gatedFallbackQueries;
+                gate.wait();
+            }
             else if (const auto delay = queryDelayMs.load(); delay > 0)
                 std::this_thread::sleep_for(std::chrono::milliseconds(delay));
             common::Row row;
@@ -151,6 +155,7 @@ namespace {
     };
 
     std::atomic<int> ClientTestConnection::firstQueries{0};
+    std::atomic<int> ClientTestConnection::gatedFallbackQueries{0};
     std::atomic<int> ClientTestConnection::secondQueries{0};
     std::atomic<int> ClientTestConnection::queryDelayMs{0};
     std::atomic<int> ClientTestConnection::executeDelayMs{0};
@@ -610,13 +615,18 @@ int main() {
     check(overloadedAsync.query("SELECT warm", warmedRows).ok(),
           "async overload test prewarms its single connection");
     std::promise<void> releaseFallbackQueries;
+    ClientTestConnection::gatedFallbackQueries = 0;
     {
         std::lock_guard<std::mutex> lock(ClientTestConnection::fallbackQueryGateMutex);
         ClientTestConnection::fallbackQueryGate = releaseFallbackQueries.get_future().share();
     }
     auto activeQuery = overloadedAsync.queryAsync("SELECT active");
-    for (int i = 0; i < 1000 && overloadedAsync.asyncStats().active == 0; ++i)
+    // active also counts short dispatch/borrow continuations; wait for the actual
+    // blocking driver call before filling the one-slot submission queue.
+    for (int i = 0; i < 1000 && ClientTestConnection::gatedFallbackQueries.load() == 0; ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    check(ClientTestConnection::gatedFallbackQueries.load() == 1,
+          "overload fixture blocks inside the driver before queuing work");
     auto queuedQuery = overloadedAsync.queryAsync("SELECT queued");
     for (int i = 0; i < 1000 && overloadedAsync.asyncStats().queueDepth == 0; ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));

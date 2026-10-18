@@ -1794,11 +1794,10 @@ namespace sqlconduit::driver {
 
     common::Status OdbcConnection::cancel() {
 #ifdef SQLCONDUIT_ENABLE_ODBC
-        void *stmt = nullptr; {
-            std::lock_guard<std::mutex> lock(activeStmtMtx_);
-            stmt = activeStmt_;
-            activeStmt_ = nullptr;
-        }
+        // Pin the active statement until SQLCancelHandle (and diagnostics) returns.
+        // ActiveStatement teardown takes this same lock before its handle can be freed.
+        std::lock_guard<std::mutex> lock(activeStmtMtx_);
+        void *stmt = activeStmt_;
         if (!stmt)
             return common::Status::error(common::ErrorCode::NotConnected,
                                          "ODBC: no active statement to cancel");

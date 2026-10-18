@@ -15,6 +15,11 @@ namespace sqlconduit::config {
         // JSON with resolved defaults. Credentials, connection strings and vendor
         // extras are always redacted. Intended for diagnostics, not persistence.
         [[nodiscard]] static std::string explain(const GlobalConfig &config);
+
+        // Offline comparison only: no connections, mutation, or live-reload guarantee.
+        // The current manager rebuilds ALL pools on reload, including unchanged ones.
+        static bool previewReload(const GlobalConfig &current, const GlobalConfig &candidate,
+                                  std::string &report, std::string &error);
     };
 }
 

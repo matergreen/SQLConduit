@@ -9,6 +9,8 @@
 #include "sqlconduit/driver/driver_registry.h"
 #include "sqlconduit/common/observer.h"
 #include "sqlconduit/common/types.h"
+#include "sqlconduit/common/named_params.h"
+#include "sqlconduit/common/operation_options.h"
 #include "sqlconduit/core/cursor.h"
 
 #include <chrono>
@@ -22,6 +24,10 @@
 #include <vector>
 
 namespace sqlconduit {
+    template<class T> struct EntityResult;
+    template<class T> struct EntityOne;
+    template<class T> struct ScalarResult;
+    namespace sql { struct BuildResult; struct Statement; }
     class Client;
 
     namespace async::detail {
@@ -80,6 +86,33 @@ namespace sqlconduit {
                 }
                 return *this;
             }
+
+            [[nodiscard]] OperationView<const Session> withOptions(common::OperationOptions options) const & { return {*this, std::move(options)}; }
+            OperationView<const Session> withOptions(common::OperationOptions) const && = delete;
+            [[nodiscard]] common::QueryResult query(const std::string &sql, const common::Params &params = {}) const;
+            [[nodiscard]] common::QueryResult queryNamed(const std::string &sql, const common::NamedParams &params = {}) const;
+            [[nodiscard]] common::ExecuteResult executeNamed(const std::string &sql, const common::NamedParams &params = {}) const;
+            [[nodiscard]] common::ExecuteResult execute(const std::string &sql, const common::Params &params = {}) const;
+            template<class T> [[nodiscard]] EntityResult<T> query(const std::string &sql, const common::Params &params = {}) const;
+            template<class T> [[nodiscard]] EntityResult<T> queryNamed(const std::string &sql, const common::NamedParams &params = {}) const;
+            template<class T> [[nodiscard]] EntityOne<T> queryOne(const std::string &sql, const common::Params &params = {}) const;
+            template<class T> [[nodiscard]] EntityOne<T> queryOneNamed(const std::string &sql, const common::NamedParams &params = {}) const;
+            template<class T> [[nodiscard]] ScalarResult<T> queryScalar(const std::string &sql, const common::Params &params = {}) const;
+            template<class T> [[nodiscard]] ScalarResult<T> queryScalarNamed(const std::string &sql, const common::NamedParams &params = {}) const;
+            template<class T> [[nodiscard]] EntityResult<T> queryColumn(const std::string &sql, const common::Params &params = {}) const;
+            template<class T> [[nodiscard]] EntityResult<T> queryColumnNamed(const std::string &sql, const common::NamedParams &params = {}) const;
+            template<class T> [[nodiscard]] EntityResult<T> query(const sql::BuildResult &statement) const;
+            template<class T> [[nodiscard]] EntityOne<T> queryOne(const sql::BuildResult &statement) const;
+            template<class T> [[nodiscard]] ScalarResult<T> queryScalar(const sql::BuildResult &statement) const;
+            template<class T> [[nodiscard]] EntityResult<T> queryColumn(const sql::BuildResult &statement) const;
+            [[nodiscard]] common::QueryResult query(const sql::BuildResult &statement) const;
+            [[nodiscard]] common::ExecuteResult execute(const sql::BuildResult &statement) const;
+            template<class T> [[nodiscard]] EntityResult<T> query(const sql::Statement &statement) const;
+            template<class T> [[nodiscard]] EntityOne<T> queryOne(const sql::Statement &statement) const;
+            template<class T> [[nodiscard]] ScalarResult<T> queryScalar(const sql::Statement &statement) const;
+            template<class T> [[nodiscard]] EntityResult<T> queryColumn(const sql::Statement &statement) const;
+            [[nodiscard]] common::QueryResult query(const sql::Statement &statement) const;
+            [[nodiscard]] common::ExecuteResult execute(const sql::Statement &statement) const;
 
             common::Status query(const std::string &sql, common::ResultSet &out) const;
 

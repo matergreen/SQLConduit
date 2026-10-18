@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(sqlconduit VERSION 1.1.0 LANGUAGES CXX)
+project(sqlconduit VERSION 1.2.0 LANGUAGES CXX)
 set(SQLCONDUIT_VERSION_PRERELEASE "")
 if(SQLCONDUIT_VERSION_PRERELEASE)
     set(SQLCONDUIT_VERSION_FULL "${PROJECT_VERSION}-${SQLCONDUIT_VERSION_PRERELEASE}")
@@ -101,6 +101,8 @@ endif()
 set(SQLCONDUIT_CORE_SOURCES
     src/common/types.cpp
     src/common/named_params.cpp
+    src/common/pagination.cpp
+    src/client_pagination.cpp
     src/common/operation_options.cpp
     src/common/pg_types.cpp
     src/common/oracle_types.cpp

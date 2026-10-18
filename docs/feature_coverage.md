@@ -2,13 +2,13 @@
 
 > [中文版](feature_coverage_zh.md)
 
-This is the current capability map for SQLConduit 1.0. It answers three separate questions:
+This is the current capability map for SQLConduit 1.2. It answers three separate questions:
 
 1. Is the feature implemented?
 2. How broadly has the implementation been validated?
 3. Is further work committed, being evaluated, or intentionally outside the project?
 
-The snapshot date is **2026-10-17**. Release notes remain authoritative for a particular version;
+The snapshot date is **2026-10-18**. Release notes remain authoritative for a particular version;
 this document describes the direction of the supported `1.x` line and is reviewed at each release.
 
 ## Status vocabulary
@@ -27,7 +27,7 @@ reports `Native` only when the vendor driver genuinely starts it without occupyi
 worker; all other future operations report `CompatibilityFallback` and remain bounded and
 observable.
 
-## 1.0 feature coverage
+## 1.x feature coverage
 
 ### Runtime and data access
 
@@ -47,12 +47,13 @@ observable.
 
 ### Configuration, SQL, and mapping
 
-Development-only 1.2 additions: direct raw/entity/scalar/column results, Session conveniences,
+1.2 additions: direct raw/entity/scalar/column results, Session conveniences,
 Builder execution, member-pointer CRUD Builders and one-line entity registration,
-mapping shorthand, completion-based typed async mapping, named parameters,
+mapping shorthand, completion-based typed async mapping, named parameters and typed pagination
+with optional totals and structurally generated COUNT,
 per-call deadlines/cancellation, configuration starters and offline reload previews.
 These have local unit/contract/sanitizer coverage, not a new live-driver qualification claim.
-See [Direct query results](query_api.md); released 1.1.0 packages do not include these additions.
+See [Direct query results](query_api.md); these additions require 1.2 or later.
 
 | Area | Status | Current coverage / boundary |
 | --- | --- | --- |

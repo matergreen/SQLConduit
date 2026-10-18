@@ -9,6 +9,7 @@
 #include "sqlconduit/driver/driver_registry.h"
 #include "sqlconduit/common/observer.h"
 #include "sqlconduit/common/types.h"
+#include "sqlconduit/pagination.h"
 #include "sqlconduit/common/named_params.h"
 #include "sqlconduit/common/operation_options.h"
 #include "sqlconduit/core/cursor.h"
@@ -88,6 +89,12 @@ namespace sqlconduit {
             }
 
             [[nodiscard]] OperationView<const Session> withOptions(common::OperationOptions options) const & { return {*this, std::move(options)}; }
+            template<class T> [[nodiscard]] PageResult<T> queryPage(const sql::PageQuery &query, const PageOptions &options = {}) const;
+            template<class T> [[nodiscard]] PageResult<T> queryPage(const sql::BuildResult &query, const PageOptions &options = {}) const;
+            template<class T> [[nodiscard]] PageResult<T> queryPage(const sql::Builder &query, const PageOptions &options = {}) const;
+            template<class T> [[nodiscard]] PageResult<T> queryPage(const sql::TypedBuilder<T> &query, const PageOptions &options = {}) const;
+            template<class T> [[nodiscard]] PageResult<T> queryPage(const std::string &sql, const common::Params &params = {}, const PageOptions &options = {}) const;
+            template<class T> [[nodiscard]] PageResult<T> queryPageNamed(const std::string &sql, const common::NamedParams &params = {}, const PageOptions &options = {}) const;
             OperationView<const Session> withOptions(common::OperationOptions) const && = delete;
             [[nodiscard]] common::QueryResult query(const std::string &sql, const common::Params &params = {}) const;
             [[nodiscard]] common::QueryResult queryNamed(const std::string &sql, const common::NamedParams &params = {}) const;
@@ -197,6 +204,7 @@ namespace sqlconduit {
             [[nodiscard]] const std::string &driverType() const { return driverType_; }
 
         private:
+            sqlconduit::detail::PageRows queryPageRaw(const sql::PageQuery &, const PageOptions &) const;
             friend class DataSource;
             friend class async::detail::AsyncEngine;
 

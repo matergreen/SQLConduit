@@ -8,7 +8,7 @@ import os
 class SQLConduitConan(ConanFile):
     """Local Core package. Vendor driver SDKs are intentionally separate."""
     name = "sqlconduit"
-    version = "1.1.0"
+    version = "1.2.0"
     license = "Apache-2.0"
     package_type = "static-library"
     settings = "os", "arch", "compiler", "build_type"

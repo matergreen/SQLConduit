@@ -306,12 +306,12 @@ jobs:
       - run: >-
           cmake --build build-tsan -j
           --target sqlconduit_query_cache_test sqlconduit_concurrency_test
-          sqlconduit_query_api_test sqlconduit_typed_builder_test sqlconduit_operation_test sqlconduit_client_test
+          sqlconduit_query_api_test sqlconduit_pagination_test sqlconduit_typed_builder_test sqlconduit_operation_test sqlconduit_client_test
           sqlconduit_diagnostics_test sqlconduit_fault_injection_test sqlconduit_observer_event_test
       - name: Run cache and lifecycle contention tests under TSan
         env:
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
-        run: ctest --test-dir build-tsan --output-on-failure -R 'query_cache|query_api|typed_builder|operation_test|client_test|concurrency|diagnostics|fault_injection|observer_event'
+        run: ctest --test-dir build-tsan --output-on-failure -R 'query_cache|query_api|pagination|typed_builder|operation_test|client_test|concurrency|diagnostics|fault_injection|observer_event'
 
   coverage:
     name: core coverage report

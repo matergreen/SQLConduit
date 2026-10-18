@@ -10,5 +10,6 @@
 // Keep mapping last: it builds on the complete Client convenience surface.
 #include "sqlconduit/mapping.h"
 #include "sqlconduit/typed_sql_builder.h"
+#include "sqlconduit/query_page.h"
 
 #endif

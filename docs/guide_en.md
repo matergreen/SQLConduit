@@ -1977,7 +1977,7 @@ should branch on `ErrorCode` and treat message text as a human diagnostic rather
 | Field | Meaning |
 | --- | --- |
 | `default_datasource` | Default data source name |
-| `heartbeat_interval_ms` | Heartbeat interval; `0` disables periodic heartbeat in 1.2 development |
+| `heartbeat_interval_ms` | Heartbeat interval; `0` disables periodic heartbeat since 1.2 |
 | `pool.enabled` | Whether to enable the connection pool (default `true`); when off, no reuse, no warm-up, not bound by min/max |
 | `pool.min` / `pool.max` | Per-source pool min/max connections |
 | `pool.borrow_timeout_ms` | Max wait when borrowing a connection; timeout returns `PoolExhausted` (0 = no wait) |

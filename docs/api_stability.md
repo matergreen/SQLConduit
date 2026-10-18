@@ -20,10 +20,10 @@ These are the preferred entry points for application code:
 - `sqlconduit/sqlconduit.h`: the full convenience umbrella header;
 - `sqlconduit/common/types.h`, `common/context.h`, and `common/observer.h`;
 - `sqlconduit/common/diagnostics.h` (since 1.1): capability snapshots and execution-phase events;
-- `sqlconduit/common/named_params.h` (1.2 development): owned named parameters and validated
+- `sqlconduit/common/named_params.h` (since 1.2): owned named parameters and validated
   portable binding; additive typed Client convenience methods are defined in `mapping.h` and
-  available through the full `sqlconduit.h` umbrella. These additions are not in released 1.1.0;
-- `sqlconduit/common/operation_options.h` (1.2 development): per-call budgets, cancellation
+  available through the full `sqlconduit.h` umbrella;
+- `sqlconduit/common/operation_options.h` (since 1.2): per-call budgets, cancellation
   and non-owning Client/Session operation views;
 - `sqlconduit/config/datasource_config.h` and `config/config_loader.h`;
 - `sqlconduit/async/async_types.h`: result and executor-statistics types returned by `Client`;
@@ -33,8 +33,10 @@ These are the preferred entry points for application code:
 - `sqlconduit/exporters/opentelemetry.h` (since 1.1): optional observer/context adapter;
 - `sqlconduit/sql_builder.h` and `sqlconduit/common/sql_dialect.h` for portable CRUD construction
   and explicit identifier dialect selection.
-- `sqlconduit/typed_sql_builder.h` (1.2 development): mapped member-pointer CRUD construction
+- `sqlconduit/typed_sql_builder.h` (since 1.2): mapped member-pointer CRUD construction
   and entity registration through `mapping.h`, reusing the existing Builder execution contract.
+- `sqlconduit/pagination.h` and `sqlconduit/query_page.h` (since 1.2): page options,
+  results, structured page plans and Client/Session typed pagination helpers.
 
 Existing names, signatures, enum numeric values, and documented behavior in this group will not be
 changed incompatibly within 1.x. New overloads and fields may be added when existing source

@@ -32,10 +32,10 @@ using sqlconduit::common::ResultSet;
 using sqlconduit::common::Status;
 
 static_assert(SQLCONDUIT_VERSION_MAJOR == 1);
-static_assert(SQLCONDUIT_VERSION_MINOR == 1);
+static_assert(SQLCONDUIT_VERSION_MINOR == 2);
 static_assert(SQLCONDUIT_VERSION_PATCH == 0);
 static_assert(std::string_view(SQLCONDUIT_VERSION_PRERELEASE).empty());
-static_assert(std::string_view(SQLCONDUIT_VERSION_STRING) == "1.1.0");
+static_assert(std::string_view(SQLCONDUIT_VERSION_STRING) == "1.2.0");
 static_assert(sqlconduit::exporters::kPrometheusFingerprintSeriesHardLimit == 1000);
 
 static_assert(std::is_final_v<Client>);

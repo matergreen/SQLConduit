@@ -5,6 +5,8 @@ set(SQLCONDUIT_FROZEN_PUBLIC_HEADERS
     sqlconduit/api.h
     sqlconduit/async/async_types.h
     sqlconduit/client.h
+    sqlconduit/pagination.h
+    sqlconduit/query_page.h
     sqlconduit/typed_sql_builder.h
     sqlconduit/common/connection_pool_stats.h
     sqlconduit/common/context.h

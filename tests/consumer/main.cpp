@@ -2,6 +2,7 @@
 #include "sqlconduit/mapping.h"
 #include "sqlconduit/sql_builder.h"
 #include "sqlconduit/typed_sql_builder.h"
+#include "sqlconduit/query_page.h"
 #include "sqlconduit/version.h"
 #ifdef SQLCONDUIT_CONSUMER_OPENTELEMETRY
 #include "sqlconduit/exporters/opentelemetry.h"
@@ -25,8 +26,8 @@ SQLCONDUIT_ENTITY(ConsumerEntity, "consumer_probe", id, name)
 
 int main() {
     static_assert(SQLCONDUIT_VERSION_MAJOR == 1);
-    static_assert(SQLCONDUIT_VERSION_MINOR == 1);
-    static_assert(std::string_view(SQLCONDUIT_VERSION_STRING) == "1.1.0");
+    static_assert(SQLCONDUIT_VERSION_MINOR == 2);
+    static_assert(std::string_view(SQLCONDUIT_VERSION_STRING) == "1.2.0");
 
     const auto statement = sqlconduit::sql::Builder::select("consumer_probe")
         .columns({"id"})
@@ -38,6 +39,13 @@ int main() {
     }
 
     sqlconduit::Client client;
+    const auto pagePlan = sqlconduit::sql::select<ConsumerEntity>().orderByAsc(&ConsumerEntity::id).buildPage();
+    if (!pagePlan.ok() || !pagePlan.countQuery ||
+        client.queryPage<ConsumerEntity>(pagePlan).status.code != sqlconduit::common::ErrorCode::NotInitialized ||
+        client.queryPageAsync<ConsumerEntity>(pagePlan).get().status.code != sqlconduit::common::ErrorCode::NotInitialized) {
+        std::printf("consumer smoke FAILED: pagination package contract mismatch\n");
+        return 1;
+    }
     const auto typed = sqlconduit::sql::select<ConsumerEntity>().eq(&ConsumerEntity::id, 1).build();
     if (!typed.ok() || typed.statement.params.size() != 1 ||
         client.query<ConsumerEntity>(typed).status.code != sqlconduit::common::ErrorCode::NotInitialized) {

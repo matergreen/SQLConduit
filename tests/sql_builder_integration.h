@@ -3,11 +3,15 @@
 
 #include "sqlconduit/client.h"
 #include "sqlconduit/sql_builder.h"
+#include "sqlconduit/query_page.h"
 
 #include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
+
+struct SqlBuilderPageRow { std::string name; std::int64_t qty = 0; };
+SQLCONDUIT_MAP(SqlBuilderPageRow, SQLCONDUIT_FIELD(name) SQLCONDUIT_FIELD(qty))
 
 inline sqlconduit::common::Status runSqlBuilderCrud(
     sqlconduit::Client &client, const std::string &table,
@@ -45,6 +49,28 @@ inline sqlconduit::common::Status runSqlBuilderCrud(
         !std::holds_alternative<std::int64_t>(rows.rows()[0].at("qty")) ||
         std::get<std::int64_t>(rows.rows()[0].at("qty")) != 5)
         return fail("SELECT did not return the inserted row");
+
+    const auto pageQuery = sqlconduit::sql::Builder::select(table, dialect)
+        .columns({"name", "qty"})
+        .where(sqlconduit::sql::eq("name", std::string("builder-row")))
+        .orderBy("name").buildPage();
+    sqlconduit::PageOptions pageOptions;
+    pageOptions.pageSize = 1;
+    pageOptions.includeTotal = true;
+    auto page = client.queryPage<SqlBuilderPageRow>(pageQuery, pageOptions);
+    if (!page.ok()) return page.status;
+    if (page.items.size() != 1 || page.items[0].qty != 5 || page.total != 1 || page.hasNext)
+        return fail("pagination result/count mismatch");
+    auto asyncPage = client.queryPageAsync<SqlBuilderPageRow>(pageQuery, pageOptions).get();
+    if (!asyncPage.ok()) return asyncPage.status;
+    if (asyncPage.items.size() != 1 || asyncPage.total != 1 || asyncPage.hasNext)
+        return fail("async pagination result/count mismatch");
+    pageOptions.page = 2;
+    if (auto status = client.withSession([&](sqlconduit::core::Session &session) {
+        auto empty = session.queryPage<SqlBuilderPageRow>(pageQuery, pageOptions);
+        if (!empty.ok()) return empty.status;
+        return empty.items.empty() && empty.total == 1 && !empty.hasNext ? Status{} : fail("beyond-last-page mismatch");
+    }); !status.ok()) return status;
 
     const auto update = sqlconduit::sql::Builder::update(table, dialect)
         .value("qty", std::int64_t{6})

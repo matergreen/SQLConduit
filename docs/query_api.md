@@ -1,6 +1,6 @@
-# Direct query results (1.2 development)
+# Direct query results (since 1.2)
 
-These additions are on the development branch; they are not part of the published 1.1.0 package.
+These additions require SQLConduit 1.2 or later.
 Existing output-parameter APIs and free `queryAs` / `queryOneAs` helpers remain supported.
 
 ## Map an entity once
@@ -259,6 +259,9 @@ the full strict entity still fails on missing columns. Use a dedicated DTO mappi
 explicit mappings remain supported. This is a lightweight SQL convenience layer, not an ORM.
 
 ## Per-call deadlines and cancellation
+
+Typed pagination, optional totals and Builder-generated COUNT queries are covered in
+[Pagination](pagination.md). Include `query_page.h` or the full umbrella.
 
 ```cpp
 sqlconduit::common::CancellationSource cancel;

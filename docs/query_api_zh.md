@@ -1,6 +1,6 @@
-# 简化查询 API（1.2 开发中）
+# 简化查询 API（1.2 起）
 
-本文功能位于开发分支，尚不包含在已发布的 1.1.0 安装包中。原有输出参数接口和
+本文功能需要 SQLConduit 1.2 或更新版本。原有输出参数接口和
 `queryAs` / `queryOneAs` 自由函数保留。完整重载与边界说明见[英文 API 清单](query_api.md)。
 
 ## 一次定义映射，查询直接返回对象
@@ -157,6 +157,9 @@ Builder 默认 SELECT 全部映射列；`columns(&Account::id, &Account::name)` 
   这是轻量 SQL 便捷层，原有字符串 Builder 和手写 SQL 接口不变。
 
 ## 单次超时与取消
+
+类型化分页、可选总数和 Builder 自动 COUNT 的用法见[分页查询](pagination_zh.md)。
+包含 `query_page.h` 或完整聚合头文件即可。
 
 ```cpp
 sqlconduit::common::CancellationSource cancel;

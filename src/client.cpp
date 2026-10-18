@@ -95,7 +95,8 @@ namespace sqlconduit {
         template<typename Result, typename Fn>
         std::future<Result> submitAsync(const std::string &requested, Fn fn,
                                         const bool lateTimeoutIsError,
-                                        std::function<void(Result)> completion = {}) const {
+                                        std::function<void(Result)> completion = {},
+                                        std::shared_ptr<core::DataSource> pinned = {}) const {
             auto promise = std::make_shared<std::promise<Result> >();
             auto future = promise->get_future();
             auto finish = common::detail::controlledCompletion<Result>([promise, completion](Result result) mutable {
@@ -103,8 +104,8 @@ namespace sqlconduit {
                 else promise->set_value(std::move(result));
             });
 
-            std::shared_ptr<core::DataSource> source;
-            if (auto status = resolve(requested, source); !status.ok()) {
+            auto source = std::move(pinned);
+            if (auto status = source ? common::Status{} : resolve(requested, source); !status.ok()) {
                 Result result;
                 result.status = std::move(status);
                 result.mode = async::ExecutionMode::CompatibilityFallback;
@@ -187,15 +188,16 @@ namespace sqlconduit {
 
         std::future<async::QueryResult> submitQueryAsync(
             const std::string &requested, std::string sql, common::Params params,
-            std::function<void(async::QueryResult)> completion = {}) const {
+            std::function<void(async::QueryResult)> completion = {},
+            std::shared_ptr<core::DataSource> pinned = {}) const {
             auto promise = std::make_shared<std::promise<async::QueryResult>>();
             auto future = promise->get_future();
             auto finish = common::detail::controlledCompletion<async::QueryResult>([promise, completion](async::QueryResult result) mutable {
                 if (completion) completion(std::move(result));
                 else promise->set_value(std::move(result));
             });
-            std::shared_ptr<core::DataSource> source;
-            if (auto status = resolve(requested, source); !status.ok()) {
+            auto source = std::move(pinned);
+            if (auto status = source ? common::Status{} : resolve(requested, source); !status.ok()) {
                 async::QueryResult result;
                 result.status = std::move(status);
                 result.mode = async::ExecutionMode::CompatibilityFallback;
@@ -262,7 +264,7 @@ namespace sqlconduit {
                     result.status = params.empty()
                                         ? dataSource.query(sql, result.rows)
                                         : dataSource.query(sql, params, result.rows);
-                }, true, std::move(completion));
+                }, true, std::move(completion), source);
         }
 
         std::future<async::ExecResult> submitExecuteAsync(
@@ -869,6 +871,16 @@ namespace sqlconduit {
         std::shared_ptr<core::DataSource> dataSource;
         if (const auto st = impl_->resolve(source, dataSource); !st.ok()) return st;
         return dataSource->withSession(fn);
+    }
+
+    common::Status Client::resolvePageSource(const std::string &source, std::shared_ptr<core::DataSource> &out) const {
+        return impl_ ? impl_->resolve(source, out) : clientClosed();
+    }
+
+    void Client::queryAsyncCompleteOnSource(const std::shared_ptr<core::DataSource> &source,
+                                           const sql::Statement &statement,
+                                           std::function<void(async::QueryResult)> completion) const {
+        (void) impl_->submitQueryAsync(source->name(), statement.sql, statement.params, std::move(completion), source);
     }
 
     void Client::queryAsyncComplete(const std::string &source, const std::string &sql,

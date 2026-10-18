@@ -5,11 +5,13 @@
 #include "sqlconduit/common/sql_dialect.h"
 
 #include <string>
+#include <optional>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace sqlconduit::sql {
+    template<class T> class TypedBuilder;
     namespace detail {
         template<class T>
         common::Value makeValue(T &&input) {
@@ -66,6 +68,15 @@ namespace sqlconduit::sql {
         common::Status status;
         Statement statement;
 
+        [[nodiscard]] bool ok() const { return status.ok(); }
+    };
+
+    // Unpaginated SELECT plus an optional independently bound COUNT query.
+    struct PageQuery {
+        common::Status status;
+        Statement statement;
+        std::optional<Statement> countQuery;
+        common::util::Dialect dialect = common::util::Dialect::Auto;
         [[nodiscard]] bool ok() const { return status.ok(); }
     };
 
@@ -252,6 +263,8 @@ namespace sqlconduit::sql {
         Builder &allowAllRows(bool allow = true) noexcept;
 
         [[nodiscard]] BuildResult build() const;
+        // Generates COUNT structurally, without rewriting caller-provided SQL.
+        [[nodiscard]] PageQuery buildPage() const;
 
         [[nodiscard]] Operation operation() const noexcept { return operation_; }
         [[nodiscard]] common::util::Dialect dialect() const noexcept { return dialect_; }

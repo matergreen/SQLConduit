@@ -381,7 +381,7 @@ g++ -std=c++17 app.cpp $(pkg-config --cflags sqlconduit-postgres) \
 include(FetchContent)
 FetchContent_Declare(sqlconduit
     GIT_REPOSITORY https://github.com/matergreen/SQLConduit.git
-    GIT_TAG        v1.1.0)
+    GIT_TAG        v1.2.0)
 FetchContent_MakeAvailable(sqlconduit)
 
 target_link_libraries(your_target PRIVATE sqlconduit::postgres)
@@ -399,8 +399,9 @@ target_link_libraries(your_target PRIVATE sqlconduit::postgres)
 
 ## 详细文档
 
-1.2 开发分支的直接返回结果、Session/Builder 简写、命名参数、单次超时/取消与配置工具
+1.2 的直接返回结果、Session/Builder 简写、命名参数、单次超时/取消与配置工具
 见[简化查询 API](docs/query_api_zh.md)。
+分页与可选总数统计见[分页查询](docs/pagination_zh.md)。
 
 **1.1.0** 的配置工具、诊断 API 与可选 OpenTelemetry 用法见
 [1.1 诊断说明](docs/diagnostics_zh.md)，包管理方式见 [Package managers](docs/package_managers.md)。

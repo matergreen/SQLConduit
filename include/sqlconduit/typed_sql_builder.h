@@ -3,6 +3,7 @@
 
 #include "sqlconduit/mapping.h"
 #include "sqlconduit/sql_builder.h"
+#include "sqlconduit/pagination.h"
 #include <unordered_set>
 
 namespace sqlconduit::sql {
@@ -140,6 +141,10 @@ namespace sqlconduit::sql {
         [[nodiscard]] BuildResult build() const {
             if (!status_.ok()) return {status_, {}};
             return builder_.build();
+        }
+        [[nodiscard]] PageQuery buildPage() const {
+            if (!status_.ok()) { PageQuery page; page.status = status_; return page; }
+            return builder_.buildPage();
         }
 
     private:

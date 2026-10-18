@@ -6,8 +6,17 @@ description.
 
 ## [Unreleased]
 
-### 1.2.0 developer convenience
+## [1.2.0]
 
+### Simpler queries and typed pagination
+
+- Added `queryPage<T>` / completion-based `queryPageAsync<T>`, named variants and
+  synchronous Session pagination, with offset overflow checks, one-extra-row `hasNext`
+  probing and opt-in totals. Builder/typed Builder `buildPage()` generates COUNT from
+  structured clauses; raw SQL requires explicit COUNT when totals are requested.
+  Added installed `pagination.h` / `query_page.h`; MySQL/PostgreSQL LIMIT/OFFSET and
+  SQL Server/Oracle OFFSET/FETCH use bound pagination values. Pagination requires
+  explicit ordering and does not promise a shared snapshot across two statements.
 - Fixed MSVC compilation of operation-view writes by separating non-template execute
   forwarding from typed query forwarding. Reduced placeholder-rewriting overhead with
   span copying while preserving literal, identifier and nested-comment handling.
@@ -37,6 +46,23 @@ description.
   Reload previews accurately report full pool replacement, not incremental application.
 - Fixed async pool borrowers missing heartbeat-restored/refilled connections. A heartbeat
   interval of zero now disables the heartbeat instead of starting a busy loop.
+
+### Upgrade notes and validation boundaries
+
+- Rebuild applications against matching headers and libraries. Public 1.x source compatibility
+  is preserved; cross-version C++ binary ABI compatibility is not promised.
+- Existing output-parameter queries and string Builders remain supported. New convenience APIs
+  are additive; include the full umbrella or the documented mapping/pagination headers.
+- Pagination requires explicit deterministic ordering. Totals are opt-in, raw SQL needs an explicit
+  count query, and page/count statements do not share a snapshot unless the caller provides an
+  appropriate Session transaction. Async completion does not imply pool-idle state.
+- Cancellation is cooperative and does not imply rollback. Check structured errors and
+  `outcomeUnknown` before deciding whether a write can be retried.
+- Oracle/OCI remains a source-build component requiring manual qualification and is not included
+  in prebuilt release archives.
+- **Oracle/OCI was not revalidated for 1.2.0.** The release owner explicitly approved publishing
+  with this validation exception. Historical OCI results do not certify this release's new APIs
+  or Oracle pagination behavior.
 
 ## [1.1.0]
 

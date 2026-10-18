@@ -8,6 +8,8 @@
 #include <type_traits>
 #include <utility>
 
+namespace sqlconduit { struct PageOptions; }
+
 namespace sqlconduit::common {
     namespace detail { class StopSignal; class OperationState; }
 
@@ -95,6 +97,27 @@ namespace sqlconduit {
         SQLCONDUIT_OPERATION_FORWARD(queryScalarNamedAsync, NamedParams)
         SQLCONDUIT_OPERATION_FORWARD(queryColumnNamedAsync, NamedParams)
 #undef SQLCONDUIT_OPERATION_FORWARD
+#define SQLCONDUIT_OPERATION_PAGE_FORWARD(method, ParamsType) \
+        template<class T> \
+        decltype(auto) method(const std::string &sql, const common::ParamsType &params = {}) const { \
+            common::OperationScope scope(options_); \
+            return owner_.template method<T>(sql, params); \
+        } \
+        template<class T> \
+        decltype(auto) method(const std::string &sql, const common::ParamsType &params, const PageOptions &options) const { \
+            common::OperationScope scope(options_); \
+            return owner_.template method<T>(sql, params, options); \
+        } \
+        template<class T, class... Args> \
+        decltype(auto) method(Args &&...args) const { \
+            common::OperationScope scope(options_); \
+            return owner_.template method<T>(std::forward<Args>(args)...); \
+        }
+        SQLCONDUIT_OPERATION_PAGE_FORWARD(queryPage, Params)
+        SQLCONDUIT_OPERATION_PAGE_FORWARD(queryPageAsync, Params)
+        SQLCONDUIT_OPERATION_PAGE_FORWARD(queryPageNamed, NamedParams)
+        SQLCONDUIT_OPERATION_PAGE_FORWARD(queryPageNamedAsync, NamedParams)
+#undef SQLCONDUIT_OPERATION_PAGE_FORWARD
         // Writes have no typed result overload. Do not form method<T> even in a
         // discarded if constexpr branch: MSVC still diagnoses the non-template name.
 #define SQLCONDUIT_OPERATION_WRITE_FORWARD(method, ParamsType) \

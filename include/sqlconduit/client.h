@@ -5,6 +5,7 @@
 #include "sqlconduit/common/named_params.h"
 #include "sqlconduit/common/operation_options.h"
 #include "sqlconduit/common/types.h"
+#include "sqlconduit/pagination.h"
 #include "sqlconduit/async/async_types.h"
 #include "sqlconduit/config/datasource_config.h"
 #include "sqlconduit/core/database_manager.h"
@@ -439,7 +440,26 @@ namespace sqlconduit {
         [[nodiscard]] common::ExecuteResult execute(const sql::Statement &statement) const;
         [[nodiscard]] std::future<async::ExecResult> executeAsync(const sql::Statement &statement) const;
 
+        template<class T> [[nodiscard]] PageResult<T> queryPage(const sql::PageQuery &query, const PageOptions &options = {}) const;
+        template<class T> [[nodiscard]] PageResult<T> queryPage(const sql::BuildResult &query, const PageOptions &options = {}) const;
+        template<class T> [[nodiscard]] PageResult<T> queryPage(const sql::Builder &query, const PageOptions &options = {}) const;
+        template<class T> [[nodiscard]] PageResult<T> queryPage(const sql::TypedBuilder<T> &query, const PageOptions &options = {}) const;
+        template<class T> [[nodiscard]] PageResult<T> queryPage(const std::string &sql, const common::Params &params = {}, const PageOptions &options = {}) const;
+        template<class T> [[nodiscard]] PageResult<T> queryPageNamed(const std::string &sql, const common::NamedParams &params = {}, const PageOptions &options = {}) const;
+        template<class T> [[nodiscard]] std::future<PageResult<T>> queryPageAsync(const sql::PageQuery &query, const PageOptions &options = {}) const;
+        template<class T> [[nodiscard]] std::future<PageResult<T>> queryPageAsync(const sql::BuildResult &query, const PageOptions &options = {}) const;
+        template<class T> [[nodiscard]] std::future<PageResult<T>> queryPageAsync(const sql::Builder &query, const PageOptions &options = {}) const;
+        template<class T> [[nodiscard]] std::future<PageResult<T>> queryPageAsync(const sql::TypedBuilder<T> &query, const PageOptions &options = {}) const;
+        template<class T> [[nodiscard]] std::future<PageResult<T>> queryPageAsync(const std::string &sql, const common::Params &params = {}, const PageOptions &options = {}) const;
+        template<class T> [[nodiscard]] std::future<PageResult<T>> queryPageNamedAsync(const std::string &sql, const common::NamedParams &params = {}, const PageOptions &options = {}) const;
+
     private:
+        common::Status resolvePageSource(const std::string &, std::shared_ptr<core::DataSource> &) const;
+        detail::PageRows queryPageRaw(const std::string &, const sql::PageQuery &, const PageOptions &) const;
+        void queryPageRawAsync(const std::string &, const sql::PageQuery &, const PageOptions &,
+                               std::function<void(detail::PageRows)>) const;
+        void queryAsyncCompleteOnSource(const std::shared_ptr<core::DataSource> &, const sql::Statement &,
+                                        std::function<void(async::QueryResult)>) const;
         void queryAsyncComplete(const std::string &source, const std::string &sql,
                                 const common::Params &params,
                                 std::function<void(async::QueryResult)> completion) const;

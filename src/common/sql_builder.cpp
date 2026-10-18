@@ -300,6 +300,25 @@ namespace sqlconduit::sql {
         return *this;
     }
 
+    PageQuery Builder::buildPage() const {
+        PageQuery page;
+        const auto built = build();
+        page.status = built.status;
+        if (!page.ok()) return page;
+        if (operation_ != Operation::Select || orderings_.empty()) {
+            page.status = error("pagination requires SELECT with a stable ORDER BY");
+            return page;
+        }
+        page.statement = built.statement;
+        page.dialect = dialect_;
+        Statement count;
+        count.sql = (dialect_ == common::util::Dialect::SqlServer ? "SELECT COUNT_BIG(*) FROM " : "SELECT COUNT(*) FROM ") +
+                    quote(table_, dialect_);
+        page.status = appendWhere(conditions_, dialect_, count.params, count.sql);
+        if (page.ok()) page.countQuery = std::move(count);
+        return page;
+    }
+
     BuildResult Builder::build() const {
         BuildResult result;
         if (!specificationError_.empty()) {

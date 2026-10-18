@@ -411,7 +411,7 @@ environments, prefer `find_package`.
 include(FetchContent)
 FetchContent_Declare(sqlconduit
     GIT_REPOSITORY https://github.com/matergreen/SQLConduit.git
-    GIT_TAG        v1.1.0)
+    GIT_TAG        v1.2.0)
 FetchContent_MakeAvailable(sqlconduit)
 
 target_link_libraries(your_target PRIVATE sqlconduit::postgres)
@@ -430,8 +430,9 @@ an SPDX JSON SBOM, and build provenance verifiable with `gh attestation verify`.
 
 ## Detailed documentation
 
-Development-only 1.2 query/Session/Builder shortcuts, named bindings and per-call cancellation:
+1.2 query/Session/Builder shortcuts, named bindings and per-call cancellation:
 [Direct query results](docs/query_api.md).
+For paginated results and optional totals, see [Pagination](docs/pagination.md).
 
 **1.1.0** adds configuration tools, diagnostic APIs and optional
 OpenTelemetry usage are described in [Diagnostics](docs/diagnostics.md); package-manager consumption

@@ -94,11 +94,28 @@ namespace sqlconduit {
         SQLCONDUIT_OPERATION_FORWARD(queryOneNamedAsync, NamedParams)
         SQLCONDUIT_OPERATION_FORWARD(queryScalarNamedAsync, NamedParams)
         SQLCONDUIT_OPERATION_FORWARD(queryColumnNamedAsync, NamedParams)
-        SQLCONDUIT_OPERATION_FORWARD(execute, Params)
-        SQLCONDUIT_OPERATION_FORWARD(executeNamed, NamedParams)
-        SQLCONDUIT_OPERATION_FORWARD(executeAsync, Params)
-        SQLCONDUIT_OPERATION_FORWARD(executeNamedAsync, NamedParams)
 #undef SQLCONDUIT_OPERATION_FORWARD
+        // Writes have no typed result overload. Do not form method<T> even in a
+        // discarded if constexpr branch: MSVC still diagnoses the non-template name.
+#define SQLCONDUIT_OPERATION_WRITE_FORWARD(method, ParamsType) \
+        decltype(auto) method(const std::string &sql, const common::ParamsType &params = {}) const { \
+            common::OperationScope scope(options_); \
+            return owner_.method(sql, params); \
+        } \
+        decltype(auto) method(const std::string &source, const std::string &sql, const common::ParamsType &params) const { \
+            common::OperationScope scope(options_); \
+            return owner_.method(source, sql, params); \
+        } \
+        template<class... Args> \
+        decltype(auto) method(Args &&...args) const { \
+            common::OperationScope scope(options_); \
+            return owner_.method(std::forward<Args>(args)...); \
+        }
+        SQLCONDUIT_OPERATION_WRITE_FORWARD(execute, Params)
+        SQLCONDUIT_OPERATION_WRITE_FORWARD(executeNamed, NamedParams)
+        SQLCONDUIT_OPERATION_WRITE_FORWARD(executeAsync, Params)
+        SQLCONDUIT_OPERATION_WRITE_FORWARD(executeNamedAsync, NamedParams)
+#undef SQLCONDUIT_OPERATION_WRITE_FORWARD
     private:
         Owner &owner_;
         common::OperationOptions options_;

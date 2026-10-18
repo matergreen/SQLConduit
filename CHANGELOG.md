@@ -8,6 +8,9 @@ description.
 
 ### 1.2.0 developer convenience
 
+- Fixed MSVC compilation of operation-view writes by separating non-template execute
+  forwarding from typed query forwarding. Reduced placeholder-rewriting overhead with
+  span copying while preserving literal, identifier and nested-comment handling.
 - Added `SQLCONDUIT_ENTITY(Type, table, fields...)` registration and installed
   `typed_sql_builder.h`: member-pointer SELECT/INSERT/UPDATE/DELETE, mapped projections,
   sorting, strict value binding and conditional predicates. Typed and string Builders share

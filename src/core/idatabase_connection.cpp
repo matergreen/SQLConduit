@@ -247,23 +247,30 @@ namespace sqlconduit::core {
 
         found = 0;
         const size_t n = sql.size();
+        std::size_t literalStart = 0;
 
         for (size_t i = 0; i < n; ++i) {
             const char c = sql[i];
-
-            // Oracle alternative literals may contain ordinary apostrophes and '?'.
-            if ((c == 'q' || c == 'Q') && i + 2 < n && sql[i + 1] == '\'') {
-                const char open = sql[i + 2];
-                const char close = open == '[' ? ']' : open == '(' ? ')' : open == '{' ? '}' : open == '<' ? '>' : open;
-                const auto end = sql.find(std::string{close, '\''}, i + 3);
-                if (end != std::string::npos) {
-                    out.append(sql, i, end + 2 - i);
-                    i = end + 1;
-                    continue;
+            // Ordinary SQL is scanned once and copied in spans, not one character
+            // at a time. Only placeholder substitution changes the source text.
+            switch (c) {
+            case '?':
+                out.append(sql, literalStart, i - literalStart);
+                out += visitor(found++);
+                literalStart = i + 1;
+                break;
+            case 'q':
+            case 'Q': {
+                // Oracle alternative literals may contain ordinary apostrophes and '?'.
+                if (i + 2 < n && sql[i + 1] == '\'') {
+                    const char open = sql[i + 2];
+                    const char close = open == '[' ? ']' : open == '(' ? ')' : open == '{' ? '}' : open == '<' ? '>' : open;
+                    const auto end = sql.find(std::string{close, '\''}, i + 3);
+                    if (end != std::string::npos) i = end + 1;
                 }
+                break;
             }
-
-            if (c == '$') {
+            case '$': {
                 size_t tagEnd = i + 1;
                 while (tagEnd < n &&
                        (std::isalnum(static_cast<unsigned char>(sql[tagEnd])) ||
@@ -276,71 +283,59 @@ namespace sqlconduit::core {
                     const std::string delimiter = sql.substr(i, tagEnd - i + 1);
                     const size_t close = sql.find(delimiter, tagEnd + 1);
                     if (close != std::string::npos) {
-                        out.append(sql, i, close + delimiter.size() - i);
                         i = close + delimiter.size() - 1;
-                        continue;
                     }
                 }
+                break;
             }
-
-            const bool bracketIdentifier = c == '[' && (i == 0 ||
-                (!std::isalnum(static_cast<unsigned char>(sql[i - 1])) && sql[i - 1] != '_' &&
-                 sql[i - 1] != ')' && sql[i - 1] != ']' && sql[i - 1] != '?'));
-            if (c == '\'' || c == '"' || c == '`' || bracketIdentifier) {
+            case '[':
+                if (i > 0 && (std::isalnum(static_cast<unsigned char>(sql[i - 1])) || sql[i - 1] == '_' ||
+                              sql[i - 1] == ')' || sql[i - 1] == ']' || sql[i - 1] == '?')) break;
+                [[fallthrough]];
+            case '\'':
+            case '"':
+            case '`': {
                 const char closing = c == '[' ? ']' : c;
-                out.push_back(c);
                 ++i;
                 while (i < n) {
-                    out.push_back(sql[i]);
                     if (sql[i] == '\\' && c != '[' && i + 1 < n) {
-                        ++i;
-                        out.push_back(sql[i]);
-                        ++i;
+                        i += 2;
                         continue;
                     }
                     if (sql[i] == closing) {
                         if (i + 1 < n && sql[i + 1] == closing) {
                             ++i;
-                            out.push_back(sql[i]);
                         } else {
                             break;
                         }
                     }
                     ++i;
                 }
-                continue;
+                break;
             }
-
-            if (c == '-' && i + 1 < n && sql[i + 1] == '-') {
+            case '-':
+                if (i + 1 >= n || sql[i + 1] != '-') break;
                 while (i < n && sql[i] != '\n') {
-                    out.push_back(sql[i]);
                     ++i;
                 }
-                if (i < n) out.push_back(sql[i]);
-                continue;
-            }
-
-            if (c == '/' && i + 1 < n && sql[i + 1] == '*') {
-                const auto start = i;
+                break;
+            case '/': {
+                if (i + 1 >= n || sql[i + 1] != '*') break;
                 i += 2;
                 unsigned depth = 1;
                 while (i < n && depth) {
-                    if (sql.compare(i, 2, "/*") == 0) { ++depth; i += 2; }
-                    else if (sql.compare(i, 2, "*/") == 0) { --depth; i += 2; }
+                    if (sql[i] == '/' && i + 1 < n && sql[i + 1] == '*') { ++depth; i += 2; }
+                    else if (sql[i] == '*' && i + 1 < n && sql[i + 1] == '/') { --depth; i += 2; }
                     else ++i;
                 }
-                out.append(sql, start, i - start);
                 --i;
-                continue;
+                break;
             }
-
-            if (c == '?') {
-                out += visitor(found++);
-                continue;
+            default:
+                break;
             }
-
-            out.push_back(c);
         }
+        out.append(sql, literalStart, n - literalStart);
         return out;
     }
 

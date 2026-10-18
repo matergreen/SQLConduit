@@ -162,6 +162,24 @@ int main() {
         require(array.ok(), "array subscripts are not bracket identifiers");
         (void) Connection::replacePlaceholders(array.sql, [](std::size_t) { return "X"; }, count);
         require(count == 3, "downstream lexer binds array subscripts");
+        // Span copying must preserve every non-placeholder byte, including incomplete
+        // literals/comments. The replacement scanner is not a SQL syntax validator.
+        for (const auto &literal : {"", "plain SQL", "'it''s ?'", "\"a\"\"?\"", "`a``?`", "[a]]?]",
+             "q'[it's ?]'", "Q'{it's ?}'", "q'(it's ?)'", "q'<it's ?>'", "q'!it's ?!'",
+             "$tag$' ? $tag$", "$$?$$", "/* ? /* nested ? */ ? */", "-- ?\n",
+             "'unterminated ?", "\"unterminated ?", "/* unterminated ?", "[unterminated ?",
+             "-", "/", "q", "$", "'escaped \\' ?'"}) {
+            std::size_t visited = 0;
+            const auto rewritten = Connection::replacePlaceholders(literal, [&](std::size_t) { ++visited; return "X"; }, count);
+            require(rewritten == literal && count == 0 && visited == 0, "scanner preserves opaque spans byte-for-byte");
+        }
+        const auto mixed = Connection::replacePlaceholders("? 'literal ?' ?? -- ?\n? /* ? */ q'[?]' ?",
+            [](std::size_t index) { return "<" + std::to_string(index) + ">"; }, count);
+        require(mixed == "<0> 'literal ?' <1><2> -- ?\n<3> /* ? */ q'[?]' <4>" && count == 5,
+                "replacement spans preserve ordering and adjacent placeholders");
+        const std::string binarySql("a\0?b", 4);
+        require(Connection::replacePlaceholders(binarySql, [](std::size_t) { return "X"; }, count) ==
+                std::string("a\0Xb", 4) && count == 1, "scanner preserves embedded NUL bytes");
         require(std::holds_alternative<std::string>(common::NamedParams{{"name", "Ada"}}.values[0].second),
             "string literals bind as strings, not bool or dangling references");
         for (const auto &sql : {"SELECT :missing", "SELECT ?", "SELECT $1", "SELECT :1", "SELECT ':x", "SELECT /* :x", "SELECT $x$:x", "SELECT # :x"})

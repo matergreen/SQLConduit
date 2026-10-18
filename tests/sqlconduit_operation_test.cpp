@@ -148,6 +148,10 @@ int main() {
                 "async options view accepts braced named parameters");
         require(client.withOptions(options).execute("UPDATE t SET value=?", {42}).ok(),
                 "options view supports value-returning positional writes");
+        require(client.withOptions(options).executeNamed("UPDATE t SET value=:v", {{"v", 42}}).ok(),
+                "non-template write forwarding supports braced named values");
+        require(await(client.withOptions(options).executeNamedAsync("UPDATE t SET value=:v", {{"v", 42}})).ok(),
+                "non-template async write forwarding supports braced named values");
         auto built = sql::Builder::select("t").columns({"value"}).build();
         require(client.withOptions(options).queryScalar<int>(built).value == 42,
                 "options view supports builder results");
